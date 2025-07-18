@@ -11,8 +11,7 @@ env:
   DOCKER_REGISTRY: ghcr.io
   DOCKER_IMAGE: alex-ilgayev/mcpspy
 
-permissions:
-  contents: read
+permissions: write-all
 
 jobs:
   build:
@@ -57,10 +56,6 @@ jobs:
   docker:
     needs: [build]
     runs-on: ubuntu-latest
-    if: github.event_name == 'push'
-    permissions:
-      contents: read
-      packages: write
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
