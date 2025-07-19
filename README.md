@@ -28,6 +28,8 @@ The Model Context Protocol supports three transport protocols for communication:
 
 **MCPSpy currently supports only Stdio transport monitoring**, with plans to extend support to SSE and HTTP transports in future releases.
 
+![demo](./assets/demo.gif)
+
 ## Why MCPSpy?
 
 The Model Context Protocol is becoming the standard for AI tool integration, but understanding what's happening under the hood can be challenging. MCPSpy addresses this by providing:
