@@ -179,7 +179,7 @@ MCPSpy includes comprehensive end-to-end tests that simulate real MCP communicat
 
 ```bash
 # (Optional) Set up test environment
-make test-setup
+make test-e2e-setup
 
 # Run tests (requires root privileges)
 make test-e2e

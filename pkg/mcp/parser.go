@@ -131,9 +131,13 @@ func (msg *Message) ExtractToolName() string {
 	return ""
 }
 
-// ExtractResourceURI attempts to extract resource URI from a resources/read request
+// ExtractResourceURI attempts to extract resource URI from resource-related requests
 func (msg *Message) ExtractResourceURI() string {
-	if msg.Method != "resources/read" || msg.Params == nil {
+	// Check if this is a resource method that has a URI parameter
+	if (msg.Method != "resources/read" &&
+		msg.Method != "resources/subscribe" &&
+		msg.Method != "resources/unsubscribe") ||
+		msg.Params == nil {
 		return ""
 	}
 
