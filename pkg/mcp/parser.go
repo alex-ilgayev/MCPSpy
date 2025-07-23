@@ -8,7 +8,9 @@ import (
 	"time"
 
 	"github.com/alex-ilgayev/mcpspy/pkg/ebpf"
+	"github.com/alex-ilgayev/mcpspy/pkg/http"
 	"github.com/hashicorp/golang-lru/v2/expirable"
+	"github.com/sirupsen/logrus"
 	"github.com/tidwall/gjson"
 )
 
@@ -162,12 +164,16 @@ type Parser struct {
 	// Using an LRU which has expiration.
 	// Thread-safe.
 	writeCache *expirable.LRU[string, WriteEvent]
+
+	// HTTP parser for SSL events
+	httpParser *http.Parser
 }
 
 // NewParser creates a new MCP parser
 func NewParser() *Parser {
 	return &Parser{
 		writeCache: expirable.NewLRU[string, WriteEvent](writeCacheSize, nil, writeCacheTTL),
+		httpParser: http.NewParser(),
 	}
 }
 
@@ -184,6 +190,11 @@ func NewParser() *Parser {
 // Splitting the data into seperate JSONs first. Assuming each JSON is separated by a newline.
 func (p *Parser) ParseData(data []byte, eventType ebpf.EventType, pid uint32, comm string) ([]*Message, error) {
 	var messages []*Message
+
+	// Handle SSL events differently
+	if eventType == ebpf.EventTypeSSLRead || eventType == ebpf.EventTypeSSLWrite {
+		return p.parseSSLData(data, eventType, pid, comm)
+	}
 
 	if eventType != ebpf.EventTypeWrite && eventType != ebpf.EventTypeRead {
 		return []*Message{}, fmt.Errorf("unknown event type: %d", eventType)
@@ -235,6 +246,51 @@ func (p *Parser) ParseData(data []byte, eventType ebpf.EventType, pid uint32, co
 		}
 	}
 
+	return messages, nil
+}
+
+// parseSSLData handles parsing of SSL events containing HTTP data
+func (p *Parser) parseSSLData(data []byte, eventType ebpf.EventType, pid uint32, comm string) ([]*Message, error) {
+	var messages []*Message
+
+	// Try to extract JSON from HTTP body
+	jsonBody := p.httpParser.ExtractJSON(data)
+	if jsonBody == nil {
+		// Not an HTTP message with JSON, or couldn't parse
+		return messages, nil
+	}
+
+	// Parse the JSON-RPC message
+	jsonRpcMsg, err := p.parseJSONRPC(jsonBody)
+	if err != nil {
+		return messages, err
+	}
+
+	if ok, err := p.validateMCPMessage(jsonRpcMsg); !ok {
+		return messages, err
+	}
+
+	// Determine direction based on event type
+	var direction string
+	if eventType == ebpf.EventTypeSSLWrite {
+		direction = "outgoing"
+	} else {
+		direction = "incoming"
+	}
+
+	// Create the message
+	message := &Message{
+		Timestamp:      time.Now(),
+		Raw:            string(jsonBody),
+		TransportType:  TransportTypeHTTP,
+		JSONRPCMessage: jsonRpcMsg,
+	}
+
+	// For HTTP transport, we don't have the same correlation as stdio
+	// We just mark the process that generated the event
+	logrus.Debugf("Parsed %s HTTP MCP message from PID %d (%s)", direction, pid, comm)
+
+	messages = append(messages, message)
 	return messages, nil
 }
 

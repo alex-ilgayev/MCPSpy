@@ -9,6 +9,7 @@ import (
 	"os"
 	"unsafe"
 
+	"github.com/alex-ilgayev/mcpspy/pkg/discovery"
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/link"
 	"github.com/cilium/ebpf/ringbuf"
@@ -74,7 +75,33 @@ func (l *Loader) Load() error {
 	}
 	l.reader = reader
 
+	fmt.Println("Discovering SSL targets")
+	// Discover SSL targets
+	discoverer := discovery.NewSSLDiscovery()
+	targets, err := discoverer.Discover()
+	if err != nil {
+		fmt.Println("Failed to discover SSL targets")
+		return fmt.Errorf("failed to discover SSL targets: %w", err)
+	}
+
+	fmt.Println(targets)
+
+	if len(targets) == 0 {
+		logrus.Warn("No SSL targets found")
+		return nil
+	}
+	logrus.Debugf("Found %d SSL targets", len(targets))
+
+	// Attach to each target
+	for _, target := range targets {
+		if err := l.attachToTarget(target); err != nil {
+			logrus.WithError(err).Warnf("Failed to attach to target %s", target.Path)
+			continue
+		}
+	}
+	logrus.Debugf("SSL eBPF programs loaded and attached to %d targets", len(l.links))
 	logrus.Debug("eBPF programs loaded and attached successfully")
+
 	return nil
 }
 
@@ -89,49 +116,56 @@ func (l *Loader) Start(ctx context.Context) error {
 		return fmt.Errorf("loader not loaded")
 	}
 
-	go func() {
-		defer close(l.eventCh)
+	go l.readFromRingBuffer(ctx, l.reader, "stdio")
 
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			default:
-				record, err := l.reader.Read()
-				if err != nil {
-					if errors.Is(err, os.ErrClosed) {
-						logrus.Debug("Ring buffer closed, exiting")
-						return
-					}
+	return nil
+}
 
-					logrus.WithError(err).Error("Failed to read from ring buffer")
-					continue
-				}
-
-				if len(record.RawSample) < int(unsafe.Sizeof(Event{})) {
-					logrus.Warn("Received incomplete event")
-					continue
-				}
-
-				var event Event
-				reader := bytes.NewReader(record.RawSample)
-				if err := binary.Read(reader, binary.LittleEndian, &event); err != nil {
-					logrus.WithError(err).Error("Failed to parse event")
-					continue
-				}
-
-				select {
-				case l.eventCh <- event:
-				case <-ctx.Done():
-					return
-				default:
-					logrus.Warn("Event channel full, dropping event")
-				}
-			}
+// readFromRingBuffer reads events from a specific ring buffer
+func (l *Loader) readFromRingBuffer(ctx context.Context, reader *ringbuf.Reader, source string) {
+	defer func() {
+		if source == "stdio" {
+			close(l.eventCh)
 		}
 	}()
 
-	return nil
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+			record, err := reader.Read()
+			if err != nil {
+				if errors.Is(err, os.ErrClosed) {
+					logrus.Debugf("%s ring buffer closed, exiting", source)
+					return
+				}
+
+				logrus.WithError(err).Errorf("Failed to read from %s ring buffer", source)
+				continue
+			}
+
+			if len(record.RawSample) < int(unsafe.Sizeof(Event{})) {
+				logrus.Warnf("Received incomplete event from %s", source)
+				continue
+			}
+
+			var event Event
+			reader := bytes.NewReader(record.RawSample)
+			if err := binary.Read(reader, binary.LittleEndian, &event); err != nil {
+				logrus.WithError(err).Errorf("Failed to parse event from %s", source)
+				continue
+			}
+
+			select {
+			case l.eventCh <- event:
+			case <-ctx.Done():
+				return
+			default:
+				logrus.Warnf("Event channel full, dropping %s event", source)
+			}
+		}
+	}
 }
 
 // Close cleans up resources
@@ -164,5 +198,66 @@ func (l *Loader) Close() error {
 	}
 
 	logrus.Debug("eBPF loader cleaned up successfully")
+	return nil
+}
+
+// attachToTarget attaches uprobes to a specific SSL target
+func (l *Loader) attachToTarget(target discovery.SSLTarget) error {
+	// For static binaries, we need to find the symbol offset
+	// For dynamic libraries, we can use the symbol name directly
+
+	var ex *link.Executable
+	var err error
+
+	if target.Type == discovery.SSLTypeDynamic {
+		// For dynamic libraries, open as shared library
+		ex, err = link.OpenExecutable(target.Path)
+	} else {
+		// For static binaries, open as executable
+		ex, err = link.OpenExecutable(target.Path)
+	}
+
+	if err != nil {
+		return fmt.Errorf("failed to open executable %s: %w", target.Path, err)
+	}
+
+	// Attach SSL_read uprobe
+	// readOpts := &link.UprobeOptions{
+	// 	Address: 0,
+	// 	PID:     int(target.PID), // 0 means system-wide
+	// }
+
+	// Try to attach to SSL_read
+	// readLink, err := ex.Uprobe("SSL_read", l.objs.UprobeSslRead, readOpts)
+	// if err != nil {
+	// 	// For static binaries, the symbol might be stripped or mangled
+	// 	// Try some common variations
+	// 	if target.Type == discovery.SSLTypeStatic {
+	// 		// Try without symbol name (would need offset)
+	// 		logrus.Debugf("Failed to find SSL_read symbol in %s, skipping", target.Path)
+	// 		return fmt.Errorf("SSL_read symbol not found")
+	// 	}
+	// 	return fmt.Errorf("failed to attach SSL_read uprobe: %w", err)
+	// }
+	// l.links = append(l.links, readLink)
+
+	// Attach SSL_write uprobe
+	writeOpts := &link.UprobeOptions{
+		Address: 0,
+		PID:     int(target.PID),
+	}
+
+	writeLink, err := ex.Uretprobe("SSL_write", l.objs.UretprobeSslWrite, writeOpts)
+	if err != nil {
+		if target.Type == discovery.SSLTypeStatic {
+			logrus.Debugf("Failed to find SSL_write symbol in %s, skipping", target.Path)
+			// Don't fail completely if write fails but read succeeded
+			return nil
+		}
+		return fmt.Errorf("failed to attach SSL_write uprobe: %w", err)
+	}
+	l.links = append(l.links, writeLink)
+
+	logrus.Debugf("Successfully attached to SSL functions in %s (PID: %d)", target.Path, target.PID)
 	return nil
 }

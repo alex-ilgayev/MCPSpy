@@ -12,6 +12,8 @@
 // Event types
 #define EVENT_READ 1
 #define EVENT_WRITE 2
+#define EVENT_SSL_READ 3
+#define EVENT_SSL_WRITE 4
 
 // Event structure sent to userspace
 struct event {
@@ -30,7 +32,7 @@ struct {
 } events SEC(".maps");
 
 // Checking if the buffer starts with '{', while ignoring whitespace.
-static __always_inline bool is_mcp_data(const char *buf, __u32 size) {
+static __always_inline bool is_json_data(const char *buf, __u32 size) {
     if (size < 1)
         return false;
 
@@ -62,7 +64,7 @@ int BPF_PROG(exit_vfs_read, struct file *file, const char *buf, size_t count,
         return 0;
     }
 
-    if (!is_mcp_data(buf, ret)) {
+    if (!is_json_data(buf, ret)) {
         return 0;
     }
 
@@ -94,7 +96,7 @@ int BPF_PROG(exit_vfs_write, struct file *file, const char *buf, size_t count,
         return 0;
     }
 
-    if (!is_mcp_data(buf, ret)) {
+    if (!is_json_data(buf, ret)) {
         return 0;
     }
 
@@ -114,6 +116,74 @@ int BPF_PROG(exit_vfs_write, struct file *file, const char *buf, size_t count,
     bpf_probe_read(event->buf, event->buf_size, buf);
 
     bpf_ringbuf_submit(event, 0);
+
+    return 0;
+}
+
+// SSL_read hook
+// int SSL_read(SSL *ssl, void *buf, int num);
+// SEC("uprobe/SSL_read")
+// int uprobe_ssl_read(struct pt_regs *ctx) {
+//     // SSL_read returns the number of bytes read
+//     int ret = PT_REGS_RC(ctx);
+//     if (ret <= 0) {
+//         return 0;
+//     }
+
+//     // Get the buffer pointer (second argument)
+//     void *buf = (void *)PT_REGS_PARM2(ctx);
+
+//     pid_t tgid = bpf_get_current_pid_tgid() >> 32;
+
+//     struct event *event = bpf_ringbuf_reserve(&events, sizeof(struct event), 0);
+//     if (!event) {
+//         bpf_printk("error: failed to reserve ring buffer for SSL read event");
+//         return 0;
+//     }
+
+//     event->pid = tgid;
+//     event->event_type = EVENT_SSL_READ;
+//     event->size = ret;
+//     bpf_get_current_comm(&event->comm, sizeof(event->comm));
+//     event->buf_size = ret < MAX_BUF_SIZE ? ret : MAX_BUF_SIZE;
+//     bpf_probe_read(event->buf, event->buf_size, buf);
+
+//     bpf_ringbuf_submit(event, 0);
+
+//     return 0;
+// }
+
+// SSL_write hook
+// int SSL_write(SSL *ssl, const void *buf, int num);
+SEC("uretprobe/SSL_write")
+int uretprobe_ssl_write(struct pt_regs *ctx) {
+    // SSL_write returns the number of bytes written
+    int ret = PT_REGS_RC(ctx);
+    if (ret <= 0) {
+        return 0;
+    }
+
+    bpf_printk("SSL_write ret: %d", ret);
+
+    // // Get the buffer pointer (second argument)
+    // const void *buf = (const void *)PT_REGS_PARM2(ctx);
+
+    // pid_t tgid = bpf_get_current_pid_tgid() >> 32;
+
+    // struct event *event = bpf_ringbuf_reserve(&events, sizeof(struct event), 0);
+    // if (!event) {
+    //     bpf_printk("error: failed to reserve ring buffer for SSL write event");
+    //     return 0;
+    // }
+
+    // event->pid = tgid;
+    // event->event_type = EVENT_SSL_WRITE;
+    // event->size = ret;
+    // bpf_get_current_comm(&event->comm, sizeof(event->comm));
+    // event->buf_size = ret < MAX_BUF_SIZE ? ret : MAX_BUF_SIZE;
+    // bpf_probe_read(event->buf, event->buf_size, buf);
+
+    // bpf_ringbuf_submit(event, 0);
 
     return 0;
 }
