@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 	"unsafe"
@@ -26,6 +27,10 @@ type Loader struct {
 	reader  *ringbuf.Reader
 	eventCh chan Event
 	debug   bool
+
+	// Iterator link for library enumeration
+	// Will be != nil if enumeration is ongoing
+	iterLink link.Link
 }
 
 // New creates a new eBPF loader
@@ -36,7 +41,8 @@ func New(debug bool) (*Loader, error) {
 	}
 
 	return &Loader{
-		eventCh: make(chan Event, 1000),
+		// approximately maximum of 25-100MB memory.
+		eventCh: make(chan Event, 100000),
 		debug:   debug,
 	}, nil
 }
@@ -115,15 +121,44 @@ func (l *Loader) Start(ctx context.Context) error {
 					continue
 				}
 
-				if len(record.RawSample) < int(unsafe.Sizeof(Event{})) {
-					logrus.Warn("Received incomplete event")
+				// First, reading the first byte to get the event type
+				if len(record.RawSample) < 1 {
+					logrus.Warn("Received empty event. Can't be read the event type.")
 					continue
 				}
 
+				eventType := EventType(record.RawSample[0])
+
 				var event Event
 				reader := bytes.NewReader(record.RawSample)
-				if err := binary.Read(reader, binary.LittleEndian, &event); err != nil {
-					logrus.WithError(err).Error("Failed to parse event")
+
+				switch eventType {
+				case EventTypeRead, EventTypeWrite:
+					if len(record.RawSample) < int(unsafe.Sizeof(DataEvent{})) {
+						logrus.Warn("Received incomplete data event for data event")
+						continue
+					}
+
+					var dataEvent DataEvent
+					if err := binary.Read(reader, binary.LittleEndian, &dataEvent); err != nil {
+						logrus.WithError(err).Error("Failed to parse data event")
+						continue
+					}
+					event = &dataEvent
+				case EventTypeLibrary:
+					if len(record.RawSample) < int(unsafe.Sizeof(LibraryEvent{})) {
+						logrus.Warn("Received incomplete library event")
+						continue
+					}
+
+					var libraryEvent LibraryEvent
+					if err := binary.Read(reader, binary.LittleEndian, &libraryEvent); err != nil {
+						logrus.WithError(err).Error("Failed to parse library event")
+						continue
+					}
+					event = &libraryEvent
+				default:
+					logrus.WithField("type", eventType).Warn("Unknown event type")
 					continue
 				}
 
@@ -159,6 +194,13 @@ func (l *Loader) Close() error {
 		}
 	}
 
+	// Detach iterator link
+	if l.iterLink != nil {
+		if err := l.iterLink.Close(); err != nil {
+			errs = append(errs, fmt.Errorf("failed to close iterator link: %w", err))
+		}
+	}
+
 	// Close eBPF objects
 	if l.objs != nil {
 		if err := l.objs.Close(); err != nil {
@@ -171,5 +213,45 @@ func (l *Loader) Close() error {
 	}
 
 	logrus.Debug("eBPF loader cleaned up successfully")
+	return nil
+}
+
+// RunIterLibEnum triggers the eBPF iterator to enumerate all loaded libraries.
+// The discovered libraries will be sent to the event channel.
+func (l *Loader) RunIterLibEnum() error {
+	if l.objs == nil {
+		return fmt.Errorf("loader not loaded")
+	}
+
+	// Create iterator link
+	iterLink, err := link.AttachIter(link.IterOptions{
+		Program: l.objs.EnumerateLoadedModules,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to attach iterator: %w", err)
+	}
+	defer iterLink.Close()
+
+	// Store the iterator link
+	// so we'll be able to close it during Close()
+	l.iterLink = iterLink
+	defer func() {
+		l.iterLink = nil
+	}()
+
+	// Open the iterator to get a file descriptor
+	iter, err := iterLink.Open()
+	if err != nil {
+		return fmt.Errorf("failed to open iterator: %w", err)
+	}
+	defer iter.Close()
+
+	// Trigger the iterator by reading from it
+	buf := make([]byte, 1)
+	_, err = iter.Read(buf)
+	if err != nil && err != io.EOF {
+		return fmt.Errorf("failed to read from iterator: %w", err)
+	}
+
 	return nil
 }

@@ -11,7 +11,6 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/alex-ilgayev/mcpspy/pkg/ebpf"
-	"github.com/alex-ilgayev/mcpspy/pkg/encoder"
 	"github.com/alex-ilgayev/mcpspy/pkg/mcp"
 	"github.com/alex-ilgayev/mcpspy/pkg/output"
 	"github.com/alex-ilgayev/mcpspy/pkg/version"
@@ -136,34 +135,44 @@ func run(cmd *cobra.Command, args []string) error {
 				return nil
 			}
 
-			// Get buffer data
-			buf := event.Buf[:event.BufSize]
-			if len(buf) == 0 {
-				continue
-			}
-
-			commStr := encoder.BytesToStr(event.Comm[:])
-
-			// Parse raw eBPF event data into MCP messages
-			messages, err := parser.ParseData(buf, event.EventType, event.PID, commStr)
-			if err != nil {
-				logrus.WithError(err).Debug("Failed to parse data")
-				continue
-			}
-
-			// Update statistics
-			for _, msg := range messages {
-				if msg.Method != "" {
-					stats[msg.Method]++
+			// Handle different event types
+			switch e := event.(type) {
+			case *ebpf.DataEvent:
+				buf := e.Buf[:e.BufSize]
+				if len(buf) == 0 {
+					continue
 				}
-			}
 
-			// Display messages to console
-			consoleDisplay.PrintMessages(messages)
+				// Parse raw eBPF event data into MCP messages
+				messages, err := parser.ParseData(buf, e.EventType, e.PID, e.Comm())
+				if err != nil {
+					logrus.WithError(err).Debug("Failed to parse data")
+					continue
+				}
 
-			// Also write to file if specified
-			if fileDisplay != nil {
-				fileDisplay.PrintMessages(messages)
+				// Update statistics
+				for _, msg := range messages {
+					if msg.Method != "" {
+						stats[msg.Method]++
+					}
+				}
+
+				// Display messages to console
+				consoleDisplay.PrintMessages(messages)
+
+				// Also write to file if specified
+				if fileDisplay != nil {
+					fileDisplay.PrintMessages(messages)
+				}
+			case *ebpf.LibraryEvent:
+				// Handle library events - for now just log them
+				logrus.WithFields(logrus.Fields{
+					"pid":  e.PID,
+					"comm": e.Comm(),
+					"path": e.Path(),
+				}).Trace("Library loaded")
+			default:
+				logrus.WithField("type", event.Type()).Warn("Unknown event type")
 			}
 		}
 	}
