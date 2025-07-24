@@ -32,8 +32,9 @@ func main() {
 		Short: "Monitor Model Context Protocol communication",
 		Long: `MCPSpy is a CLI utility that uses eBPF to monitor MCP (Model Context Protocol) 
 communication by tracking stdio operations and analyzing JSON-RPC 2.0 messages.`,
-		Version: fmt.Sprintf("%s (commit: %s, built: %s)", version.Version, version.Commit, version.Date),
-		RunE:    run,
+		Version:      fmt.Sprintf("%s (commit: %s, built: %s)", version.Version, version.Commit, version.Date),
+		RunE:         run,
+		SilenceUsage: true,
 	}
 
 	// Add flags
@@ -42,7 +43,6 @@ communication by tracking stdio operations and analyzing JSON-RPC 2.0 messages.`
 	rootCmd.Flags().StringVarP(&outputFile, "output", "o", "", "Output file (JSONL format will be written to file)")
 
 	if err := rootCmd.Execute(); err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
 }
@@ -79,7 +79,7 @@ func run(cmd *cobra.Command, args []string) error {
 	}
 
 	// Create and load eBPF program
-	loader, err := ebpf.New()
+	loader, err := ebpf.New(verbose)
 	if err != nil {
 		return fmt.Errorf("failed to create eBPF loader: %w", err)
 	}

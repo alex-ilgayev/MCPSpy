@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"unsafe"
 
 	"github.com/cilium/ebpf"
@@ -24,10 +25,11 @@ type Loader struct {
 	links   []link.Link
 	reader  *ringbuf.Reader
 	eventCh chan Event
+	debug   bool
 }
 
 // New creates a new eBPF loader
-func New() (*Loader, error) {
+func New(debug bool) (*Loader, error) {
 	// Remove memory limit for eBPF
 	if err := rlimit.RemoveMemlock(); err != nil {
 		return nil, fmt.Errorf("failed to remove memlock: %w", err)
@@ -35,6 +37,7 @@ func New() (*Loader, error) {
 
 	return &Loader{
 		eventCh: make(chan Event, 1000),
+		debug:   debug,
 	}, nil
 }
 
@@ -43,6 +46,10 @@ func (l *Loader) Load() error {
 	// Load pre-compiled eBPF objects
 	objs := &mcpspyObjects{}
 	if err := loadMcpspyObjects(objs, nil); err != nil {
+		var verifierError *ebpf.VerifierError
+		if errors.As(err, &verifierError) && logrus.IsLevelEnabled(logrus.DebugLevel) {
+			fmt.Fprintln(os.Stderr, strings.Join(verifierError.Log, "\n"))
+		}
 		return fmt.Errorf("failed to load eBPF objects: %w", err)
 	}
 	l.objs = objs
