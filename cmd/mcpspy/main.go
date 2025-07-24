@@ -24,6 +24,7 @@ var (
 	showBuffers bool
 	verbose     bool
 	outputFile  string
+	logLevel    string
 )
 
 func main() {
@@ -39,8 +40,9 @@ communication by tracking stdio operations and analyzing JSON-RPC 2.0 messages.`
 
 	// Add flags
 	rootCmd.Flags().BoolVarP(&showBuffers, "buffers", "b", false, "Show raw message buffers")
-	rootCmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "Enable verbose logging")
+	rootCmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "Enable verbose logging (debug level)")
 	rootCmd.Flags().StringVarP(&outputFile, "output", "o", "", "Output file (JSONL format will be written to file)")
+	rootCmd.Flags().StringVarP(&logLevel, "log-level", "l", "info", "Set log level (trace, debug, info, warn, error, fatal, panic)")
 
 	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)
@@ -49,13 +51,21 @@ communication by tracking stdio operations and analyzing JSON-RPC 2.0 messages.`
 
 func run(cmd *cobra.Command, args []string) error {
 	// Set up logging
+	// Handle verbose flag as shortcut for debug level
 	if verbose {
-		logrus.SetLevel(logrus.DebugLevel)
+		logLevel = "debug"
+	}
 
-		// Setup trace pipe to debug eBPF programs
+	// Parse and set log level
+	level, err := logrus.ParseLevel(logLevel)
+	if err != nil {
+		return fmt.Errorf("invalid log level '%s': %w", logLevel, err)
+	}
+	logrus.SetLevel(level)
+
+	// Setup trace pipe to debug eBPF programs if debug or trace level
+	if level >= logrus.DebugLevel {
 		go mcpspydebug.PrintTracePipe(logrus.StandardLogger())
-	} else {
-		logrus.SetLevel(logrus.InfoLevel)
 	}
 
 	// Set up console display (always show console output)
@@ -79,7 +89,7 @@ func run(cmd *cobra.Command, args []string) error {
 	}
 
 	// Create and load eBPF program
-	loader, err := ebpf.New(verbose)
+	loader, err := ebpf.New(level >= logrus.DebugLevel)
 	if err != nil {
 		return fmt.Errorf("failed to create eBPF loader: %w", err)
 	}
