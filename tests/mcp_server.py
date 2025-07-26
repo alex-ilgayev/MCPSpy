@@ -9,18 +9,22 @@ This server demonstrates various MCP capabilities including:
 - Prompts
 - Progress reporting and notifications
 - Error handling and logging
+- Configurable transport layers (stdio, HTTP, SSE)
 
 Run the server:
-    python mcp_server.py
+    python mcp_server.py (default transport is stdio)
+    python mcp_server.py --transport stdio
+    python mcp_server.py --transport streamable-http (default endpoint is http://localhost:8000/mcp)
+    python mcp_server.py --transport sse (default endpoint is http://localhost:8000/sse)
 
 Or use with MCP development tools:
     mcp dev mcp_server.py
 """
 
+import argparse
 import asyncio
 import json
-import random
-from datetime import datetime, timezone
+import sys
 from typing import List
 
 from mcp.server.fastmcp import Context, FastMCP
@@ -32,6 +36,43 @@ mcp = FastMCP(
     version="1.0.0",
     description="A comprehensive MCP server demonstrating various capabilities for testing MCPSpy",
 )
+
+
+# =============================================================================
+# TRANSPORT CONFIGURATION
+# =============================================================================
+
+
+class TransportConfig:
+    """Configuration for different transport layers."""
+
+    def __init__(self):
+        self.transport_type = "stdio"
+
+    @classmethod
+    def from_args(cls, args):
+        """Create TransportConfig from command line arguments."""
+        config = cls()
+        config.transport_type = args.transport
+        return config
+
+
+def parse_arguments():
+    """Parse command line arguments for transport configuration."""
+    parser = argparse.ArgumentParser(
+        description="Comprehensive MCP Server with configurable transport layers",
+        formatter_class=argparse.RawTextHelpFormatter,
+    )
+
+    parser.add_argument(
+        "--transport",
+        "-t",
+        choices=["stdio", "streamable-http", "sse"],
+        default="stdio",
+        help="Transport layer to use (default: stdio)",
+    )
+
+    return parser.parse_args()
 
 
 # =============================================================================
@@ -181,21 +222,41 @@ Please provide specific, actionable feedback."""
 
 
 # =============================================================================
-# SERVER LIFECYCLE AND MAIN FUNCTION
+# SERVER STARTUP WITH TRANSPORT CONFIGURATION
 # =============================================================================
 
 
-def main():
-    """Main function to run the MCP server."""
+def start_server_with_transport(config: TransportConfig):
+    """Start the MCP server with the specified transport configuration."""
+
     print("=" * 60)
     print("🚀 Starting Comprehensive MCP Demo Server")
     print("=" * 60)
+    print(f"Transport:     {config.transport_type.upper()}")
+    print("=" * 60)
     print()
     print("Server is running and ready for connections...")
+    print("Press Ctrl+C to stop the server")
     print("=" * 60)
 
-    # Run the server
-    mcp.run()
+    try:
+        mcp.run(transport=config.transport_type)
+    except KeyboardInterrupt:
+        print("\n" + "=" * 60)
+        print("🛑 Server stopped by user")
+        print("=" * 60)
+        sys.exit(0)
+    except Exception as e:
+        print(f"\n❌ Failed to start server: {e}")
+        sys.exit(1)
+
+
+def main():
+    """Main function to run the MCP server with configurable transport."""
+    args = parse_arguments()
+    config = TransportConfig.from_args(args)
+
+    start_server_with_transport(config)
 
 
 if __name__ == "__main__":
