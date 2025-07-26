@@ -1,4 +1,4 @@
-.PHONY: all build generate clean image test test-e2e-setup test-clean
+.PHONY: all build generate clean image test test-e2e-setup test-clean build-ecapture build-release
 
 BINARY_NAME := mcpspy
 GO ?= go
@@ -22,10 +22,28 @@ generate:
 	@echo "Generating eBPF Go bindings..."
 	cd pkg/ebpf && go generate
 
-# Build the binary
+# Build the binary (development version, no embedded ecapture)
 build: generate
-	@echo "Building $(BINARY_NAME)..."
+	@echo "Building $(BINARY_NAME) (development version)..."
 	CGO_ENABLED=0 $(GO) build -ldflags "$(LDFLAGS)" -o $(BINARY_NAME) ./cmd/mcpspy
+
+# Build ecapture from submodule
+build-ecapture:
+	@echo "Building ecapture..."
+	@if [ ! -f bpf/ecapture/Makefile ]; then \
+		echo "Error: ecapture submodule not found. Run: git submodule update --init --recursive"; \
+		exit 1; \
+	fi
+	cd bpf/ecapture && $(MAKE) build
+	@echo "Copying ecapture binary to internal/embed..."
+	cp bpf/ecapture/bin/ecapture internal/embed/
+
+# Build release version with embedded ecapture
+build-release: generate build-ecapture
+	@echo "Building $(BINARY_NAME) (release version with embedded ecapture)..."
+	CGO_ENABLED=0 $(GO) build -tags embed_ecapture -ldflags "$(LDFLAGS) -s -w" -o $(BINARY_NAME)-release ./cmd/mcpspy
+	@echo "Release binary created: $(BINARY_NAME)-release"
+	@echo "Binary size: $$(du -h $(BINARY_NAME)-release | cut -f1)"
 
 # Build Docker image
 image: clean
@@ -41,8 +59,11 @@ test-e2e-clean:
 clean:
 	@echo "Cleaning..."
 	rm -f $(BINARY_NAME)
+	rm -f $(BINARY_NAME)-release
 	rm -f pkg/ebpf/mcpspy_bpfe*.go
 	rm -f pkg/ebpf/mcpspy_bpfe*.o
+	rm -f internal/embed/ecapture
+	rm -f assets/binaries/ecapture
 
 # Install dependencies
 deps:
@@ -90,7 +111,9 @@ help:
 	@echo "Targets:"
 	@echo "  all              - Generate and build (default)"
 	@echo "  generate         - Generate eBPF Go bindings"
-	@echo "  build            - Build the binary"
+	@echo "  build            - Build the binary (development version)"
+	@echo "  build-ecapture   - Build ecapture from submodule"
+	@echo "  build-release    - Build release binary with embedded ecapture"
 	@echo "  image            - Build Docker image"
 	@echo "  clean            - Clean build artifacts"
 	@echo "  deps             - Install Go dependencies"

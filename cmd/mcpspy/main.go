@@ -11,6 +11,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/alex-ilgayev/mcpspy/pkg/ebpf"
+	"github.com/alex-ilgayev/mcpspy/pkg/http"
 	"github.com/alex-ilgayev/mcpspy/pkg/mcp"
 	"github.com/alex-ilgayev/mcpspy/pkg/output"
 	"github.com/alex-ilgayev/mcpspy/pkg/version"
@@ -121,6 +122,9 @@ func run(cmd *cobra.Command, args []string) error {
 	parser := mcp.NewParser()
 	stats := make(map[string]int)
 
+	// Create HTTP analyzer
+	httpAnalyzer := http.NewAnalyzer()
+
 	// Main event loop
 	for {
 		select {
@@ -171,6 +175,9 @@ func run(cmd *cobra.Command, args []string) error {
 					"comm": e.Comm(),
 					"path": e.Path(),
 				}).Trace("Library loaded")
+			case *ebpf.HTTPPayload:
+				// Analyze HTTP traffic
+				httpAnalyzer.AnalyzeEvent(e)
 			default:
 				logrus.WithField("type", event.Type()).Warn("Unknown event type")
 			}
