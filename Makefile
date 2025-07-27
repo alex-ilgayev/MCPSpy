@@ -31,7 +31,7 @@ LDFLAGS := -X github.com/alex-ilgayev/mcpspy/pkg/version.Version=$(VERSION) \
 		   -X github.com/alex-ilgayev/mcpspy/pkg/version.Date=$(BUILD_DATE)
 
 # Source files
-BPF_SRCS := $(shell find ./bpf -type f \( -name '*.[ch]' ! -name 'vmlinux.h' \))
+BPF_SRCS := $(shell find ./bpf -type f \( -name '*.[ch]' ! -name 'vmlinux.h' ! -path './bpf/ecapture/*' \))
 
 # Build configuration
 CGO_ENABLED ?= 0
@@ -57,9 +57,25 @@ generate: ## Generate eBPF Go bindings
 	@echo "Generating eBPF Go bindings..."
 	cd pkg/ebpf && go generate
 
+# Build ecapture from submodule
+bpf/ecapture/bin/ecapture: ## Build ecapture from submodule
+	@echo "Building ecapture..."
+	@if [ ! -f bpf/ecapture/Makefile ]; then \
+		echo "Initializing ecapture submodule..."; \
+		git submodule update --init --recursive bpf/ecapture; \
+	fi
+	@echo "Ensuring nested submodules are initialized..."
+	cd bpf/ecapture && git submodule update --init --recursive
+	cd bpf/ecapture && $(MAKE) build
+
+# Copy ecapture binary to pkg/ebpf/ecapture
+pkg/ebpf/ecapture: bpf/ecapture/bin/ecapture ## Copy ecapture binary to pkg/ebpf/ecapture
+	@echo "Copying ecapture binary to pkg/ebpf/ecapture..."
+	cp bpf/ecapture/bin/ecapture pkg/ebpf/ecapture
+
 # Build the binary
 .PHONY: build
-build: generate	## Build the binary for current platform
+build: generate pkg/ebpf/ecapture ## Build the binary for current platform
 	@echo "Building $(BINARY_NAME) for $(PLATFORM)..."
 	@mkdir -p $(BUILD_DIR)
 	@GOOS=$(GOOS) GOARCH=$(GOARCH) CGO_ENABLED=$(CGO_ENABLED) $(GO) build $(BUILD_FLAGS) -o $(BINARY_OUTPUT) ./cmd/mcpspy
@@ -126,6 +142,7 @@ clean: ## Clean build artifacts
 	rm -rf $(BUILD_DIR)
 	rm -f pkg/ebpf/mcpspy_bpfe*.go
 	rm -f pkg/ebpf/mcpspy_bpfe*.o
+	rm -f pkg/ebpf/ecapture
 
 # Install dependencies
 .PHONY: deps

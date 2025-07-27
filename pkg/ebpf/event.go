@@ -10,6 +10,7 @@ const (
 	EventTypeRead    EventType = 1
 	EventTypeWrite   EventType = 2
 	EventTypeLibrary EventType = 3
+	EventTypeHTTP    EventType = 4
 )
 
 // Event is the interface for all events
@@ -52,3 +53,17 @@ func (e *LibraryEvent) Type() EventType { return e.EventType }
 func (e *LibraryEvent) Path() string {
 	return encoder.BytesToStr(e.PathBytes[:])
 }
+
+// HTTPPayload represents HTTP traffic captured by ecapture
+type HTTPPayload struct {
+	EventHeader
+
+	IsRequest  bool   // true for request, false for response
+	Method     string // GET, POST, etc (for requests)
+	URL        string // URL path (for requests)
+	StatusCode int    // Status code (for responses)
+	Headers    map[string]string
+	Body       []byte
+}
+
+func (e *HTTPPayload) Type() EventType { return EventTypeHTTP }
