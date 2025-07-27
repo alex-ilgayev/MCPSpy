@@ -1,4 +1,4 @@
-.PHONY: all build generate clean image test test-e2e-setup test-clean
+.PHONY: all build generate clean image test test-e2e-setup test-clean build-ecapture build-release
 
 BINARY_NAME := mcpspy
 GO ?= go
@@ -9,7 +9,7 @@ VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev
 COMMIT := $(shell git rev-parse --short HEAD 2>/dev/null || echo "unknown")
 BUILD_DATE := $(shell date -u +"%Y-%m-%dT%H:%M:%SZ")
 LDFLAGS := -X github.com/alex-ilgayev/mcpspy/pkg/version.Version=$(VERSION) -X github.com/alex-ilgayev/mcpspy/pkg/version.Commit=$(COMMIT) -X github.com/alex-ilgayev/mcpspy/pkg/version.Date=$(BUILD_DATE)
-BPF_SRCS := $(shell find ./bpf -type f \( -name '*.[ch]' ! -name 'vmlinux.h' \))
+BPF_SRCS := $(shell find ./bpf -type f \( -name '*.[ch]' ! -name 'vmlinux.h' ! -path './bpf/ecapture/*' \))
 
 DOCKER_IMAGE ?= ghcr.io/alex-ilgayev/mcpspy
 IMAGE_TAG ?= latest
@@ -22,9 +22,25 @@ generate:
 	@echo "Generating eBPF Go bindings..."
 	cd pkg/ebpf && go generate
 
-# Build the binary
-build: generate
-	@echo "Building $(BINARY_NAME)..."
+# Build ecapture from submodule
+bpf/ecapture/bin/ecapture:
+	@echo "Building ecapture..."
+	@if [ ! -f bpf/ecapture/Makefile ]; then \
+		echo "Initializing ecapture submodule..."; \
+		git submodule update --init --recursive bpf/ecapture; \
+	fi
+	@echo "Ensuring nested submodules are initialized..."
+	cd bpf/ecapture && git submodule update --init --recursive
+	cd bpf/ecapture && $(MAKE) build
+
+# Copy ecapture binary to pkg/ebpf/ecapture
+pkg/ebpf/ecapture: bpf/ecapture/bin/ecapture
+	@echo "Copying ecapture binary to pkg/ebpf/ecapture..."
+	cp bpf/ecapture/bin/ecapture pkg/ebpf/ecapture
+
+# Build the binary (with embedded ecapture)
+build: generate pkg/ebpf/ecapture
+	@echo "Building $(BINARY_NAME)"
 	CGO_ENABLED=0 $(GO) build -ldflags "$(LDFLAGS)" -o $(BINARY_NAME) ./cmd/mcpspy
 
 # Build Docker image
@@ -43,6 +59,7 @@ clean:
 	rm -f $(BINARY_NAME)
 	rm -f pkg/ebpf/mcpspy_bpfe*.go
 	rm -f pkg/ebpf/mcpspy_bpfe*.o
+	rm -f pkg/ebpf/ecapture
 
 # Install dependencies
 deps:
@@ -91,6 +108,7 @@ help:
 	@echo "  all              - Generate and build (default)"
 	@echo "  generate         - Generate eBPF Go bindings"
 	@echo "  build            - Build the binary"
+	@echo "  build-ecapture   - Build ecapture from submodule"
 	@echo "  image            - Build Docker image"
 	@echo "  clean            - Clean build artifacts"
 	@echo "  deps             - Install Go dependencies"

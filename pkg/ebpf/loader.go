@@ -31,6 +31,9 @@ type Loader struct {
 	// Iterator link for library enumeration
 	// Will be != nil if enumeration is ongoing
 	iterLink link.Link
+
+	// ecapture integration
+	ecapture *ecaptureManager
 }
 
 // New creates a new eBPF loader
@@ -40,10 +43,22 @@ func New(debug bool) (*Loader, error) {
 		return nil, fmt.Errorf("failed to remove memlock: %w", err)
 	}
 
+	// Create event channel
+	// approximately maximum of 25-100MB memory.
+	eventCh := make(chan Event, 100000)
+
+	// Create ecapture manager
+	// based on popular tls inspection tool:
+	// https://github.com/gojue/ecapture
+	ecapture, err := newEcaptureManager(eventCh)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create ecapture manager: %w", err)
+	}
+
 	return &Loader{
-		// approximately maximum of 25-100MB memory.
-		eventCh: make(chan Event, 100000),
-		debug:   debug,
+		eventCh:  eventCh,
+		debug:    debug,
+		ecapture: ecapture,
 	}, nil
 }
 
@@ -100,6 +115,11 @@ func (l *Loader) Events() <-chan Event {
 func (l *Loader) Start(ctx context.Context) error {
 	if l.reader == nil {
 		return fmt.Errorf("loader not loaded")
+	}
+
+	// Start ecapture
+	if err := l.ecapture.start(ctx); err != nil {
+		return fmt.Errorf("failed to start ecapture: %w", err)
 	}
 
 	go func() {
@@ -179,6 +199,12 @@ func (l *Loader) Start(ctx context.Context) error {
 // Close cleans up resources
 func (l *Loader) Close() error {
 	var errs []error
+
+	if l.ecapture != nil {
+		if err := l.ecapture.stop(); err != nil {
+			errs = append(errs, fmt.Errorf("failed to stop ecapture: %w", err))
+		}
+	}
 
 	// Close ring buffer reader
 	if l.reader != nil {

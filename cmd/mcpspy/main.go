@@ -11,6 +11,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/alex-ilgayev/mcpspy/pkg/ebpf"
+	"github.com/alex-ilgayev/mcpspy/pkg/http"
 	"github.com/alex-ilgayev/mcpspy/pkg/mcp"
 	"github.com/alex-ilgayev/mcpspy/pkg/output"
 	"github.com/alex-ilgayev/mcpspy/pkg/version"
@@ -121,6 +122,9 @@ func run(cmd *cobra.Command, args []string) error {
 	parser := mcp.NewParser()
 	stats := make(map[string]int)
 
+	// Create HTTP analyzer
+	httpAnalyzer := http.NewAnalyzer()
+
 	// Main event loop
 	for {
 		select {
@@ -146,7 +150,10 @@ func run(cmd *cobra.Command, args []string) error {
 				// Parse raw eBPF event data into MCP messages
 				messages, err := parser.ParseData(buf, e.EventType, e.PID, e.Comm())
 				if err != nil {
-					logrus.WithError(err).Debug("Failed to parse data")
+					// Ignore this error. Happens a lot.
+					if err.Error() != "no write event found for the parsed read event" {
+						logrus.WithError(err).Debug("Failed to parse data")
+					}
 					continue
 				}
 
@@ -171,6 +178,9 @@ func run(cmd *cobra.Command, args []string) error {
 					"comm": e.Comm(),
 					"path": e.Path(),
 				}).Trace("Library loaded")
+			case *ebpf.HTTPPayload:
+				// Analyze HTTP traffic
+				httpAnalyzer.AnalyzeEvent(e)
 			default:
 				logrus.WithField("type", event.Type()).Warn("Unknown event type")
 			}
