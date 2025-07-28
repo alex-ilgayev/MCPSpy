@@ -115,12 +115,25 @@ class MCPMessageSimulator:
             resources_response = await self.session.list_resources()
             self.logger.info(f"Received {len(resources_response.resources)} resources")
 
-            # Read a resource if available
+            # Read existing resources if available
             if resources_response.resources:
                 resource = resources_response.resources[0]
                 self.logger.info(f"Sending resources/read request for: {resource.uri}")
                 await self.session.read_resource(resource.uri)
                 self.logger.info("Received resource content")
+
+            # Also try to read a template resource that doesn't exist to test error handling
+            self.logger.info(
+                "Sending resources/read request for non-existent template resource"
+            )
+            try:
+                await self.session.read_resource("file://logs/nonexistent.txt")
+                self.logger.info(
+                    "Received response for non-existent resource (unexpected)"
+                )
+            except Exception as e:
+                self.logger.info(f"Expected error for non-existent resource: {e}")
+
         except Exception as e:
             self.logger.error(f"Error simulating resources: {e}")
 
@@ -177,29 +190,13 @@ class MCPMessageSimulator:
             self.logger.info(f"Target URL: {self.url}")
 
         try:
-            # Set up sampling callback
-            async def handle_sampling(
-                message: CreateMessageRequestParams,
-            ) -> CreateMessageResult:
-                """Handle sampling requests from the server."""
-                self.logger.info("Received sampling request from server")
-                return CreateMessageResult(
-                    role="assistant",
-                    content=TextContent(
-                        type="text",
-                        text="Sample response for message simulation.",
-                    ),
-                    model="simulator-model",
-                    stopReason="endTurn",
-                )
-
             # Create client connection based on transport type
             if self.transport == "stdio":
-                await self._run_stdio_simulation(handle_sampling)
+                await self._run_stdio_simulation()
             elif self.transport == "sse":
-                await self._run_sse_simulation(handle_sampling)
+                await self._run_sse_simulation()
             elif self.transport == "streamable-http":
-                await self._run_streamable_http_simulation(handle_sampling)
+                await self._run_streamable_http_simulation()
             else:
                 raise ValueError(f"Unsupported transport: {self.transport}")
 
@@ -207,7 +204,7 @@ class MCPMessageSimulator:
             self.logger.error(f"Error during simulation: {e}")
             raise
 
-    async def _run_stdio_simulation(self, handle_sampling) -> None:
+    async def _run_stdio_simulation(self) -> None:
         """Run simulation using stdio transport."""
         server_params = StdioServerParameters(
             command=self.server_command[0],
@@ -215,29 +212,23 @@ class MCPMessageSimulator:
         )
 
         async with stdio_client(server_params) as (read_stream, write_stream):
-            async with ClientSession(
-                read_stream, write_stream, sampling_callback=handle_sampling
-            ) as session:
+            async with ClientSession(read_stream, write_stream) as session:
                 self.session = session
                 await self._run_message_simulation()
 
-    async def _run_sse_simulation(self, handle_sampling) -> None:
+    async def _run_sse_simulation(self) -> None:
         """Run simulation using SSE transport."""
         self.logger.info(f"Connecting to SSE endpoint: {self.url}")
         async with sse_client(self.url) as (read_stream, write_stream):
-            async with ClientSession(
-                read_stream, write_stream, sampling_callback=handle_sampling
-            ) as session:
+            async with ClientSession(read_stream, write_stream) as session:
                 self.session = session
                 await self._run_message_simulation()
 
-    async def _run_streamable_http_simulation(self, handle_sampling) -> None:
+    async def _run_streamable_http_simulation(self) -> None:
         """Run simulation using streamable HTTP transport."""
         self.logger.info(f"Connecting to HTTP endpoint: {self.url}")
         async with streamablehttp_client(self.url) as (read_stream, write_stream, _):
-            async with ClientSession(
-                read_stream, write_stream, sampling_callback=handle_sampling
-            ) as session:
+            async with ClientSession(read_stream, write_stream) as session:
                 self.session = session
                 await self._run_message_simulation()
 
