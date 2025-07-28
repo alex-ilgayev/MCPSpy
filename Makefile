@@ -64,9 +64,6 @@ build: generate	## Build the binary for current platform
 	@mkdir -p $(BUILD_DIR)
 	@GOOS=$(GOOS) GOARCH=$(GOARCH) CGO_ENABLED=$(CGO_ENABLED) $(GO) build $(BUILD_FLAGS) -o $(BINARY_OUTPUT) ./cmd/mcpspy
 	@echo "Binary built: $(BINARY_OUTPUT)"
-	# Create sha256 checksum
-	sha256sum $(BINARY_OUTPUT) > $(BINARY_OUTPUT).sha256sum
-	@echo "Checksum created: $(BINARY_OUTPUT).sha256sum"
 
 .PHONY: build-platforms
 build-platforms: generate ## Build the binaries for all supported platforms
@@ -80,6 +77,22 @@ build-platforms: generate ## Build the binaries for all supported platforms
 		echo "Built: $(BUILD_DIR)/$(BINARY_NAME)-$$platform"; \
 	done
 	@echo "All binaries built successfully!"
+
+.PHONY: checksums
+checksums: ## Generate sha256 checksums for all built binaries (relative to build/)
+	@echo "Generating checksums..."
+	@cd $(BUILD_DIR) && \
+	for platform in $(PLATFORMS); do \
+		bin="$(BINARY_NAME)-$$platform"; \
+		if [ -f "$$bin" ]; then \
+			echo "Creating checksum for $$bin"; \
+			sha256sum "$$bin" > "$$bin.sha256sum"; \
+			echo "Created: $$bin.sha256sum"; \
+		fi; \
+	done
+
+.PHONY: release-assets
+release-assets: build-platforms checksums ## Build binaries and generate checksums
 
 # Build Docker image for current platform (optional, CI handles multi-platform)
 .PHONY: image

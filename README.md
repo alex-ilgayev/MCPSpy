@@ -47,15 +47,23 @@ The Model Context Protocol is becoming the standard for AI tool integration, but
 - Linux kernel version 5.10 or later
 - Root privileges (required for eBPF)
 
-### Download Pre-built Binary
+### Download Pre-built Binary (Auto-detect OS + Arch)
 
 Download the latest release from the [releases page](https://github.com/alex-ilgayev/mcpspy/releases):
 
 ```bash
-wget https://github.com/alex-ilgayev/mcpspy/releases/latest/download/mcpspy
-chmod +x mcpspy
-sudo mv mcpspy /usr/local/bin/
+# Set platform-aware binary name
+BIN="mcpspy-$(uname -s | tr '[:upper:]' '[:lower:]')-$(uname -m | sed -e 's/x86_64/amd64/' -e 's/aarch64/arm64/')"
+
+# Download the correct binary
+wget "https://github.com/alex-ilgayev/mcpspy/releases/latest/download/${BIN}"
+
+# Make it executable and move to a directory in your PATH
+chmod +x "${BIN}"
+sudo mv "${BIN}" /usr/local/bin/mcpspy
 ```
+
+> ✅ Note: Currently supported platforms: linux-amd64, linux-arm64
 
 ### Build from Source
 

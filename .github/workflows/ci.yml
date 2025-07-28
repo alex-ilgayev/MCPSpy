@@ -2,14 +2,14 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [ci-cd]
     tags: ["v*"]
   pull_request:
-    branches: [main]
+    branches: [ci-cd]
 
 env:
   DOCKER_REGISTRY: ghcr.io
-  DOCKER_IMAGE: alex-ilgayev/mcpspy
+  DOCKER_IMAGE: loncarales/mcpspy
 
 permissions:
   contents: read
@@ -58,6 +58,7 @@ jobs:
   build_binaries:
     needs: [test]
     runs-on: ubuntu-latest
+    if: github.event_name == 'push' || startsWith(github.ref, 'refs/tags/')
 
     steps:
       - name: Checkout code
@@ -79,16 +80,8 @@ jobs:
       - name: Download dependencies
         run: go mod download
 
-      - name: Build binaries for supported platforms
-        run: make build-platforms
-
-      # For now we'll build only for Linux AMD64 and ARM64.
-      # Ideally this should be run via another job with a matrix strategy
-      - name: Create checksum
-        run: |
-          cd build
-          sha256sum mcpspy-linux-amd64 > mcpspy-linux-amd64.sha256sum
-          sha256sum mcpspy-linux-arm64 > mcpspy-linux-arm64.sha256sum
+      - name: Build assets (binaries and checksum) for supported platforms
+        run: make release-assets
 
       - name: Upload all binaries and checksums
         uses: actions/upload-artifact@v4
@@ -99,13 +92,11 @@ jobs:
   # Job to build and push multi-platform Docker images
   docker_build_and_push:
     needs: [test, build_binaries] # Ensure tests pass and binaries are build before building and pushing Docker image
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' || startsWith(github.ref, 'refs/tags/')
     strategy:
       matrix:
         arch: [amd64, arm64] # Loop through architectures to build individual images
-
-    runs-on: ubuntu-latest # Use a common runner for Docker builds
-
-    if: github.event_name == 'push' || startsWith(github.ref, 'refs/tags/')
     permissions:
       contents: read
       packages: write
