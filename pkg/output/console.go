@@ -32,6 +32,7 @@ var (
 	commColor      = color.New(color.FgYellow)
 	methodColor    = color.New(color.FgGreen)
 	errorColor     = color.New(color.FgRed)
+	errorCodeColor = color.New(color.FgHiRed)
 	headerColor    = color.New(color.FgWhite, color.Bold)
 )
 
@@ -110,8 +111,8 @@ func (d *ConsoleDisplay) printMessage(msg *mcp.Message) {
 			}
 		}
 	case mcp.JSONRPCMessageTypeResponse:
-		if msg.Error.Code != 0 {
-			msgInfo = fmt.Sprintf("ERR  %s", errorColor.Sprint(msg.Error.Message))
+		if msg.Error.Message != "" {
+			msgInfo = fmt.Sprintf("ERR %s %s", errorColor.Sprint(msg.Error.Message), errorCodeColor.Sprintf("(Code: %d)", msg.Error.Code))
 		} else {
 			msgInfo = "RESP OK"
 		}
