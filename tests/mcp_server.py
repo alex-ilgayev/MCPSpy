@@ -17,6 +17,9 @@ Run the server:
     python mcp_server.py --transport streamable-http (default endpoint is http://localhost:8000/mcp)
     python mcp_server.py --transport sse (default endpoint is http://localhost:8000/sse)
 
+Run the server with a self-signed certificate (transport is streamable-http):
+    uvicorn mcp_server:app --host 0.0.0.0 --port 12345 --ssl-keyfile=server.key --ssl-certfile=server.crt
+
 Or use with MCP development tools:
     mcp dev mcp_server.py
 """
@@ -36,6 +39,7 @@ mcp = FastMCP(
     version="1.0.0",
     description="A comprehensive MCP server demonstrating various capabilities for testing MCPSpy",
 )
+app = mcp.streamable_http_app()
 
 
 # =============================================================================

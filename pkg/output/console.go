@@ -112,7 +112,7 @@ func (d *ConsoleDisplay) printMessage(msg *mcp.Message) {
 		}
 	case mcp.JSONRPCMessageTypeResponse:
 		if msg.Error.Message != "" {
-			msgInfo = fmt.Sprintf("ERR %s %s", errorColor.Sprint(msg.Error.Message), errorCodeColor.Sprintf("(Code: %d)", msg.Error.Code))
+			msgInfo = fmt.Sprintf("ERR  %s %s", errorColor.Sprint(msg.Error.Message), errorCodeColor.Sprintf("(Code: %d)", msg.Error.Code))
 		} else {
 			msgInfo = "RESP OK"
 		}

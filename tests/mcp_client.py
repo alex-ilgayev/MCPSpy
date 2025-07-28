@@ -23,6 +23,7 @@ import asyncio
 import logging
 from typing import List, Optional
 
+import httpx
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 from mcp.client.streamable_http import streamablehttp_client
@@ -32,6 +33,34 @@ from mcp.types import (
     CreateMessageResult,
     TextContent,
 )
+
+
+def create_insecure_http_client(
+    headers: dict[str, str] | None = None,
+    timeout: httpx.Timeout | None = None,
+    auth: httpx.Auth | None = None,
+) -> httpx.AsyncClient:
+    """Create an httpx AsyncClient that doesn't verify SSL certificates.
+
+    This is useful for testing with self-signed certificates.
+    """
+    kwargs = {
+        "follow_redirects": True,
+        "verify": False,  # Disable SSL certificate verification
+    }
+
+    if timeout is None:
+        kwargs["timeout"] = httpx.Timeout(30.0)
+    else:
+        kwargs["timeout"] = timeout
+
+    if headers is not None:
+        kwargs["headers"] = headers
+
+    if auth is not None:
+        kwargs["auth"] = auth
+
+    return httpx.AsyncClient(**kwargs)
 
 
 class MCPMessageSimulator:
@@ -227,7 +256,14 @@ class MCPMessageSimulator:
     async def _run_streamable_http_simulation(self) -> None:
         """Run simulation using streamable HTTP transport."""
         self.logger.info(f"Connecting to HTTP endpoint: {self.url}")
-        async with streamablehttp_client(self.url) as (read_stream, write_stream, _):
+
+        async with streamablehttp_client(
+            self.url, httpx_client_factory=create_insecure_http_client
+        ) as (
+            read_stream,
+            write_stream,
+            _,
+        ):
             async with ClientSession(read_stream, write_stream) as session:
                 self.session = session
                 await self._run_message_simulation()
