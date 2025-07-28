@@ -40,6 +40,8 @@ class MCPSpyE2ETest:
         self.server_url = None
         if transport == "streamable-http":
             self.server_url = "http://localhost:8000/mcp"
+        elif transport == "https":
+            self.server_url = "https://localhost:8443/mcp"
         elif transport == "sse":
             self.server_url = "http://localhost:8000/sse"
 
@@ -64,7 +66,7 @@ class MCPSpyE2ETest:
             time.sleep(2)
 
             # Start MCP server if needed (for HTTP transports)
-            if self.transport in ["streamable-http", "sse"]:
+            if self.transport in ["streamable-http", "https", "sse"]:
                 self._start_mcp_server()
                 # Wait for server to start
                 time.sleep(2)
@@ -115,17 +117,58 @@ class MCPSpyE2ETest:
         if not server_script.exists():
             raise FileNotFoundError(f"MCP server script not found: {server_script}")
 
-        cmd = [
-            self.python_executable,
-            str(server_script),
-            "--transport",
-            self.transport,
-        ]
+        # Use different commands based on transport type
+        if self.transport == "sse":
+            # Use fastmcp for SSE transport
+            cmd = [
+                "fastmcp",
+                "run",
+                str(server_script),
+                "--transport",
+                "sse",
+            ]
+        elif self.transport == "streamable-http":
+            # Use uvicorn for streamable HTTP transport
+            cmd = [
+                "uvicorn",
+                "mcp_server:app",
+                "--host",
+                "0.0.0.0",
+                "--port",
+                "8000",
+            ]
+        elif self.transport == "https":
+            # Use uvicorn for HTTPS transport with SSL certificates
+            cmd = [
+                "uvicorn",
+                "mcp_server:app",
+                "--host",
+                "0.0.0.0",
+                "--port",
+                "8000",
+                "--ssl-keyfile",
+                Path(__file__).parent / "server.key",
+                "--ssl-certfile",
+                Path(__file__).parent / "server.crt",
+            ]
+        else:
+            raise ValueError(f"Unsupported HTTP transport: {self.transport}")
 
         print(f"Starting MCP server: {' '.join(cmd)}")
 
+        # Set working directory to tests folder for uvicorn to find mcp_server module
+        cwd = (
+            Path(__file__).parent
+            if self.transport in ["streamable-http", "https"]
+            else None
+        )
+
         self.server_process = subprocess.Popen(
-            cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, preexec_fn=os.setsid
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            preexec_fn=os.setsid,
+            cwd=cwd,
         )
 
     def _stop_mcp_server(self) -> None:
@@ -162,7 +205,7 @@ class MCPSpyE2ETest:
                 "--transport",
                 "stdio",
                 "--server",
-                f"{self.python_executable} {server_script} --transport stdio",
+                f"{self.python_executable} {server_script}",
             ]
         else:
             # HTTP-based transports
@@ -294,7 +337,7 @@ def main():
     )
     parser.add_argument(
         "--transport",
-        choices=["stdio", "streamable-http", "sse"],
+        choices=["stdio", "streamable-http", "https", "sse"],
         default="stdio",
         help="Transport layer to test (default: stdio)",
     )

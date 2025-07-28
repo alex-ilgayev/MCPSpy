@@ -9,70 +9,42 @@ This server demonstrates various MCP capabilities including:
 - Prompts
 - Progress reporting and notifications
 - Error handling and logging
-- Configurable transport layers (stdio, HTTP, SSE)
 
-Run the server:
-    python mcp_server.py (default transport is stdio)
-    python mcp_server.py --transport stdio
-    python mcp_server.py --transport streamable-http (default endpoint is http://localhost:8000/mcp)
-    python mcp_server.py --transport sse (default endpoint is http://localhost:8000/sse)
+Run the server using FastMCP CLI:
+    fastmcp run mcp_server.py                               # Default stdio transport
+    fastmcp run mcp_server.py --transport http              # HTTP transport on default port 8000
+    fastmcp run mcp_server.py --transport http --port 8080  # HTTP on custom port
+    fastmcp run mcp_server.py --transport sse               # SSE transport
+    fastmcp dev mcp_server.py                               # Development mode with MCP Inspector
 
-Or use with MCP development tools:
-    mcp dev mcp_server.py
+    # With specific Python version
+    fastmcp run mcp_server.py --python 3.11
+
+    # With additional dependencies
+    fastmcp run mcp_server.py --with pandas --with numpy
+
+Run with uvicorn directly for streamable HTTP transport:
+    uvicorn mcp_server:app --host 0.0.0.0 --port 8000
+    uvicorn mcp_server:app --host 0.0.0.0 --port 8443 --ssl-keyfile tests/server.key --ssl-certfile tests/server.crt
+
+Note: When using FastMCP CLI and uvicorn, it ignores the __main__ block and directly runs the server with the specified transport options.
 """
 
-import argparse
 import asyncio
 import json
 import sys
 from typing import List
 
-from mcp.server.fastmcp import Context, FastMCP
-
+from fastmcp import FastMCP, Context
 
 # Initialize the MCP server
+# Note: FastMCP 2.x doesn't support 'description' parameter in constructor
+# The description can be set via server capabilities or documentation
 mcp = FastMCP(
     name="Comprehensive MCP Demo Server",
     version="1.0.0",
-    description="A comprehensive MCP server demonstrating various capabilities for testing MCPSpy",
 )
-
-
-# =============================================================================
-# TRANSPORT CONFIGURATION
-# =============================================================================
-
-
-class TransportConfig:
-    """Configuration for different transport layers."""
-
-    def __init__(self):
-        self.transport_type = "stdio"
-
-    @classmethod
-    def from_args(cls, args):
-        """Create TransportConfig from command line arguments."""
-        config = cls()
-        config.transport_type = args.transport
-        return config
-
-
-def parse_arguments():
-    """Parse command line arguments for transport configuration."""
-    parser = argparse.ArgumentParser(
-        description="Comprehensive MCP Server with configurable transport layers",
-        formatter_class=argparse.RawTextHelpFormatter,
-    )
-
-    parser.add_argument(
-        "--transport",
-        "-t",
-        choices=["stdio", "streamable-http", "sse"],
-        default="stdio",
-        help="Transport layer to use (default: stdio)",
-    )
-
-    return parser.parse_args()
+app = mcp.http_app()
 
 
 # =============================================================================
@@ -221,43 +193,31 @@ def code_review(code: str, language: str = "python") -> str:
 Please provide specific, actionable feedback."""
 
 
-# =============================================================================
-# SERVER STARTUP WITH TRANSPORT CONFIGURATION
-# =============================================================================
+if __name__ == "__main__":
+    """
+    Direct execution support for stdio transport only.
+    For HTTP-based transports, use fastmcp or uvicorn as documented above.
+    """
+    import argparse
 
+    parser = argparse.ArgumentParser(description="MCP Server")
+    parser.add_argument(
+        "--transport",
+        choices=["stdio"],
+        default="stdio",
+        help="Transport protocol (only stdio supported for direct execution)",
+    )
 
-def start_server_with_transport(config: TransportConfig):
-    """Start the MCP server with the specified transport configuration."""
+    args = parser.parse_args()
 
-    print("=" * 60)
-    print("🚀 Starting Comprehensive MCP Demo Server")
-    print("=" * 60)
-    print(f"Transport:     {config.transport_type.upper()}")
-    print("=" * 60)
-    print()
-    print("Server is running and ready for connections...")
-    print("Press Ctrl+C to stop the server")
-    print("=" * 60)
-
-    try:
-        mcp.run(transport=config.transport_type)
-    except KeyboardInterrupt:
-        print("\n" + "=" * 60)
-        print("🛑 Server stopped by user")
-        print("=" * 60)
-        sys.exit(0)
-    except Exception as e:
-        print(f"\n❌ Failed to start server: {e}")
+    if args.transport != "stdio":
+        print(
+            f"Error: Transport '{args.transport}' not supported for direct execution."
+        )
+        print("Use fastmcp or uvicorn for HTTP-based transports:")
+        print("  fastmcp run mcp_server.py --transport sse")
+        print("  uvicorn mcp_server:app --host 0.0.0.0 --port 8000")
         sys.exit(1)
 
-
-def main():
-    """Main function to run the MCP server with configurable transport."""
-    args = parse_arguments()
-    config = TransportConfig.from_args(args)
-
-    start_server_with_transport(config)
-
-
-if __name__ == "__main__":
-    main()
+    # Run with stdio transport
+    mcp.run()

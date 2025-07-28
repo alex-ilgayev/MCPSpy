@@ -1,4 +1,4 @@
 fastmcp
 requests
 deepdiff
-mcp
+uvicorn
