@@ -49,7 +49,7 @@ BINARY_OUTPUT := $(BUILD_DIR)/$(BINARY_NAME)-$(PLATFORM)
 
 # Default target
 .PHONY: all
-all: generate build ## Building everything (default target)
+all: generate build userland ## Building everything (default target)
 
 # Generate eBPF Go bindings
 .PHONY: generate
@@ -57,12 +57,19 @@ generate: ## Generate eBPF Go bindings
 	@echo "Generating eBPF Go bindings..."
 	cd pkg/ebpf && go generate
 
+# Build userland C library
+.PHONY: userland
+userland: ## Build userland C library
+	@echo "Building userland C library..."
+	@$(MAKE) -C userland all
+	@echo "Userland library built"
+
 # Build the binary
 .PHONY: build
-build: generate	## Build the binary for current platform
+build: generate userland ## Build the binary for current platform
 	@echo "Building $(BINARY_NAME) for $(PLATFORM)..."
 	@mkdir -p $(BUILD_DIR)
-	@GOOS=$(GOOS) GOARCH=$(GOARCH) CGO_ENABLED=$(CGO_ENABLED) $(GO) build $(BUILD_FLAGS) -o $(BINARY_OUTPUT) ./cmd/mcpspy
+	@GOOS=$(GOOS) GOARCH=$(GOARCH) CGO_ENABLED=1 $(GO) build $(BUILD_FLAGS) -o $(BINARY_OUTPUT) ./cmd/mcpspy
 	@echo "Binary built: $(BINARY_OUTPUT)"
 
 .PHONY: build-platforms
@@ -73,7 +80,7 @@ build-platforms: generate ## Build the binaries for all supported platforms
 		os=$$(echo $$platform | cut -d'-' -f1); \
 		arch=$$(echo $$platform | cut -d'-' -f2); \
 		echo "Building for $$platform ($$os/$$arch)..."; \
-		GOOS=$$os GOARCH=$$arch CGO_ENABLED=$(CGO_ENABLED) $(GO) build $(BUILD_FLAGS) -o $(BUILD_DIR)/$(BINARY_NAME)-$$platform ./cmd/mcpspy; \
+		GOOS=$$os GOARCH=$$arch CGO_ENABLED=1 $(GO) build $(BUILD_FLAGS) -o $(BUILD_DIR)/$(BINARY_NAME)-$$platform ./cmd/mcpspy; \
 		echo "Built: $(BUILD_DIR)/$(BINARY_NAME)-$$platform"; \
 	done
 	@echo "All binaries built successfully!"
@@ -126,6 +133,7 @@ clean: ## Clean build artifacts
 	rm -rf $(BUILD_DIR)
 	rm -f pkg/ebpf/mcpspy_bpfe*.go
 	rm -f pkg/ebpf/mcpspy_bpfe*.o
+	@$(MAKE) -C userland clean
 
 # Install dependencies
 .PHONY: deps
@@ -173,13 +181,26 @@ test-e2e-mcp: test-e2e-setup ## Run MCP client (without MCPSpy) with simulated t
 	@echo "Running MCP client..."
 	tests/venv/bin/python tests/mcp_client.py --server "tests/venv/bin/python tests/mcp_server.py"
 
-# Run end-to-end tests
+# Test userland C library
+.PHONY: test-userland
+test-userland: userland ## Test userland C library
+	@echo "Testing userland C library..."
+	@$(MAKE) -C userland test
+
+# Run end-to-end tests (eBPF mode)
 .PHONY: test-e2e
-test-e2e: build test-e2e-setup ## Run end-to-end tests
-	@echo "Running end-to-end tests..."
+test-e2e: build test-e2e-setup ## Run end-to-end tests (eBPF mode)
+	@echo "Running end-to-end tests (eBPF mode)..."
 	@echo "Note: MCPSpy requires root privileges for eBPF operations"
 	# Ensure this points to the locally built binary
 	sudo -E tests/venv/bin/python tests/e2e_test.py --mcpspy $(BUILD_DIR)/$(BINARY_NAME)-$(PLATFORM)
+
+# Run end-to-end tests (userland mode)
+.PHONY: test-e2e-userland
+test-e2e-userland: build test-e2e-setup ## Run end-to-end tests (userland mode)
+	@echo "Running end-to-end tests (userland mode)..."
+	@echo "Note: Userland mode does not require root privileges"
+	tests/venv/bin/python tests/e2e_test.py --mcpspy $(BUILD_DIR)/$(BINARY_NAME)-$(PLATFORM) --userland
 
 # Help
 PHONY: help

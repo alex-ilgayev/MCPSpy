@@ -5,6 +5,7 @@ go 1.24
 require (
 	github.com/cilium/ebpf v0.12.3
 	github.com/fatih/color v1.16.0
+	github.com/google/gopacket v1.1.19
 	github.com/hashicorp/golang-lru/v2 v2.0.7
 	github.com/olekukonko/tablewriter v0.0.5
 	github.com/sirupsen/logrus v1.9.3

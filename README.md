@@ -18,7 +18,10 @@
 
 ## Overview
 
-MCPSpy is a powerful command-line tool that leverages [eBPF (Extended Berkeley Packet Filter)](https://ebpf.io/) technology to monitor [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) communication at the kernel level. It provides real-time visibility into JSON-RPC 2.0 messages exchanged between MCP clients and servers by hooking into low-level system calls.
+MCPSpy is a powerful command-line tool that monitors [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) communication using two different approaches:
+
+1. **eBPF Mode** (default): Leverages [eBPF (Extended Berkeley Packet Filter)](https://ebpf.io/) technology to monitor MCP communication at the kernel level by hooking into low-level system calls.
+2. **Userland Mode**: Uses userland monitoring techniques to capture MCP communications across multiple transport protocols without requiring root privileges or kernel-level access.
 
 The Model Context Protocol supports three transport protocols for communication:
 
@@ -26,7 +29,14 @@ The Model Context Protocol supports three transport protocols for communication:
 - **Streamable HTTP**: Direct HTTP request/response communication with server-sent events
 - **SSE (Server-Sent Events)**: HTTP-based streaming communication (_Deprecated_)
 
-**MCPSpy currently supports only Stdio transport monitoring**, with plans to extend support to SSE and HTTP transports in future releases.
+### Transport Support by Mode
+
+| Transport | eBPF Mode | Userland Mode |
+|-----------|-----------|---------------|
+| Stdio     | ✅ Full   | ✅ Full       |
+| HTTP      | ❌ Planned| ✅ Full       |
+| SSL/TLS   | ❌ Planned| ✅ Full       |
+| Network Packets | ❌ Planned | ✅ Full   |
 
 ![demo](./assets/demo.gif)
 
@@ -44,8 +54,14 @@ The Model Context Protocol is becoming the standard for AI tool integration, but
 
 ### Prerequisites
 
+#### eBPF Mode (default)
 - Linux kernel version 5.10 or later
 - Root privileges (required for eBPF)
+
+#### Userland Mode
+- Linux or macOS
+- No root privileges required
+- libpcap for packet capture (optional)
 
 ### Download Pre-built Binary (Auto-detect OS + Arch)
 
@@ -134,8 +150,9 @@ docker run --rm -it --privileged ghcr.io/alex-ilgayev/mcpspy:latest
 
 ### Basic Usage
 
+#### eBPF Mode (default)
 ```bash
-# Start monitoring MCP communication
+# Start monitoring MCP communication (requires root)
 sudo mcpspy
 
 # Start monitoring with raw message buffers
@@ -143,8 +160,34 @@ sudo mcpspy -b
 
 # Start monitoring and save output to JSONL file
 sudo mcpspy -o output.jsonl
+```
 
-# Stop monitoring with Ctrl+C
+#### Userland Mode
+```bash
+# Start userland monitoring (no root required)
+mcpspy --userland
+
+# Monitor specific transports
+mcpspy --userland --stdio --http --ssl
+
+# Monitor with custom ports
+mcpspy --userland --http-port 9000 --ssl-port 9443
+
+# Monitor network packets (requires libpcap)
+mcpspy --userland --packets --interface eth0
+
+# Monitor HTTP proxy on port 8080
+mcpspy --userland --http --http-port 8080 --no-stdio --no-ssl
+```
+
+#### Common Options
+```bash
+# Stop monitoring with Ctrl+C in both modes
+# Enable verbose logging
+mcpspy -v --userland
+
+# Save output to JSONL file
+mcpspy --userland -o output.jsonl
 ```
 
 ### Output Format
@@ -181,33 +224,43 @@ sudo mcpspy -o output.jsonl
 
 ## Architecture
 
-MCPSpy consists of several components:
+MCPSpy consists of several components organized into two monitoring modes:
 
-### 1. eBPF Program (`bpf/`)
+### eBPF Mode Components
 
+#### 1. eBPF Program (`bpf/`)
 - Hooks into `vfs_read` and `vfs_write` kernel functions
 - Filters potential MCP traffic by detecting JSON patterns
 - Sends events to userspace via ring buffer
 - Minimal performance impact with early filtering
 
-### 2. eBPF Loader (`pkg/ebpf/`)
-
+#### 2. eBPF Loader (`pkg/ebpf/`)
 - Manages the lifecycle of eBPF programs and resources
 - Loads pre-compiled eBPF objects into the kernel using cilium/ebpf library
 - Converts raw binary events from kernel space into structured Go data types
 
-### 3. MCP Protocol Parser (`pkg/mcp/`)
+### Userland Mode Components
 
+#### 3. Userland Monitor (`pkg/userland/`)
+- **Process Scanner**: Monitors running processes for MCP-like communications
+- **HTTP Proxy**: Intercepts HTTP traffic on configurable ports
+- **SSL/TLS Inspector**: Monitors encrypted communications (with certificate setup)
+- **Packet Analyzer**: Captures and analyzes network packets using libpcap
+- **Pipe Monitor**: Tracks stdio communications through process file descriptors
+
+### Shared Components
+
+#### 4. MCP Protocol Parser (`pkg/mcp/`)
 - Validates JSON-RPC 2.0 message format
 - Parses MCP-specific methods and parameters
-- Correlates read operations and write operations into a single MCP message (relevant for stdio transport)
-- Currently supports stdio transport (streamable HTTP/SSE planned)
+- Correlates read operations and write operations into a single MCP message
+- Works with data from both eBPF and userland monitoring
 
-### 4. Output Handlers (`pkg/output/`)
-
+#### 5. Output Handlers (`pkg/output/`)
 - Console display with colored, formatted output
-- JSONL output for programmatic analysis
+- JSONL output for programmatic analysis  
 - Real-time statistics tracking
+- Unified output format regardless of monitoring mode
 
 ## Development
 
@@ -241,9 +294,17 @@ The test suite includes:
 
 ## Limitations
 
+### eBPF Mode Limitations
 - **FS Events Buffer Size**: Limited to 16KB per message. This means MCP messages larger than 16KB will be missed / ignored.
 - **Platform**: Linux only (kernel 5.10+).
 - **Transport**: Currently supports stdio transport only. Support for streamable HTTP and SSE transports is planned.
+- **Privileges**: Requires root privileges.
+
+### Userland Mode Limitations
+- **Process Attachment**: Advanced process attachment (ptrace) not yet implemented.
+- **SSL/TLS Inspection**: Requires proper certificate setup for MITM inspection.
+- **Network Packet Capture**: Requires libpcap and appropriate permissions for packet capture.
+- **Performance**: Higher overhead compared to eBPF mode for high-volume traffic.
 
 ## Contributing
 

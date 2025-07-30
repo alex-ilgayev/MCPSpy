@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	"github.com/sirupsen/logrus"
@@ -13,6 +14,7 @@ import (
 	"github.com/alex-ilgayev/mcpspy/pkg/ebpf"
 	"github.com/alex-ilgayev/mcpspy/pkg/mcp"
 	"github.com/alex-ilgayev/mcpspy/pkg/output"
+	"github.com/alex-ilgayev/mcpspy/pkg/userland"
 	"github.com/alex-ilgayev/mcpspy/pkg/version"
 
 	mcpspydebug "github.com/alex-ilgayev/mcpspy/pkg/debug"
@@ -20,18 +22,26 @@ import (
 
 // Command line flags
 var (
-	showBuffers bool
-	verbose     bool
-	outputFile  string
-	logLevel    string
+	showBuffers   bool
+	verbose       bool
+	outputFile    string
+	logLevel      string
+	userlandMode  bool
+	monitorStdio  bool
+	monitorHTTP   bool
+	monitorSSL    bool
+	monitorPackets bool
+	httpPort      string
+	sslPort       string
+	networkInterface string
 )
 
 func main() {
 	rootCmd := &cobra.Command{
 		Use:   "mcpspy",
 		Short: "Monitor Model Context Protocol communication",
-		Long: `MCPSpy is a CLI utility that uses eBPF to monitor MCP (Model Context Protocol) 
-communication by tracking stdio operations and analyzing JSON-RPC 2.0 messages.`,
+		Long: `MCPSpy is a CLI utility that uses eBPF or userland monitoring to track MCP (Model Context Protocol) 
+communication by analyzing JSON-RPC 2.0 messages across multiple transports.`,
 		Version:      fmt.Sprintf("%s (commit: %s, built: %s)", version.Version, version.Commit, version.Date),
 		RunE:         run,
 		SilenceUsage: true,
@@ -42,6 +52,16 @@ communication by tracking stdio operations and analyzing JSON-RPC 2.0 messages.`
 	rootCmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "Enable verbose logging (debug level)")
 	rootCmd.Flags().StringVarP(&outputFile, "output", "o", "", "Output file (JSONL format will be written to file)")
 	rootCmd.Flags().StringVarP(&logLevel, "log-level", "l", "info", "Set log level (trace, debug, info, warn, error, fatal, panic)")
+	
+	// Userland mode flags
+	rootCmd.Flags().BoolVar(&userlandMode, "userland", false, "Use userland monitoring instead of eBPF (supports more transports)")
+	rootCmd.Flags().BoolVar(&monitorStdio, "stdio", true, "Monitor stdio transport (default: true)")
+	rootCmd.Flags().BoolVar(&monitorHTTP, "http", true, "Monitor HTTP transport (userland mode only)")
+	rootCmd.Flags().BoolVar(&monitorSSL, "ssl", true, "Monitor SSL/TLS transport (userland mode only)")
+	rootCmd.Flags().BoolVar(&monitorPackets, "packets", false, "Monitor network packets (userland mode only)")
+	rootCmd.Flags().StringVar(&httpPort, "http-port", "8080", "HTTP proxy port for monitoring")
+	rootCmd.Flags().StringVar(&sslPort, "ssl-port", "8443", "SSL proxy port for monitoring")
+	rootCmd.Flags().StringVar(&networkInterface, "interface", "any", "Network interface for packet capture")
 
 	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)
@@ -61,11 +81,6 @@ func run(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("invalid log level '%s': %w", logLevel, err)
 	}
 	logrus.SetLevel(level)
-
-	// Setup trace pipe to debug eBPF programs if debug or trace level
-	if level >= logrus.DebugLevel {
-		go mcpspydebug.PrintTracePipe(logrus.StandardLogger())
-	}
 
 	// Set up console display (always show console output)
 	consoleDisplay := output.NewConsoleDisplay(os.Stdout, showBuffers)
@@ -87,6 +102,33 @@ func run(cmd *cobra.Command, args []string) error {
 		}()
 	}
 
+	// Set up signal handling
+	ctx, cancel := context.WithCancel(context.Background())
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+
+	go func() {
+		<-sigChan
+		cancel()
+	}()
+
+	// Create MCP parser and statistics
+	parser := mcp.NewParser()
+	stats := make(map[string]int)
+
+	if userlandMode {
+		return runUserlandMode(ctx, consoleDisplay, fileDisplay, parser, stats, level)
+	} else {
+		return runEBPFMode(ctx, consoleDisplay, fileDisplay, parser, stats, level)
+	}
+}
+
+func runEBPFMode(ctx context.Context, consoleDisplay *output.ConsoleDisplay, fileDisplay output.OutputHandler, parser *mcp.Parser, stats map[string]int, level logrus.Level) error {
+	// Setup trace pipe to debug eBPF programs if debug or trace level
+	if level >= logrus.DebugLevel {
+		go mcpspydebug.PrintTracePipe(logrus.StandardLogger())
+	}
+
 	// Create and load eBPF program
 	loader, err := ebpf.New(level >= logrus.DebugLevel)
 	if err != nil {
@@ -99,27 +141,13 @@ func run(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to load eBPF programs: %w", err)
 	}
 
-	// Set up signal handling
-	ctx, cancel := context.WithCancel(context.Background())
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
-
-	go func() {
-		<-sigChan
-		cancel()
-	}()
-
 	// Start event processing
 	if err := loader.Start(ctx); err != nil {
 		return fmt.Errorf("failed to start event processing: %w", err)
 	}
 
-	consoleDisplay.PrintInfo("Monitoring MCP communication... Press Ctrl+C to stop")
+	consoleDisplay.PrintInfo("Monitoring MCP communication with eBPF... Press Ctrl+C to stop")
 	consoleDisplay.PrintInfo("")
-
-	// Create MCP parser and statistics
-	parser := mcp.NewParser()
-	stats := make(map[string]int)
 
 	// Main event loop
 	for {
@@ -173,6 +201,94 @@ func run(cmd *cobra.Command, args []string) error {
 				}).Trace("Library loaded")
 			default:
 				logrus.WithField("type", event.Type()).Warn("Unknown event type")
+			}
+		}
+	}
+}
+
+func runUserlandMode(ctx context.Context, consoleDisplay *output.ConsoleDisplay, fileDisplay output.OutputHandler, parser *mcp.Parser, stats map[string]int, level logrus.Level) error {
+	// Create userland monitor config
+	config := &userland.Config{
+		MonitorStdio:   monitorStdio,
+		MonitorHTTP:    monitorHTTP,
+		MonitorSSL:     monitorSSL,
+		MonitorPackets: monitorPackets,
+		HTTPPort:       httpPort,
+		SSLPort:        sslPort,
+		Interface:      networkInterface,
+		LogLevel:       level,
+	}
+
+	// Create and start userland monitor
+	monitor := userland.New(config)
+	defer monitor.Close()
+
+	if err := monitor.Start(); err != nil {
+		return fmt.Errorf("failed to start userland monitor: %w", err)
+	}
+
+	var transports []string
+	if monitorStdio {
+		transports = append(transports, "stdio")
+	}
+	if monitorHTTP {
+		transports = append(transports, fmt.Sprintf("HTTP:%s", httpPort))
+	}
+	if monitorSSL {
+		transports = append(transports, fmt.Sprintf("SSL:%s", sslPort))
+	}
+	if monitorPackets {
+		transports = append(transports, fmt.Sprintf("packets:%s", networkInterface))
+	}
+
+	consoleDisplay.PrintInfo(fmt.Sprintf("Monitoring MCP communication with userland mode (%s)... Press Ctrl+C to stop", strings.Join(transports, ", ")))
+	consoleDisplay.PrintInfo("")
+
+	// Main event loop
+	for {
+		select {
+		case <-ctx.Done():
+			consoleDisplay.PrintStats(stats)
+			return nil
+
+		case event, ok := <-monitor.Events():
+			if !ok {
+				// Channel closed, exit
+				consoleDisplay.PrintStats(stats)
+				return nil
+			}
+
+			// Handle different event types
+			switch e := event.(type) {
+			case *ebpf.DataEvent:
+				buf := e.Buf[:e.BufSize]
+				if len(buf) == 0 {
+					continue
+				}
+
+				// Parse raw event data into MCP messages
+				messages, err := parser.ParseData(buf, e.EventType, e.PID, e.Comm())
+				if err != nil {
+					logrus.WithError(err).Debug("Failed to parse data")
+					continue
+				}
+
+				// Update statistics
+				for _, msg := range messages {
+					if msg.Method != "" {
+						stats[msg.Method]++
+					}
+				}
+
+				// Display messages to console
+				consoleDisplay.PrintMessages(messages)
+
+				// Also write to file if specified
+				if fileDisplay != nil {
+					fileDisplay.PrintMessages(messages)
+				}
+			default:
+				logrus.WithField("type", fmt.Sprintf("%T", event)).Debug("Unknown event type in userland mode")
 			}
 		}
 	}
