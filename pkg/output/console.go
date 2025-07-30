@@ -34,6 +34,7 @@ var (
 	errorColor     = color.New(color.FgRed)
 	errorCodeColor = color.New(color.FgHiRed)
 	headerColor    = color.New(color.FgWhite, color.Bold)
+	idColor        = color.New(color.FgHiBlack)
 )
 
 // PrintHeader prints the MCPSpy header
@@ -99,7 +100,7 @@ func (d *ConsoleDisplay) printMessage(msg *mcp.Message) {
 	var msgInfo string
 	switch msg.Type {
 	case mcp.JSONRPCMessageTypeRequest:
-		msgInfo = fmt.Sprintf("REQ  %s", methodColor.Sprint(msg.Method))
+		msgInfo = fmt.Sprintf("%s REQ  %s", idColor.Sprint(fmt.Sprintf("[%v]", msg.ID)), methodColor.Sprint(msg.Method))
 		switch msg.Method {
 		case "tools/call":
 			if toolName := msg.ExtractToolName(); toolName != "" {
@@ -112,12 +113,12 @@ func (d *ConsoleDisplay) printMessage(msg *mcp.Message) {
 		}
 	case mcp.JSONRPCMessageTypeResponse:
 		if msg.Error.Message != "" {
-			msgInfo = fmt.Sprintf("ERR  %s %s", errorColor.Sprint(msg.Error.Message), errorCodeColor.Sprintf("(Code: %d)", msg.Error.Code))
+			msgInfo = fmt.Sprintf("%s ERR  %s %s", idColor.Sprint(fmt.Sprintf("[%v]", msg.ID)), errorColor.Sprint(msg.Error.Message), errorCodeColor.Sprintf("(Code: %d)", msg.Error.Code))
 		} else {
-			msgInfo = "RESP OK"
+			msgInfo = fmt.Sprintf("%s RESP OK", idColor.Sprint(fmt.Sprintf("[%v]", msg.ID)))
 		}
 	case mcp.JSONRPCMessageTypeNotification:
-		msgInfo = fmt.Sprintf("NOTF %s", methodColor.Sprint(msg.Method))
+		msgInfo = fmt.Sprintf("%s NOTF %s", idColor.Sprint("[-]"), methodColor.Sprint(msg.Method))
 	default:
 		msgInfo = "UNKN"
 	}
