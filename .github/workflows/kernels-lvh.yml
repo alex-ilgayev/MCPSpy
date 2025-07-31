@@ -1,0 +1,101 @@
+name: Test MCPSpy across various Linux Kernels with LVH
+
+on:
+  workflow_dispatch: # Allows manually triggering the workflow from the GitHub UI
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  # Ensure that only one job runs at a time for this workflow
+  cancel-in-progress: true
+
+jobs:
+  e2e-build:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang llvm make libbpf-dev build-essential
+
+      - name: Install Go tools
+        run: go install github.com/cilium/ebpf/cmd/bpf2go@latest
+
+      - name: Download dependencies
+        run: go mod download
+
+      - name: Build MCPSpy
+        run: make build
+
+      - name: Upload MCPSpy binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: mcpspy-binary
+          path: build/mcpspy-linux-amd64
+
+  e2e-kernel-tests:
+    needs: e2e-build
+    runs-on: ubuntu-24.04
+
+    strategy:
+      fail-fast: false # Continue running all jobs even if one fails
+      matrix:
+        # List of kernel versions to test against
+        # Find available tags here: https://quay.io/repository/lvh-images/kind?tab=tags
+        items:
+          - kernel: "5.10"
+            lvh-image: "5.10-20250729.205433-amd64"
+          - kernel: "5.15"
+            lvh-image: "5.15-20250729.205433-amd64"
+          - kernel: "6.1"
+            lvh-image: "6.1-20250729.205433-amd64"
+          - kernel: "6.6"
+            lvh-image: "6.6-20250729.205433-amd64"
+          - kernel: "6.12"
+            lvh-image: "6.12-20250729.205433-amd64"
+
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download MCPSpy binary
+        uses: actions/download-artifact@v4
+        with:
+          name: mcpspy-binary
+          path: build
+
+      - name: Provision LVH VMs
+        uses: cilium/little-vm-helper@v0.0.26
+        with:
+          test-name: mcpspy-test-${{ matrix.items.kernel }}
+          image: "kind" # Available options: kind, complexity-test, base (needs authentication)
+          image-version: ${{ matrix.items.lvh-image }} # Pull the specific kernel version for testing
+          host-mount: . # Mount the current workspace into the VM
+          install-dependencies: "true"
+          cmd: |
+            echo ""
+            # Print the kernel version of the test VM
+            echo "Kernel Version: "
+            uname -a
+
+            echo ""
+            echo "Whoami: "
+            whoami
+            # We are root in the VM, so we could run commands without sudo
+
+            # goto where host is mounted
+            cd /host
+
+            echo ""
+            echo "Running MCPSpy smoke test on LVH VM with kernel ${{ matrix.items.kernel }}"
+            make test-smoke

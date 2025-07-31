@@ -2,8 +2,8 @@
 # We will receive the pre-built binary as part of the build context.
 
 # IMPORTANT: The base image needs to match the target architecture that Buildx is building for.
-# Buildx handles this automatically with `FROM alpine:latest`.
-FROM alpine:latest
+# Buildx handles this automatically with `FROM alpine:X.X`.
+FROM alpine:3.22
 
 # Copy the pre-built binary that will be passed into the build context.
 # We'll expect the binary to be at the root of the build context (which we'll achieve with the CI action).

@@ -181,6 +181,14 @@ test-e2e: build test-e2e-setup ## Run end-to-end tests
 	# Ensure this points to the locally built binary
 	sudo -E tests/venv/bin/python tests/e2e_test.py --mcpspy $(BUILD_DIR)/$(BINARY_NAME)-$(PLATFORM)
 
+.PHONY: test-smoke
+test-smoke: ## Run smoke test (basic startup/shutdown test)
+	@echo "Running smoke test..."
+	@echo "Note: MCPSpy requires root privileges for eBPF operations"
+	@chmod +x tests/smoke_test.sh
+	@chmod +x $(BUILD_DIR)/$(BINARY_NAME)-$(PLATFORM)
+	sudo -E tests/smoke_test.sh $(BUILD_DIR)/$(BINARY_NAME)-$(PLATFORM)
+
 # Help
 PHONY: help
 help: ## Display this help message

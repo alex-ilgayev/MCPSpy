@@ -44,7 +44,7 @@ The Model Context Protocol is becoming the standard for AI tool integration, but
 
 ### Prerequisites
 
-- Linux kernel version 5.10 or later
+- Linux kernel version 5.15 or later
 - Root privileges (required for eBPF)
 
 ### Download Pre-built Binary (Auto-detect OS + Arch)
@@ -242,7 +242,7 @@ The test suite includes:
 ## Limitations
 
 - **FS Events Buffer Size**: Limited to 16KB per message. This means MCP messages larger than 16KB will be missed / ignored.
-- **Platform**: Linux only (kernel 5.10+).
+- **Platform**: Linux only (kernel 5.15+).
 - **Transport**: Currently supports stdio transport only. Support for streamable HTTP and SSE transports is planned.
 
 ## Contributing
