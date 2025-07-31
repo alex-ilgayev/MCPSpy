@@ -9,7 +9,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  e2e-build:
+  smoke-build:
     runs-on: ubuntu-24.04
 
     steps:
@@ -41,8 +41,8 @@ jobs:
           name: mcpspy-binary
           path: build/mcpspy-linux-amd64
 
-  e2e-kernel-tests:
-    needs: e2e-build
+  smoke-kernel-tests:
+    needs: smoke-build
     runs-on: ubuntu-24.04
 
     strategy:
