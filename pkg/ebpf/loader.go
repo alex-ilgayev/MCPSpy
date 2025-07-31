@@ -83,6 +83,16 @@ func (l *Loader) Load() error {
 	}
 	l.links = append(l.links, readExitLink)
 
+	// Attaching trace_security_file_open with Fentry to track dynamic library loading
+	securityFileOpenLink, err := link.AttachTracing(link.TracingOptions{
+		Program:    l.objs.TraceSecurityFileOpen,
+		AttachType: ebpf.AttachTraceFEntry,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to attach %s tracepoint: %w", l.objs.TraceSecurityFileOpen.String(), err)
+	}
+	l.links = append(l.links, securityFileOpenLink)
+
 	// Open the ring buffer reader
 	reader, err := ringbuf.NewReader(l.objs.Events)
 	if err != nil {

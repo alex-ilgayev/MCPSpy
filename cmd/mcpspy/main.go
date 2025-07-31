@@ -114,6 +114,12 @@ func run(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to start event processing: %w", err)
 	}
 
+	// Enumerate all libraries for TLS inspection
+	logrus.Debug("Doing initial enumeration of libraries for TLS inspection")
+	if err := loader.RunIterLibEnum(); err != nil {
+		return fmt.Errorf("failed to enumerate libraries: %w", err)
+	}
+
 	consoleDisplay.PrintInfo("Monitoring MCP communication... Press Ctrl+C to stop")
 	consoleDisplay.PrintInfo("")
 
@@ -167,9 +173,10 @@ func run(cmd *cobra.Command, args []string) error {
 			case *ebpf.LibraryEvent:
 				// Handle library events - for now just log them
 				logrus.WithFields(logrus.Fields{
-					"pid":  e.PID,
-					"comm": e.Comm(),
-					"path": e.Path(),
+					"pid":   e.PID,
+					"comm":  e.Comm(),
+					"path":  e.Path(),
+					"inode": e.Inode,
 				}).Trace("Library loaded")
 			default:
 				logrus.WithField("type", event.Type()).Warn("Unknown event type")

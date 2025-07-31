@@ -45,6 +45,7 @@ func (e *DataEvent) Type() EventType { return e.EventType }
 // used for uprobe hooking for tls inspection
 type LibraryEvent struct {
 	EventHeader
+	Inode     uint64
 	PathBytes [512]uint8
 }
 

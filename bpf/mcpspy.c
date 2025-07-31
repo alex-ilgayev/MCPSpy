@@ -12,6 +12,7 @@
 // limit.h indicates 4096 is the max path,
 // but we want to save ringbuffer space.
 #define PATH_MAX 512
+#define FILENAME_MAX 255
 
 // Event types
 #define EVENT_READ 1
@@ -37,6 +38,7 @@ struct data_event {
 struct library_event {
     struct event_header header;
 
+    __u64 inode;        // Inode number of the library file
     __u8 path[PATH_MAX];
 };
 
@@ -82,7 +84,6 @@ int BPF_PROG(exit_vfs_read, struct file *file, const char *buf, size_t count,
         return 0;
     }
 
-    pid_t tgid = bpf_get_current_pid_tgid();
 
     struct data_event *event =
         bpf_ringbuf_reserve(&events, sizeof(struct data_event), 0);
@@ -92,7 +93,7 @@ int BPF_PROG(exit_vfs_read, struct file *file, const char *buf, size_t count,
     }
 
     event->header.event_type = EVENT_READ;
-    event->header.pid = tgid;
+    event->header.pid = bpf_get_current_pid_tgid() >> 32;
     bpf_get_current_comm(&event->header.comm, sizeof(event->header.comm));
     event->size = ret;
     event->buf_size = ret < MAX_BUF_SIZE ? ret : MAX_BUF_SIZE;
@@ -115,8 +116,6 @@ int BPF_PROG(exit_vfs_write, struct file *file, const char *buf, size_t count,
         return 0;
     }
 
-    pid_t tgid = bpf_get_current_pid_tgid();
-
     struct data_event *event =
         bpf_ringbuf_reserve(&events, sizeof(struct data_event), 0);
     if (!event) {
@@ -125,7 +124,7 @@ int BPF_PROG(exit_vfs_write, struct file *file, const char *buf, size_t count,
     }
 
     event->header.event_type = EVENT_WRITE;
-    event->header.pid = tgid;
+    event->header.pid = bpf_get_current_pid_tgid() >> 32;
     bpf_get_current_comm(&event->header.comm, sizeof(event->header.comm));
     event->size = ret;
     event->buf_size = ret < MAX_BUF_SIZE ? ret : MAX_BUF_SIZE;
@@ -139,26 +138,52 @@ int BPF_PROG(exit_vfs_write, struct file *file, const char *buf, size_t count,
 // Taken from mm.h
 #define VM_EXEC 0x00000004
 
-// Doing simple check if indicates a file in fs.
-// - Checking if starts with '/'
-// - Checking if is not starting with "/memfd:"
-static __always_inline bool is_file_path(const char *path) {
-    if (path[0] == '\0') {
-        return false;
-    }
-
-    if (path[0] == '/' && path[1] == 'm' && path[2] == 'e' && path[3] == 'm' &&
-        path[4] == 'f' && path[5] == 'd' && path[6] == ':') {
-        return false;
-    }
-
-    if (path[0] == '/') {
+// Check if filename matches our criteria. Currently the options are:
+// - "node"
+// - "libssl"
+static __always_inline bool is_filename_relevant(const char *filename) {
+    // Check if filename is "node"
+    if (filename[0] == 'n' && filename[1] == 'o' && filename[2] == 'd' && filename[3] == 'e' && filename[4] == '\0') {
         return true;
     }
 
+    // Check if filename starts with "libssl"
+    if (filename[0] == 'l' && filename[1] == 'i' && filename[2] == 'b' && filename[3] == 's' && filename[4] == 's' && filename[5] == 'l') {
+        return true;
+    }
+    
     return false;
 }
 
+// Filtering out non-interesting paths in linux,
+// such as /proc, /sys, /dev, /mnt, /memfd.
+static __always_inline bool is_path_relevant(const char *path) {
+    if (path[0] == '/' && path[1] == 'p' && path[2] == 'r' && path[3] == 'o' && path[4] == 'c' && path[5] == '/') {
+        return false;
+    }
+
+    if (path[0] == '/' && path[1] == 's' && path[2] == 'y' && path[3] == 's' && path[4] == '/') {
+        return false;
+    }
+
+    if (path[0] == '/' && path[1] == 'd' && path[2] == 'e' && path[3] == 'v' && path[4] == '/') {
+        return false;
+    }
+    
+    if (path[0] == '/' && path[1] == 'm' && path[2] == 'n' && path[3] == 't' && path[4] == '/') {
+        return false;
+    }
+
+    if (path[0] == '/' && path[1] == 'm' && path[2] == 'e' && path[3] == 'm' && path[4] == 'f') {
+        return false;
+    }
+
+    return true;
+}
+
+// Enumerate loaded modules across all processes.
+// To improve the performance, we filter out non-interesting filenames,
+// and non-interesting root directories.
 SEC("iter/task_vma")
 int enumerate_loaded_modules(struct bpf_iter__task_vma *ctx) {
     struct task_struct *task = ctx->task;
@@ -180,6 +205,14 @@ int enumerate_loaded_modules(struct bpf_iter__task_vma *ctx) {
         return 0;
     }
 
+    // Check if is an interesting library name
+    char filename[FILENAME_MAX];
+    __builtin_memset(filename, 0, FILENAME_MAX);
+    bpf_probe_read_kernel(filename, FILENAME_MAX, file->f_path.dentry->d_name.name);
+    if (!is_filename_relevant(filename)) {
+        return 0;
+    }
+
     // Send library event to userspace
     struct library_event *event =
         bpf_ringbuf_reserve(&events, sizeof(struct library_event), 0);
@@ -190,17 +223,66 @@ int enumerate_loaded_modules(struct bpf_iter__task_vma *ctx) {
 
     event->header.event_type = EVENT_LIBRARY;
     event->header.pid = task->tgid;
-    bpf_get_current_comm(&event->header.comm, sizeof(event->header.comm));
+    event->inode = file->f_inode->i_ino;
+    bpf_probe_read_kernel_str(&event->header.comm, sizeof(event->header.comm), task->comm);
     __builtin_memset(event->path, 0, PATH_MAX);
     bpf_d_path(&file->f_path, (char *)event->path, PATH_MAX);
 
-    if (!is_file_path((char *)event->path)) {
+    if (!is_path_relevant((const char *)event->path)) {
         bpf_ringbuf_discard(event, 0);
         return 0;
     }
 
     bpf_ringbuf_submit(event, 0);
 
+    return 0;
+}
+
+// Track when files are opened to detect dynamic library loading
+// We use security_file_open and not security_file_mprotect
+// because we want to get the full path through bpf_d_path,
+// and there is limited probes that allow us to do that.
+// We do not want to use LSM hooks for now.
+//
+// To improve the performance, we filter out non-interesting filenames,
+// and non-interesting root directories.
+SEC("fentry/security_file_open")
+int BPF_PROG(trace_security_file_open, struct file *file) {
+    if (!file) {
+        return 0;
+    }
+    
+    char filename[FILENAME_MAX];
+    __builtin_memset(filename, 0, FILENAME_MAX);
+    bpf_probe_read_kernel(filename, FILENAME_MAX, file->f_path.dentry->d_name.name);
+
+    // Checking if filename matches to what we looking for.
+    if (!is_filename_relevant(filename)) {
+        return 0;
+    }
+
+    struct library_event *event =
+        bpf_ringbuf_reserve(&events, sizeof(struct library_event), 0);
+    if (!event) {
+        bpf_printk("error: failed to reserve ring buffer for security file open event");
+        return 0;
+    }
+    
+    __builtin_memset(event->path, 0, PATH_MAX);
+    bpf_d_path(&file->f_path, (char *)event->path, PATH_MAX);
+    
+    event->header.event_type = EVENT_LIBRARY;
+    event->header.pid = bpf_get_current_pid_tgid() >> 32;
+    event->inode = file->f_inode->i_ino;
+    bpf_get_current_comm(&event->header.comm, sizeof(event->header.comm));
+
+    if (!is_path_relevant((const char *)event->path)) {
+        bpf_ringbuf_discard(event, 0);
+        return 0;
+    }
+
+    bpf_ringbuf_submit(event, 0);
+    
     return 0;
 }
 
