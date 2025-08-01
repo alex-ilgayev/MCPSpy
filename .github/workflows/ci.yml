@@ -18,7 +18,7 @@ jobs:
   # Job to run linters, unit tests, and E2E tests on a single platform (e.g., AMD64)
   # This provides quick feedback on code quality and functionality.
   test:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -50,14 +50,16 @@ jobs:
       - name: Run unit tests
         run: make test
 
+      - name: Run simple smoke test
+        run: make test-smoke
+
       - name: Run end-to-end tests
-        # Requires root/privileged access due to eBPF.
-        run: sudo -E make test-e2e
+        run: make test-e2e
 
   # Job to build cross-platform binaries as release assets
   build_binaries:
     needs: [test]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     if: github.event_name == 'push' || startsWith(github.ref, 'refs/tags/')
 
     steps:
@@ -92,7 +94,7 @@ jobs:
   # Job to build and push multi-platform Docker images
   docker_build_and_push:
     needs: [test, build_binaries] # Ensure tests pass and binaries are build before building and pushing Docker image
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     if: github.event_name == 'push' || startsWith(github.ref, 'refs/tags/')
     strategy:
       matrix:
@@ -163,7 +165,7 @@ jobs:
   # Job to create and push the multi-arch manifest list
   create_and_push_manifest:
     needs: [docker_build_and_push] # Must run after all individual Docker images are pushed
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     if: github.event_name == 'push' || startsWith(github.ref, 'refs/tags/') # Only on pushes and tags
     permissions:
       contents: read
@@ -217,7 +219,7 @@ jobs:
   # Job to create a GitHub Release and attach both binaries and the Docker image
   release:
     needs: [build_binaries, create_and_push_manifest] # Depends on both jobs completing
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: write
       packages: write
