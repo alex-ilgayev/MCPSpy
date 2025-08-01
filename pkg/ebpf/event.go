@@ -14,6 +14,25 @@ const (
 	EventTypeTlsRecv EventType = 5
 )
 
+type HttpVersion uint8
+
+const (
+	HttpVersionUnknown HttpVersion = 0
+	HttpVersion1       HttpVersion = 1
+	HttpVersion2       HttpVersion = 2
+)
+
+func (h HttpVersion) String() string {
+	switch h {
+	case HttpVersion1:
+		return "http/1.1"
+	case HttpVersion2:
+		return "http/2"
+	default:
+		return "unknown"
+	}
+}
+
 func (e EventType) String() string {
 	switch e {
 	case EventTypeFSRead:
@@ -79,9 +98,10 @@ func (e *LibraryEvent) Path() string {
 type TlsEvent struct {
 	EventHeader
 
-	Size    uint32           // Actual data size
-	BufSize uint32           // Size of data in buf (may be truncated)
-	Buf     [16 * 1024]uint8 // Data buffer
+	Size        uint32           // Actual data size
+	BufSize     uint32           // Size of data in buf (may be truncated)
+	HttpVersion HttpVersion      // Identified HTTP version
+	Buf         [16 * 1024]uint8 // Data buffer
 }
 
 func (e *TlsEvent) Type() EventType { return e.EventType }

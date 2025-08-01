@@ -29,6 +29,11 @@
 #define EVENT_TLS_SEND 4
 #define EVENT_TLS_RECV 5
 
+// HTTP version constants
+#define HTTP_VERSION_UNKNOWN 0
+#define HTTP_VERSION_1 1
+#define HTTP_VERSION_2 2
+
 struct {
     __uint(type, BPF_MAP_TYPE_RINGBUF);
     __uint(max_entries, 4 * 1024 * 1024); // 4MB buffer
@@ -60,8 +65,9 @@ struct library_event {
 struct tls_event {
     struct event_header header;
 
-    __u32 size;     // Actual data size
-    __u32 buf_size; // Size of data in buf (may be truncated)
+    __u32 size;        // Actual data size
+    __u32 buf_size;    // Size of data in buf (may be truncated)
+    __u8 http_version; // Identified HTTP version of the session
     __u8 buf[MAX_BUF_SIZE];
 };
 

@@ -3,6 +3,7 @@
 
 #include "args.h"
 #include "helpers.h"
+#include "tls.h"
 #include "types.h"
 #include "vmlinux.h"
 #include <bpf/bpf_core_read.h>
@@ -225,10 +226,6 @@ int BPF_UPROBE(ssl_read_entry, void *ssl, void *buf) {
 
 SEC("uretprobe/SSL_read")
 int BPF_URETPROBE(ssl_read_exit, int ret) {
-    if (ret <= 0) {
-        return 0;
-    }
-
     __u32 pid = bpf_get_current_pid_tgid() >> 32;
 
     // Retrieve the entry parameters
@@ -237,6 +234,30 @@ int BPF_URETPROBE(ssl_read_exit, int ret) {
         return 0;
     }
     bpf_map_delete_elem(&ssl_read_args, &pid);
+
+    // We only care about successful reads.
+    if (ret <= 0) {
+        return 0;
+    }
+
+    // Checking the session if was set to specific http version.
+    // If not, we try to identify the version from the payload.
+    __u64 ssl_ptr = params->ssl;
+    struct ssl_session *session = bpf_map_lookup_elem(&ssl_sessions, &ssl_ptr);
+    if (!session) {
+        return 0;
+    }
+
+    if (session->http_version == HTTP_VERSION_UNKNOWN) {
+        __u8 http_version = identify_http_version(ssl_ptr, (const char *)params->buf, ret);
+
+        if (http_version == HTTP_VERSION_UNKNOWN) {
+            return 0;
+        }
+
+        session->http_version = http_version;
+        bpf_map_update_elem(&ssl_sessions, &ssl_ptr, session, BPF_ANY);
+    }
 
     struct tls_event *event =
         bpf_ringbuf_reserve(&events, sizeof(struct tls_event), 0);
@@ -248,6 +269,7 @@ int BPF_URETPROBE(ssl_read_exit, int ret) {
     event->header.event_type = EVENT_TLS_RECV;
     event->header.pid = pid;
     bpf_get_current_comm(&event->header.comm, sizeof(event->header.comm));
+    event->http_version = session->http_version;
 
     // Ensure buf_size is within bounds and positive for the verifier
     __u32 size = (__u32)ret;
@@ -272,6 +294,25 @@ int BPF_UPROBE(ssl_write_entry, void *ssl, const void *buf, int num) {
         return 0;
     }
 
+    // Checking the session if was set to specific http version.
+    // If not, we try to identify the version from the payload.
+    __u64 ssl_ptr = (__u64)ssl;
+    struct ssl_session *session = bpf_map_lookup_elem(&ssl_sessions, &ssl_ptr);
+    if (!session) {
+        return 0;
+    }
+
+    if (session->http_version == HTTP_VERSION_UNKNOWN) {
+        __u8 http_version = identify_http_version(ssl_ptr, buf, num);
+
+        if (http_version == HTTP_VERSION_UNKNOWN) {
+            return 0;
+        }
+
+        session->http_version = http_version;
+        bpf_map_update_elem(&ssl_sessions, &ssl_ptr, session, BPF_ANY);
+    }
+
     struct tls_event *event =
         bpf_ringbuf_reserve(&events, sizeof(struct tls_event), 0);
     if (!event) {
@@ -283,6 +324,7 @@ int BPF_UPROBE(ssl_write_entry, void *ssl, const void *buf, int num) {
     __u32 pid = bpf_get_current_pid_tgid() >> 32;
     event->header.pid = pid;
     bpf_get_current_comm(&event->header.comm, sizeof(event->header.comm));
+    event->http_version = session->http_version;
 
     // Ensure buf_size is within bounds and positive for the verifier
     __u32 size = (__u32)num;
@@ -315,11 +357,6 @@ int BPF_UPROBE(ssl_read_ex_entry, void *ssl, void *buf, size_t num,
 
 SEC("uretprobe/SSL_read_ex")
 int BPF_URETPROBE(ssl_read_ex_exit, int ret) {
-    // We only care about successful reads.
-    if (ret != 1) {
-        return 0;
-    }
-
     __u32 pid = bpf_get_current_pid_tgid() >> 32;
 
     // Retrieve the entry parameters
@@ -330,11 +367,35 @@ int BPF_URETPROBE(ssl_read_ex_exit, int ret) {
     }
     bpf_map_delete_elem(&ssl_read_ex_args, &pid);
 
+    // We only care about successful reads.
+    if (ret != 1) {
+        return 0;
+    }
+
     // Try to read the actual bytes read from the readbytes pointer
     size_t actual_read = 0;
     if (params->readbytes) {
         bpf_probe_read(&actual_read, sizeof(actual_read),
                        (const void *)params->readbytes);
+    }
+
+    // Checking the session if was set to specific http version.
+    // If not, we try to identify the version from the payload.
+    __u64 ssl_ptr = params->ssl;
+    struct ssl_session *session = bpf_map_lookup_elem(&ssl_sessions, &ssl_ptr);
+    if (!session) {
+        return 0;
+    }
+
+    if (session->http_version == HTTP_VERSION_UNKNOWN) {
+        __u8 http_version = identify_http_version(ssl_ptr, (const char *)params->buf, actual_read);
+
+        if (http_version == HTTP_VERSION_UNKNOWN) {
+            return 0;
+        }
+
+        session->http_version = http_version;
+        bpf_map_update_elem(&ssl_sessions, &ssl_ptr, session, BPF_ANY);
     }
 
     struct tls_event *event =
@@ -348,6 +409,7 @@ int BPF_URETPROBE(ssl_read_ex_exit, int ret) {
     event->header.event_type = EVENT_TLS_RECV;
     event->header.pid = pid;
     bpf_get_current_comm(&event->header.comm, sizeof(event->header.comm));
+    event->http_version = session->http_version;
     event->size = actual_read;
     event->buf_size = actual_read > MAX_BUF_SIZE ? MAX_BUF_SIZE : actual_read;
 
@@ -369,6 +431,25 @@ int BPF_UPROBE(ssl_write_ex_entry, void *ssl, const void *buf, size_t num,
         return 0;
     }
 
+    // Checking the session if was set to specific http version.
+    // If not, we try to identify the version from the payload.
+    __u64 ssl_ptr = (__u64)ssl;
+    struct ssl_session *session = bpf_map_lookup_elem(&ssl_sessions, &ssl_ptr);
+    if (!session) {
+        return 0;
+    }
+
+    if (session->http_version == HTTP_VERSION_UNKNOWN) {
+        __u8 http_version = identify_http_version(ssl_ptr, buf, num);
+
+        if (http_version == HTTP_VERSION_UNKNOWN) {
+            return 0;
+        }
+
+        session->http_version = http_version;
+        bpf_map_update_elem(&ssl_sessions, &ssl_ptr, session, BPF_ANY);
+    }
+
     struct tls_event *event =
         bpf_ringbuf_reserve(&events, sizeof(struct tls_event), 0);
     if (!event) {
@@ -381,6 +462,7 @@ int BPF_UPROBE(ssl_write_ex_entry, void *ssl, const void *buf, size_t num,
     __u32 pid = bpf_get_current_pid_tgid() >> 32;
     event->header.pid = pid;
     bpf_get_current_comm(&event->header.comm, sizeof(event->header.comm));
+    event->http_version = session->http_version;
     event->size = num;
     event->buf_size = num > MAX_BUF_SIZE ? MAX_BUF_SIZE : num;
 
@@ -391,6 +473,73 @@ int BPF_UPROBE(ssl_write_ex_entry, void *ssl, const void *buf, size_t num,
     }
 
     bpf_ringbuf_submit(event, 0);
+
+    return 0;
+}
+
+// Track SSL session creation
+SEC("uretprobe/SSL_new")
+int BPF_URETPROBE(ssl_new_exit, void *ssl) {
+    if (!ssl) {
+        return 0;
+    }
+
+    __u64 ssl_ptr = (__u64)ssl;
+    struct ssl_session session = {
+        .http_version = HTTP_VERSION_UNKNOWN,
+        .is_active = 0,
+    };
+
+    bpf_map_update_elem(&ssl_sessions, &ssl_ptr, &session, BPF_ANY);
+    return 0;
+}
+
+// Track SSL session destruction
+SEC("uprobe/SSL_free")
+int BPF_UPROBE(ssl_free_entry, void *ssl) {
+    if (!ssl) {
+        return 0;
+    }
+
+    __u64 ssl_ptr = (__u64)ssl;
+    bpf_map_delete_elem(&ssl_sessions, &ssl_ptr);
+    return 0;
+}
+
+// Track SSL handshake entry
+SEC("uprobe/SSL_do_handshake")
+int BPF_UPROBE(ssl_do_handshake_entry, void *ssl) {
+    __u32 pid = bpf_get_current_pid_tgid() >> 32;
+    __u64 ssl_ptr = (__u64)ssl;
+
+    bpf_map_update_elem(&ssl_handshake_args, &pid, &ssl_ptr, BPF_ANY);
+    return 0;
+}
+
+// Track SSL handshake completion
+SEC("uretprobe/SSL_do_handshake")
+int BPF_URETPROBE(ssl_do_handshake_exit, int ret) {
+    __u32 pid = bpf_get_current_pid_tgid() >> 32;
+
+    __u64 *ssl_ptr = bpf_map_lookup_elem(&ssl_handshake_args, &pid);
+    if (!ssl_ptr) {
+        return 0;
+    }
+
+    __u64 ssl = *ssl_ptr;
+    bpf_map_delete_elem(&ssl_handshake_args, &pid);
+
+    // Handshake successful
+    if (ret != 1) {
+        return 0;
+    }
+
+    // Mark session as ready for data
+    struct ssl_session *session = bpf_map_lookup_elem(&ssl_sessions, &ssl);
+    if (session) {
+        session->is_active = 1;
+        bpf_map_update_elem(&ssl_sessions, &ssl, session, BPF_ANY);
+    }
 
     return 0;
 }

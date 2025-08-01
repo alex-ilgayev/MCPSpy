@@ -197,6 +197,7 @@ func run(cmd *cobra.Command, args []string) error {
 					"comm":     e.Comm(),
 					"size":     e.Size,
 					"buf_size": e.BufSize,
+					"version":  e.HttpVersion,
 				}).Trace("TLS event")
 			default:
 				logrus.WithField("type", event.Type()).Warn("Unknown event type")

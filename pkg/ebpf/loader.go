@@ -295,6 +295,34 @@ func (l *Loader) AttachSSLProbes(libraryPath string) error {
 	}
 	l.links = append(l.links, sslWriteExLink)
 
+	// Attach SSL_new uretprobe for session creation
+	sslNewLink, err := ex.Uretprobe("SSL_new", l.objs.SslNewExit, nil)
+	if err != nil {
+		return fmt.Errorf("failed to attach SSL_new uretprobe: %w", err)
+	}
+	l.links = append(l.links, sslNewLink)
+
+	// Attach SSL_free uprobe for session destruction
+	sslFreeLink, err := ex.Uprobe("SSL_free", l.objs.SslFreeEntry, nil)
+	if err != nil {
+		return fmt.Errorf("failed to attach SSL_free uprobe: %w", err)
+	}
+	l.links = append(l.links, sslFreeLink)
+
+	// Attach SSL_do_handshake entry uprobe
+	sslHandshakeEntryLink, err := ex.Uprobe("SSL_do_handshake", l.objs.SslDoHandshakeEntry, nil)
+	if err != nil {
+		return fmt.Errorf("failed to attach SSL_do_handshake entry uprobe: %w", err)
+	}
+	l.links = append(l.links, sslHandshakeEntryLink)
+
+	// Attach SSL_do_handshake exit uretprobe
+	sslHandshakeExitLink, err := ex.Uretprobe("SSL_do_handshake", l.objs.SslDoHandshakeExit, nil)
+	if err != nil {
+		return fmt.Errorf("failed to attach SSL_do_handshake exit uretprobe: %w", err)
+	}
+	l.links = append(l.links, sslHandshakeExitLink)
+
 	return nil
 }
 
