@@ -14,10 +14,16 @@
 #define PATH_MAX 512
 #define FILENAME_MAX 255
 
+// File mode constants
+#define S_IFMT  00170000  // File type mask
+#define S_IFDIR 0040000   // Directory
+
 // Event types
 #define EVENT_READ 1
 #define EVENT_WRITE 2
 #define EVENT_LIBRARY 3
+#define EVENT_TLS_SEND 4
+#define EVENT_TLS_RECV 5
 
 // Common header for all events
 // Parsed first to get the event type.
@@ -42,6 +48,44 @@ struct library_event {
     __u8 path[PATH_MAX];
 };
 
+struct tls_event {
+    struct event_header header;
+
+    __u32 size;     // Actual data size
+    __u32 buf_size; // Size of data in buf (may be truncated)
+    __u8 buf[MAX_BUF_SIZE];
+};
+
+
+// Structure to pass SSL_read parameters from uprobe to uretprobe
+struct ssl_read_params {
+    __u64 ssl;
+    __u64 buf;
+};
+
+// Structure to pass SSL_read_ex parameters from uprobe to uretprobe
+struct ssl_read_ex_params {
+    __u64 ssl;
+    __u64 buf;
+    __u64 readbytes; // pointer to size_t
+};
+
+// Map to store SSL_read parameters
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(max_entries, 1024);
+    __type(key, __u32); // PID
+    __type(value, struct ssl_read_params);
+} ssl_read_args SEC(".maps");
+
+// Map to store SSL_read_ex parameters
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(max_entries, 1024);
+    __type(key, __u32); // PID
+    __type(value, struct ssl_read_ex_params);
+} ssl_read_ex_args SEC(".maps");
+
 struct {
     __uint(type, BPF_MAP_TYPE_RINGBUF);
     __uint(max_entries, 4 * 1024 * 1024); // 4MB buffer
@@ -49,8 +93,9 @@ struct {
 
 // Checking if the buffer starts with '{', while ignoring whitespace.
 static __always_inline bool is_mcp_data(const char *buf, __u32 size) {
-    if (size < 1)
+    if (size < 8) {
         return false;
+    }
 
     char check[8];
     if (bpf_probe_read(check, sizeof(check), buf) != 0) {
@@ -181,6 +226,20 @@ static __always_inline bool is_path_relevant(const char *path) {
     return true;
 }
 
+// Check if dentry is a directory.
+static __always_inline bool is_directory(struct dentry *dentry) {
+    if (!dentry) {
+        return false;
+    }
+    
+    struct inode *inode = dentry->d_inode;
+    if (!inode) {
+        return false;
+    }
+    
+    return (inode->i_mode & S_IFMT) == S_IFDIR;
+}
+
 // Enumerate loaded modules across all processes.
 // To improve the performance, we filter out non-interesting filenames,
 // and non-interesting root directories.
@@ -252,6 +311,11 @@ int BPF_PROG(trace_security_file_open, struct file *file) {
         return 0;
     }
     
+    // Check if directory
+    if (is_directory(file->f_path.dentry)) {
+        return 0;
+    }
+
     char filename[FILENAME_MAX];
     __builtin_memset(filename, 0, FILENAME_MAX);
     bpf_probe_read_kernel(filename, FILENAME_MAX, file->f_path.dentry->d_name.name);
@@ -283,6 +347,182 @@ int BPF_PROG(trace_security_file_open, struct file *file) {
 
     bpf_ringbuf_submit(event, 0);
     
+    return 0;
+}
+
+SEC("uprobe/SSL_read")
+int BPF_UPROBE(ssl_read_entry, void *ssl, void *buf) {
+    __u32 pid = bpf_get_current_pid_tgid() >> 32;
+    
+    struct ssl_read_params params = {
+        .ssl = (__u64)ssl,
+        .buf = (__u64)buf,
+    };
+    
+    bpf_map_update_elem(&ssl_read_args, &pid, &params, BPF_ANY);
+    return 0;
+}
+
+SEC("uretprobe/SSL_read")
+int BPF_URETPROBE(ssl_read_exit, int ret) {
+    if (ret <= 0) {
+        return 0;
+    }
+    
+    __u32 pid = bpf_get_current_pid_tgid() >> 32;
+    
+    // Retrieve the entry parameters
+    struct ssl_read_params *params = bpf_map_lookup_elem(&ssl_read_args, &pid);
+    if (!params) {
+        return 0;
+    }
+    bpf_map_delete_elem(&ssl_read_args, &pid);
+
+    struct tls_event *event = bpf_ringbuf_reserve(&events, sizeof(struct tls_event), 0);
+    if (!event) {
+        bpf_printk("error: failed to reserve ring buffer for SSL_read event");
+        return 0;
+    }
+    
+    event->header.event_type = EVENT_TLS_RECV;
+    event->header.pid = pid;
+    bpf_get_current_comm(&event->header.comm, sizeof(event->header.comm));
+
+    // Ensure buf_size is within bounds and positive for the verifier
+    __u32 size = (__u32)ret;
+    size &= 0x7FFFFFFF; // Ensure it's positive by clearing the sign bit
+    event->size = size;
+    event->buf_size = size > MAX_BUF_SIZE ? MAX_BUF_SIZE : size;
+
+    if (bpf_probe_read(&event->buf, event->buf_size, (const void *)params->buf) != 0) {
+        bpf_printk("error: failed to read SSL_read data");
+        bpf_ringbuf_discard(event, 0);
+        return 0;
+    }
+    
+    bpf_ringbuf_submit(event, 0);
+    return 0;
+}
+
+SEC("uprobe/SSL_write")
+int BPF_UPROBE(ssl_write_entry, void *ssl, const void *buf, int num) {
+    if (num <= 0) {
+        return 0;
+    }
+    
+    struct tls_event *event = bpf_ringbuf_reserve(&events, sizeof(struct tls_event), 0);
+    if (!event) {
+        bpf_printk("error: failed to reserve ring buffer for SSL_write event");
+        return 0;
+    }
+    
+    event->header.event_type = EVENT_TLS_SEND;
+    __u32 pid = bpf_get_current_pid_tgid() >> 32;
+    event->header.pid = pid;
+    bpf_get_current_comm(&event->header.comm, sizeof(event->header.comm));    
+
+    // Ensure buf_size is within bounds and positive for the verifier
+    __u32 size = (__u32)num;
+    size &= 0x7FFFFFFF; // Ensure it's positive by clearing the sign bit
+    event->size = size;
+    event->buf_size = size > MAX_BUF_SIZE ? MAX_BUF_SIZE : size;
+    
+    if (bpf_probe_read(&event->buf, event->buf_size, buf) != 0) {
+        bpf_printk("error: failed to read SSL_write data");
+        bpf_ringbuf_discard(event, 0);
+        return 0;
+    }
+    
+    bpf_ringbuf_submit(event, 0);
+
+    return 0;
+}
+
+SEC("uprobe/SSL_read_ex")
+int BPF_UPROBE(ssl_read_ex_entry, void *ssl, void *buf, size_t num, size_t *readbytes) {
+    __u32 pid = bpf_get_current_pid_tgid() >> 32;
+    
+    struct ssl_read_ex_params params = {
+        .ssl = (__u64)ssl,
+        .buf = (__u64)buf,
+        .readbytes = (__u64)readbytes
+    };
+    
+    bpf_map_update_elem(&ssl_read_ex_args, &pid, &params, BPF_ANY);
+    return 0;
+}
+
+SEC("uretprobe/SSL_read_ex")
+int BPF_URETPROBE(ssl_read_ex_exit, int ret) {
+    // We only care about successful reads.
+    if (ret != 1) { 
+        return 0;
+    }
+    
+    __u32 pid = bpf_get_current_pid_tgid() >> 32;
+    
+    // Retrieve the entry parameters
+    struct ssl_read_ex_params *params = bpf_map_lookup_elem(&ssl_read_ex_args, &pid);
+    if (!params) {
+        return 0;
+    }
+    bpf_map_delete_elem(&ssl_read_ex_args, &pid);
+    
+    // Try to read the actual bytes read from the readbytes pointer
+    size_t actual_read = 0;
+    if (params->readbytes) {
+        bpf_probe_read(&actual_read, sizeof(actual_read), (const void *)params->readbytes);
+    }
+    
+    struct tls_event *event = bpf_ringbuf_reserve(&events, sizeof(struct tls_event), 0);
+    if (!event) {
+        bpf_printk("error: failed to reserve ring buffer for SSL_read_ex event");
+        return 0;
+    }
+    
+    event->header.event_type = EVENT_TLS_RECV;
+    event->header.pid = pid;
+    bpf_get_current_comm(&event->header.comm, sizeof(event->header.comm));
+    event->size = actual_read;
+    event->buf_size = actual_read > MAX_BUF_SIZE ? MAX_BUF_SIZE : actual_read;
+
+    if (bpf_probe_read(&event->buf, event->buf_size, (const void *)params->buf) != 0) {
+        bpf_printk("error: failed to read SSL_read_ex data");
+        bpf_ringbuf_discard(event, 0);
+        return 0;
+    }
+    
+    bpf_ringbuf_submit(event, 0);
+    return 0;
+}
+
+SEC("uprobe/SSL_write_ex")
+int BPF_UPROBE(ssl_write_ex_entry, void *ssl, const void *buf, size_t num, size_t *written) {
+    if (num <= 0) {
+        return 0;
+    }
+    
+    struct tls_event *event = bpf_ringbuf_reserve(&events, sizeof(struct tls_event), 0);
+    if (!event) {
+        bpf_printk("error: failed to reserve ring buffer for SSL_write_ex event");
+        return 0;
+    }
+    
+    event->header.event_type = EVENT_TLS_SEND;
+    __u32 pid = bpf_get_current_pid_tgid() >> 32;
+    event->header.pid = pid;
+    bpf_get_current_comm(&event->header.comm, sizeof(event->header.comm));    
+    event->size = num;
+    event->buf_size = num > MAX_BUF_SIZE ? MAX_BUF_SIZE : num;
+
+    if (bpf_probe_read(&event->buf, event->buf_size, buf) != 0) {
+        bpf_printk("error: failed to read SSL_write_ex data");
+        bpf_ringbuf_discard(event, 0);
+        return 0;
+    }
+    
+    bpf_ringbuf_submit(event, 0);
+
     return 0;
 }
 

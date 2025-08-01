@@ -146,7 +146,7 @@ func (l *Loader) Start(ctx context.Context) error {
 				reader := bytes.NewReader(record.RawSample)
 
 				switch eventType {
-				case EventTypeRead, EventTypeWrite:
+				case EventTypeFSRead, EventTypeFSWrite:
 					if len(record.RawSample) < int(unsafe.Sizeof(DataEvent{})) {
 						logrus.Warn("Received incomplete data event for data event")
 						continue
@@ -170,6 +170,18 @@ func (l *Loader) Start(ctx context.Context) error {
 						continue
 					}
 					event = &libraryEvent
+				case EventTypeTlsSend, EventTypeTlsRecv:
+					if len(record.RawSample) < int(unsafe.Sizeof(TlsEvent{})) {
+						logrus.Warn("Received incomplete TLS event")
+						continue
+					}
+
+					var tlsEvent TlsEvent
+					if err := binary.Read(reader, binary.LittleEndian, &tlsEvent); err != nil {
+						logrus.WithError(err).Error("Failed to parse TLS event")
+						continue
+					}
+					event = &tlsEvent
 				default:
 					logrus.WithField("type", eventType).Warn("Unknown event type")
 					continue
@@ -226,6 +238,63 @@ func (l *Loader) Close() error {
 	}
 
 	logrus.Debug("eBPF loader cleaned up successfully")
+	return nil
+}
+
+// AttachSSLProbes attaches SSL read/write probes to a specific library
+func (l *Loader) AttachSSLProbes(libraryPath string) error {
+	if l.objs == nil {
+		return fmt.Errorf("loader not loaded")
+	}
+
+	// Open the executable/library
+	ex, err := link.OpenExecutable(libraryPath)
+	if err != nil {
+		return fmt.Errorf("failed to open executable %s: %w", libraryPath, err)
+	}
+
+	// Attach SSL_read entry uprobe
+	sslReadEntryLink, err := ex.Uprobe("SSL_read", l.objs.SslReadEntry, nil)
+	if err != nil {
+		return fmt.Errorf("failed to attach SSL_read entry uprobe: %w", err)
+	}
+	l.links = append(l.links, sslReadEntryLink)
+
+	// Attach SSL_read exit uretprobe
+	sslReadExitLink, err := ex.Uretprobe("SSL_read", l.objs.SslReadExit, nil)
+	if err != nil {
+		return fmt.Errorf("failed to attach SSL_read exit uretprobe: %w", err)
+	}
+	l.links = append(l.links, sslReadExitLink)
+
+	// Attach SSL_write uprobe
+	sslWriteLink, err := ex.Uprobe("SSL_write", l.objs.SslWriteEntry, nil)
+	if err != nil {
+		return fmt.Errorf("failed to attach SSL_write uprobe: %w", err)
+	}
+	l.links = append(l.links, sslWriteLink)
+
+	// Attach SSL_read_ex entry uprobe
+	sslReadExEntryLink, err := ex.Uprobe("SSL_read_ex", l.objs.SslReadExEntry, nil)
+	if err != nil {
+		return fmt.Errorf("failed to attach SSL_read_ex entry uprobe: %w", err)
+	}
+	l.links = append(l.links, sslReadExEntryLink)
+
+	// Attach SSL_read_ex exit uretprobe
+	sslReadExExitLink, err := ex.Uretprobe("SSL_read_ex", l.objs.SslReadExExit, nil)
+	if err != nil {
+		return fmt.Errorf("failed to attach SSL_read_ex exit uretprobe: %w", err)
+	}
+	l.links = append(l.links, sslReadExExitLink)
+
+	// Attach SSL_write_ex uprobe
+	sslWriteExLink, err := ex.Uprobe("SSL_write_ex", l.objs.SslWriteExEntry, nil)
+	if err != nil {
+		return fmt.Errorf("failed to attach SSL_write_ex uprobe: %w", err)
+	}
+	l.links = append(l.links, sslWriteExLink)
+
 	return nil
 }
 

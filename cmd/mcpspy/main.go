@@ -94,6 +94,10 @@ func run(cmd *cobra.Command, args []string) error {
 	}
 	defer loader.Close()
 
+	// Process library events
+	// and creates uprobe hooks for dynamically loaded libraries
+	libManager := ebpf.NewLibraryManager(loader)
+
 	consoleDisplay.PrintInfo("Loading eBPF programs...")
 	if err := loader.Load(); err != nil {
 		return fmt.Errorf("failed to load eBPF programs: %w", err)
@@ -152,7 +156,10 @@ func run(cmd *cobra.Command, args []string) error {
 				// Parse raw eBPF event data into MCP messages
 				messages, err := parser.ParseData(buf, e.EventType, e.PID, e.Comm())
 				if err != nil {
-					logrus.WithError(err).Debug("Failed to parse data")
+					// Ignore this error, it's expected for read events
+					if err.Error() != "no write event found for the parsed read event" {
+						logrus.WithError(err).Debug("Failed to parse data")
+					}
 					continue
 				}
 
@@ -171,13 +178,26 @@ func run(cmd *cobra.Command, args []string) error {
 					fileDisplay.PrintMessages(messages)
 				}
 			case *ebpf.LibraryEvent:
-				// Handle library events - for now just log them
+				// Handle library events
 				logrus.WithFields(logrus.Fields{
 					"pid":   e.PID,
 					"comm":  e.Comm(),
 					"path":  e.Path(),
 					"inode": e.Inode,
 				}).Trace("Library loaded")
+
+				if err := libManager.ProcessLibraryEvent(e); err != nil {
+					logrus.WithError(err).WithField("path", e.Path()).Warn("Failed to process library event")
+				}
+			case *ebpf.TlsEvent:
+				// Handle TLS events
+				logrus.WithFields(logrus.Fields{
+					"type":     e.Type(),
+					"pid":      e.PID,
+					"comm":     e.Comm(),
+					"size":     e.Size,
+					"buf_size": e.BufSize,
+				}).Trace("TLS event")
 			default:
 				logrus.WithField("type", event.Type()).Warn("Unknown event type")
 			}
