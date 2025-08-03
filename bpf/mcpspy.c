@@ -1,56 +1,19 @@
 // SPDX-License-Identifier: GPL-2.0-only
 // go:build ignore
 
+#include "args.h"
+#include "helpers.h"
+#include "tls.h"
+#include "types.h"
 #include "vmlinux.h"
 #include <bpf/bpf_core_read.h>
 #include <bpf/bpf_helpers.h>
-#include <bpf/bpf_tracing.h>
-
-#define MAX_BUF_SIZE 16 * 1024
-#define TASK_COMM_LEN 16
-
-// limit.h indicates 4096 is the max path,
-// but we want to save ringbuffer space.
-#define PATH_MAX 512
-#define FILENAME_MAX 255
-
-// Event types
-#define EVENT_READ 1
-#define EVENT_WRITE 2
-#define EVENT_LIBRARY 3
-
-// Common header for all events
-// Parsed first to get the event type.
-struct event_header {
-    __u8 event_type;
-    __u32 pid;
-    __u8 comm[TASK_COMM_LEN];
-};
-
-struct data_event {
-    struct event_header header;
-
-    __u32 size;     // Actual data size
-    __u32 buf_size; // Size of data in buf (may be truncated)
-    __u8 buf[MAX_BUF_SIZE];
-};
-
-struct library_event {
-    struct event_header header;
-
-    __u64 inode;        // Inode number of the library file
-    __u8 path[PATH_MAX];
-};
-
-struct {
-    __uint(type, BPF_MAP_TYPE_RINGBUF);
-    __uint(max_entries, 4 * 1024 * 1024); // 4MB buffer
-} events SEC(".maps");
 
 // Checking if the buffer starts with '{', while ignoring whitespace.
 static __always_inline bool is_mcp_data(const char *buf, __u32 size) {
-    if (size < 1)
+    if (size < 8) {
         return false;
+    }
 
     char check[8];
     if (bpf_probe_read(check, sizeof(check), buf) != 0) {
@@ -83,7 +46,6 @@ int BPF_PROG(exit_vfs_read, struct file *file, const char *buf, size_t count,
     if (!is_mcp_data(buf, ret)) {
         return 0;
     }
-
 
     struct data_event *event =
         bpf_ringbuf_reserve(&events, sizeof(struct data_event), 0);
@@ -135,52 +97,6 @@ int BPF_PROG(exit_vfs_write, struct file *file, const char *buf, size_t count,
     return 0;
 }
 
-// Taken from mm.h
-#define VM_EXEC 0x00000004
-
-// Check if filename matches our criteria. Currently the options are:
-// - "node"
-// - "libssl"
-static __always_inline bool is_filename_relevant(const char *filename) {
-    // Check if filename is "node"
-    if (filename[0] == 'n' && filename[1] == 'o' && filename[2] == 'd' && filename[3] == 'e' && filename[4] == '\0') {
-        return true;
-    }
-
-    // Check if filename starts with "libssl"
-    if (filename[0] == 'l' && filename[1] == 'i' && filename[2] == 'b' && filename[3] == 's' && filename[4] == 's' && filename[5] == 'l') {
-        return true;
-    }
-    
-    return false;
-}
-
-// Filtering out non-interesting paths in linux,
-// such as /proc, /sys, /dev, /mnt, /memfd.
-static __always_inline bool is_path_relevant(const char *path) {
-    if (path[0] == '/' && path[1] == 'p' && path[2] == 'r' && path[3] == 'o' && path[4] == 'c' && path[5] == '/') {
-        return false;
-    }
-
-    if (path[0] == '/' && path[1] == 's' && path[2] == 'y' && path[3] == 's' && path[4] == '/') {
-        return false;
-    }
-
-    if (path[0] == '/' && path[1] == 'd' && path[2] == 'e' && path[3] == 'v' && path[4] == '/') {
-        return false;
-    }
-    
-    if (path[0] == '/' && path[1] == 'm' && path[2] == 'n' && path[3] == 't' && path[4] == '/') {
-        return false;
-    }
-
-    if (path[0] == '/' && path[1] == 'm' && path[2] == 'e' && path[3] == 'm' && path[4] == 'f') {
-        return false;
-    }
-
-    return true;
-}
-
 // Enumerate loaded modules across all processes.
 // To improve the performance, we filter out non-interesting filenames,
 // and non-interesting root directories.
@@ -208,7 +124,8 @@ int enumerate_loaded_modules(struct bpf_iter__task_vma *ctx) {
     // Check if is an interesting library name
     char filename[FILENAME_MAX];
     __builtin_memset(filename, 0, FILENAME_MAX);
-    bpf_probe_read_kernel(filename, FILENAME_MAX, file->f_path.dentry->d_name.name);
+    bpf_probe_read_kernel(filename, FILENAME_MAX,
+                          file->f_path.dentry->d_name.name);
     if (!is_filename_relevant(filename)) {
         return 0;
     }
@@ -224,7 +141,8 @@ int enumerate_loaded_modules(struct bpf_iter__task_vma *ctx) {
     event->header.event_type = EVENT_LIBRARY;
     event->header.pid = task->tgid;
     event->inode = file->f_inode->i_ino;
-    bpf_probe_read_kernel_str(&event->header.comm, sizeof(event->header.comm), task->comm);
+    bpf_probe_read_kernel_str(&event->header.comm, sizeof(event->header.comm),
+                              task->comm);
     __builtin_memset(event->path, 0, PATH_MAX);
     bpf_d_path(&file->f_path, (char *)event->path, PATH_MAX);
 
@@ -251,10 +169,16 @@ int BPF_PROG(trace_security_file_open, struct file *file) {
     if (!file) {
         return 0;
     }
-    
+
+    // Check if directory
+    if (is_directory(file->f_path.dentry)) {
+        return 0;
+    }
+
     char filename[FILENAME_MAX];
     __builtin_memset(filename, 0, FILENAME_MAX);
-    bpf_probe_read_kernel(filename, FILENAME_MAX, file->f_path.dentry->d_name.name);
+    bpf_probe_read_kernel(filename, FILENAME_MAX,
+                          file->f_path.dentry->d_name.name);
 
     // Checking if filename matches to what we looking for.
     if (!is_filename_relevant(filename)) {
@@ -264,13 +188,14 @@ int BPF_PROG(trace_security_file_open, struct file *file) {
     struct library_event *event =
         bpf_ringbuf_reserve(&events, sizeof(struct library_event), 0);
     if (!event) {
-        bpf_printk("error: failed to reserve ring buffer for security file open event");
+        bpf_printk("error: failed to reserve ring buffer for security file "
+                   "open event");
         return 0;
     }
-    
+
     __builtin_memset(event->path, 0, PATH_MAX);
     bpf_d_path(&file->f_path, (char *)event->path, PATH_MAX);
-    
+
     event->header.event_type = EVENT_LIBRARY;
     event->header.pid = bpf_get_current_pid_tgid() >> 32;
     event->inode = file->f_inode->i_ino;
@@ -282,7 +207,340 @@ int BPF_PROG(trace_security_file_open, struct file *file) {
     }
 
     bpf_ringbuf_submit(event, 0);
-    
+
+    return 0;
+}
+
+SEC("uprobe/SSL_read")
+int BPF_UPROBE(ssl_read_entry, void *ssl, void *buf) {
+    __u32 pid = bpf_get_current_pid_tgid() >> 32;
+
+    struct ssl_read_params params = {
+        .ssl = (__u64)ssl,
+        .buf = (__u64)buf,
+    };
+
+    bpf_map_update_elem(&ssl_read_args, &pid, &params, BPF_ANY);
+    return 0;
+}
+
+SEC("uretprobe/SSL_read")
+int BPF_URETPROBE(ssl_read_exit, int ret) {
+    __u32 pid = bpf_get_current_pid_tgid() >> 32;
+
+    // Retrieve the entry parameters
+    struct ssl_read_params *params = bpf_map_lookup_elem(&ssl_read_args, &pid);
+    if (!params) {
+        return 0;
+    }
+    bpf_map_delete_elem(&ssl_read_args, &pid);
+
+    // We only care about successful reads.
+    if (ret <= 0) {
+        return 0;
+    }
+
+    // Checking the session if was set to specific http version.
+    // If not, we try to identify the version from the payload.
+    __u64 ssl_ptr = params->ssl;
+    struct ssl_session *session = bpf_map_lookup_elem(&ssl_sessions, &ssl_ptr);
+    if (!session) {
+        return 0;
+    }
+
+    if (session->http_version == HTTP_VERSION_UNKNOWN) {
+        __u8 http_version = identify_http_version(ssl_ptr, (const char *)params->buf, ret);
+
+        if (http_version == HTTP_VERSION_UNKNOWN) {
+            return 0;
+        }
+
+        session->http_version = http_version;
+        bpf_map_update_elem(&ssl_sessions, &ssl_ptr, session, BPF_ANY);
+    }
+
+    struct tls_event *event =
+        bpf_ringbuf_reserve(&events, sizeof(struct tls_event), 0);
+    if (!event) {
+        bpf_printk("error: failed to reserve ring buffer for SSL_read event");
+        return 0;
+    }
+
+    event->header.event_type = EVENT_TLS_RECV;
+    event->header.pid = pid;
+    bpf_get_current_comm(&event->header.comm, sizeof(event->header.comm));
+    event->http_version = session->http_version;
+
+    // Ensure buf_size is within bounds and positive for the verifier
+    __u32 size = (__u32)ret;
+    size &= 0x7FFFFFFF; // Ensure it's positive by clearing the sign bit
+    event->size = size;
+    event->buf_size = size > MAX_BUF_SIZE ? MAX_BUF_SIZE : size;
+
+    if (bpf_probe_read(&event->buf, event->buf_size,
+                       (const void *)params->buf) != 0) {
+        bpf_printk("error: failed to read SSL_read data");
+        bpf_ringbuf_discard(event, 0);
+        return 0;
+    }
+
+    bpf_ringbuf_submit(event, 0);
+    return 0;
+}
+
+SEC("uprobe/SSL_write")
+int BPF_UPROBE(ssl_write_entry, void *ssl, const void *buf, int num) {
+    if (num <= 0) {
+        return 0;
+    }
+
+    // Checking the session if was set to specific http version.
+    // If not, we try to identify the version from the payload.
+    __u64 ssl_ptr = (__u64)ssl;
+    struct ssl_session *session = bpf_map_lookup_elem(&ssl_sessions, &ssl_ptr);
+    if (!session) {
+        return 0;
+    }
+
+    if (session->http_version == HTTP_VERSION_UNKNOWN) {
+        __u8 http_version = identify_http_version(ssl_ptr, buf, num);
+
+        if (http_version == HTTP_VERSION_UNKNOWN) {
+            return 0;
+        }
+
+        session->http_version = http_version;
+        bpf_map_update_elem(&ssl_sessions, &ssl_ptr, session, BPF_ANY);
+    }
+
+    struct tls_event *event =
+        bpf_ringbuf_reserve(&events, sizeof(struct tls_event), 0);
+    if (!event) {
+        bpf_printk("error: failed to reserve ring buffer for SSL_write event");
+        return 0;
+    }
+
+    event->header.event_type = EVENT_TLS_SEND;
+    __u32 pid = bpf_get_current_pid_tgid() >> 32;
+    event->header.pid = pid;
+    bpf_get_current_comm(&event->header.comm, sizeof(event->header.comm));
+    event->http_version = session->http_version;
+
+    // Ensure buf_size is within bounds and positive for the verifier
+    __u32 size = (__u32)num;
+    size &= 0x7FFFFFFF; // Ensure it's positive by clearing the sign bit
+    event->size = size;
+    event->buf_size = size > MAX_BUF_SIZE ? MAX_BUF_SIZE : size;
+
+    if (bpf_probe_read(&event->buf, event->buf_size, buf) != 0) {
+        bpf_printk("error: failed to read SSL_write data");
+        bpf_ringbuf_discard(event, 0);
+        return 0;
+    }
+
+    bpf_ringbuf_submit(event, 0);
+
+    return 0;
+}
+
+SEC("uprobe/SSL_read_ex")
+int BPF_UPROBE(ssl_read_ex_entry, void *ssl, void *buf, size_t num,
+               size_t *readbytes) {
+    __u32 pid = bpf_get_current_pid_tgid() >> 32;
+
+    struct ssl_read_ex_params params = {
+        .ssl = (__u64)ssl, .buf = (__u64)buf, .readbytes = (__u64)readbytes};
+
+    bpf_map_update_elem(&ssl_read_ex_args, &pid, &params, BPF_ANY);
+    return 0;
+}
+
+SEC("uretprobe/SSL_read_ex")
+int BPF_URETPROBE(ssl_read_ex_exit, int ret) {
+    __u32 pid = bpf_get_current_pid_tgid() >> 32;
+
+    // Retrieve the entry parameters
+    struct ssl_read_ex_params *params =
+        bpf_map_lookup_elem(&ssl_read_ex_args, &pid);
+    if (!params) {
+        return 0;
+    }
+    bpf_map_delete_elem(&ssl_read_ex_args, &pid);
+
+    // We only care about successful reads.
+    if (ret != 1) {
+        return 0;
+    }
+
+    // Try to read the actual bytes read from the readbytes pointer
+    size_t actual_read = 0;
+    if (params->readbytes) {
+        bpf_probe_read(&actual_read, sizeof(actual_read),
+                       (const void *)params->readbytes);
+    }
+
+    // Checking the session if was set to specific http version.
+    // If not, we try to identify the version from the payload.
+    __u64 ssl_ptr = params->ssl;
+    struct ssl_session *session = bpf_map_lookup_elem(&ssl_sessions, &ssl_ptr);
+    if (!session) {
+        return 0;
+    }
+
+    if (session->http_version == HTTP_VERSION_UNKNOWN) {
+        __u8 http_version = identify_http_version(ssl_ptr, (const char *)params->buf, actual_read);
+
+        if (http_version == HTTP_VERSION_UNKNOWN) {
+            return 0;
+        }
+
+        session->http_version = http_version;
+        bpf_map_update_elem(&ssl_sessions, &ssl_ptr, session, BPF_ANY);
+    }
+
+    struct tls_event *event =
+        bpf_ringbuf_reserve(&events, sizeof(struct tls_event), 0);
+    if (!event) {
+        bpf_printk(
+            "error: failed to reserve ring buffer for SSL_read_ex event");
+        return 0;
+    }
+
+    event->header.event_type = EVENT_TLS_RECV;
+    event->header.pid = pid;
+    bpf_get_current_comm(&event->header.comm, sizeof(event->header.comm));
+    event->http_version = session->http_version;
+    event->size = actual_read;
+    event->buf_size = actual_read > MAX_BUF_SIZE ? MAX_BUF_SIZE : actual_read;
+
+    if (bpf_probe_read(&event->buf, event->buf_size,
+                       (const void *)params->buf) != 0) {
+        bpf_printk("error: failed to read SSL_read_ex data");
+        bpf_ringbuf_discard(event, 0);
+        return 0;
+    }
+
+    bpf_ringbuf_submit(event, 0);
+    return 0;
+}
+
+SEC("uprobe/SSL_write_ex")
+int BPF_UPROBE(ssl_write_ex_entry, void *ssl, const void *buf, size_t num,
+               size_t *written) {
+    if (num <= 0) {
+        return 0;
+    }
+
+    // Checking the session if was set to specific http version.
+    // If not, we try to identify the version from the payload.
+    __u64 ssl_ptr = (__u64)ssl;
+    struct ssl_session *session = bpf_map_lookup_elem(&ssl_sessions, &ssl_ptr);
+    if (!session) {
+        return 0;
+    }
+
+    if (session->http_version == HTTP_VERSION_UNKNOWN) {
+        __u8 http_version = identify_http_version(ssl_ptr, buf, num);
+
+        if (http_version == HTTP_VERSION_UNKNOWN) {
+            return 0;
+        }
+
+        session->http_version = http_version;
+        bpf_map_update_elem(&ssl_sessions, &ssl_ptr, session, BPF_ANY);
+    }
+
+    struct tls_event *event =
+        bpf_ringbuf_reserve(&events, sizeof(struct tls_event), 0);
+    if (!event) {
+        bpf_printk(
+            "error: failed to reserve ring buffer for SSL_write_ex event");
+        return 0;
+    }
+
+    event->header.event_type = EVENT_TLS_SEND;
+    __u32 pid = bpf_get_current_pid_tgid() >> 32;
+    event->header.pid = pid;
+    bpf_get_current_comm(&event->header.comm, sizeof(event->header.comm));
+    event->http_version = session->http_version;
+    event->size = num;
+    event->buf_size = num > MAX_BUF_SIZE ? MAX_BUF_SIZE : num;
+
+    if (bpf_probe_read(&event->buf, event->buf_size, buf) != 0) {
+        bpf_printk("error: failed to read SSL_write_ex data");
+        bpf_ringbuf_discard(event, 0);
+        return 0;
+    }
+
+    bpf_ringbuf_submit(event, 0);
+
+    return 0;
+}
+
+// Track SSL session creation
+SEC("uretprobe/SSL_new")
+int BPF_URETPROBE(ssl_new_exit, void *ssl) {
+    if (!ssl) {
+        return 0;
+    }
+
+    __u64 ssl_ptr = (__u64)ssl;
+    struct ssl_session session = {
+        .http_version = HTTP_VERSION_UNKNOWN,
+        .is_active = 0,
+    };
+
+    bpf_map_update_elem(&ssl_sessions, &ssl_ptr, &session, BPF_ANY);
+    return 0;
+}
+
+// Track SSL session destruction
+SEC("uprobe/SSL_free")
+int BPF_UPROBE(ssl_free_entry, void *ssl) {
+    if (!ssl) {
+        return 0;
+    }
+
+    __u64 ssl_ptr = (__u64)ssl;
+    bpf_map_delete_elem(&ssl_sessions, &ssl_ptr);
+    return 0;
+}
+
+// Track SSL handshake entry
+SEC("uprobe/SSL_do_handshake")
+int BPF_UPROBE(ssl_do_handshake_entry, void *ssl) {
+    __u32 pid = bpf_get_current_pid_tgid() >> 32;
+    __u64 ssl_ptr = (__u64)ssl;
+
+    bpf_map_update_elem(&ssl_handshake_args, &pid, &ssl_ptr, BPF_ANY);
+    return 0;
+}
+
+// Track SSL handshake completion
+SEC("uretprobe/SSL_do_handshake")
+int BPF_URETPROBE(ssl_do_handshake_exit, int ret) {
+    __u32 pid = bpf_get_current_pid_tgid() >> 32;
+
+    __u64 *ssl_ptr = bpf_map_lookup_elem(&ssl_handshake_args, &pid);
+    if (!ssl_ptr) {
+        return 0;
+    }
+
+    __u64 ssl = *ssl_ptr;
+    bpf_map_delete_elem(&ssl_handshake_args, &pid);
+
+    // Handshake successful
+    if (ret != 1) {
+        return 0;
+    }
+
+    // Mark session as ready for data
+    struct ssl_session *session = bpf_map_lookup_elem(&ssl_sessions, &ssl);
+    if (session) {
+        session->is_active = 1;
+        bpf_map_update_elem(&ssl_sessions, &ssl, session, BPF_ANY);
+    }
+
     return 0;
 }
 

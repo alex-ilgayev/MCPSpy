@@ -185,7 +185,7 @@ func NewParser() *Parser {
 func (p *Parser) ParseData(data []byte, eventType ebpf.EventType, pid uint32, comm string) ([]*Message, error) {
 	var messages []*Message
 
-	if eventType != ebpf.EventTypeWrite && eventType != ebpf.EventTypeRead {
+	if eventType != ebpf.EventTypeFSWrite && eventType != ebpf.EventTypeFSRead {
 		return []*Message{}, fmt.Errorf("unknown event type: %d", eventType)
 	}
 
@@ -197,7 +197,7 @@ func (p *Parser) ParseData(data []byte, eventType ebpf.EventType, pid uint32, co
 			continue
 		}
 
-		if eventType == ebpf.EventTypeWrite {
+		if eventType == ebpf.EventTypeFSWrite {
 			p.cacheWriteEvent(msgData, pid, comm)
 		} else {
 			hash := p.calculateHash(msgData)
