@@ -22,7 +22,7 @@ echo "Starting MCPSpy smoke test..."
 MCPSPY_PID=$!
 
 # Wait a moment to check if process is still running
-sleep 1
+sleep 2
 
 # Check if process started successfully
 if ! kill -0 $MCPSPY_PID 2>/dev/null; then
@@ -53,6 +53,9 @@ for i in {1..5}; do
         if [ -s mcpspy.err ]; then
             echo "=== stderr ==="
             cat mcpspy.err
+            # Return failure if there's stderr output
+            rm -f mcpspy.out mcpspy.err
+            exit 1
         fi
         rm -f mcpspy.out mcpspy.err
         exit 0
