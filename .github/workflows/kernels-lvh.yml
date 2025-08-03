@@ -51,8 +51,6 @@ jobs:
         # List of kernel versions to test against
         # Find available tags here: https://quay.io/repository/lvh-images/kind?tab=tags
         items:
-          - kernel: "5.10"
-            lvh-image: "5.10-20250729.205433-amd64"
           - kernel: "5.15"
             lvh-image: "5.15-20250729.205433-amd64"
           - kernel: "6.1"
