@@ -5,33 +5,8 @@ CC = gcc
 CFLAGS = -Wall -Wextra -fPIC -g -O2 -std=gnu99
 LDFLAGS = -shared -ldl -lpthread
 
-# Optional dependencies (auto-detected)
-PCAP_AVAILABLE := $(shell pkg-config --exists libpcap && echo yes || test -f /opt/homebrew/opt/libpcap/lib/libpcap.dylib && echo yes || echo no)
-SSL_AVAILABLE := $(shell pkg-config --exists openssl && echo yes || echo no)
-
-# Add optional libraries if available
-ifeq ($(PCAP_AVAILABLE),yes)
-    ifeq ($(shell pkg-config --exists libpcap && echo yes || echo no),yes)
-        CFLAGS += -DHAVE_PCAP $(shell pkg-config --cflags libpcap)
-        LDFLAGS += $(shell pkg-config --libs libpcap)
-    else
-        # macOS Homebrew fallback
-        CFLAGS += -DHAVE_PCAP -I/opt/homebrew/opt/libpcap/include
-        LDFLAGS += -L/opt/homebrew/opt/libpcap/lib -lpcap
-    endif
-else
-    $(warning libpcap not found - packet capture will be disabled)
-endif
-
-ifeq ($(SSL_AVAILABLE),yes)
-    CFLAGS += -DHAVE_OPENSSL $(shell pkg-config --cflags openssl)
-    LDFLAGS += $(shell pkg-config --libs openssl)
-else
-    $(warning OpenSSL not found - SSL monitoring will be limited)
-endif
-
 # Source files
-SOURCES = libmcpspy.c stdio_monitor.c http_monitor.c ssl_monitor.c packet_monitor.c
+SOURCES = libmcpspy.c stdio_monitor.c
 OBJECTS = $(SOURCES:.c=.o)
 TARGET = libmcpspy.so
 

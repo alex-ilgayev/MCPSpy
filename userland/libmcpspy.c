@@ -91,21 +91,6 @@ int mcpspy_init(const mcpspy_config_t* config) {
         return -1;
     }
 
-    if (g_config.monitor_http && http_monitor_init() != 0) {
-        fprintf(stderr, "mcpspy: Failed to initialize HTTP monitoring\n");
-        return -1;
-    }
-
-    if (g_config.monitor_https && ssl_monitor_init() != 0) {
-        fprintf(stderr, "mcpspy: Failed to initialize SSL monitoring\n");
-        return -1;
-    }
-
-    if (g_config.monitor_packets && packet_monitor_init() != 0) {
-        fprintf(stderr, "mcpspy: Failed to initialize packet monitoring\n");
-        return -1;
-    }
-
     g_initialized = 1;
     return 0;
 }
@@ -119,15 +104,6 @@ void mcpspy_cleanup(void) {
     // Cleanup transport-specific monitoring
     if (g_config.monitor_stdio) {
         stdio_monitor_cleanup();
-    }
-    if (g_config.monitor_http) {
-        http_monitor_cleanup();
-    }
-    if (g_config.monitor_https) {
-        ssl_monitor_cleanup();
-    }
-    if (g_config.monitor_packets) {
-        packet_monitor_cleanup();
     }
 
     // Close log file

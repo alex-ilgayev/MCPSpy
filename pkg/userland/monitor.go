@@ -6,7 +6,6 @@ import (
 	"os"
 	"os/exec"
 	"sync"
-	"time"
 
 	"github.com/sirupsen/logrus"
 
@@ -88,9 +87,11 @@ func (m *Monitor) forwardCGOEvents() {
 	for cgoEvent := range m.cgoMonitor.Events() {
 		// Convert CGO event to eBPF-compatible event for existing parser
 		event := &ebpf.DataEvent{
-			PID:       cgoEvent.PID,
-			EventType: m.convertEventType(cgoEvent.EventType),
-			BufSize:   uint32(cgoEvent.BufSize),
+			EventHeader: ebpf.EventHeader{
+				PID:       uint32(cgoEvent.PID),
+				EventType: m.convertEventType(cgoEvent.EventType),
+			},
+			BufSize: uint32(cgoEvent.BufSize),
 		}
 
 		// Copy buffer data

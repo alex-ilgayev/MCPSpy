@@ -95,20 +95,11 @@ int close(int fd);
 
 // Transport-specific monitoring
 int stdio_monitor_init(void);
-int http_monitor_init(void);
-int ssl_monitor_init(void);
-int packet_monitor_init(void);
-
 void stdio_monitor_cleanup(void);
-void http_monitor_cleanup(void);
-void ssl_monitor_cleanup(void);
-void packet_monitor_cleanup(void);
 
 // Utility functions
 int is_stdio_fd(int fd);
 int is_socket_fd(int fd);
-int is_http_port(int port);
-int is_https_port(int port);
 void get_socket_info(int sockfd, char* addr_buf, int* port);
 const char* transport_type_to_string(transport_type_t type);
 const char* event_type_to_string(event_type_t type);

@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
 
 	"github.com/sirupsen/logrus"
@@ -22,18 +21,11 @@ import (
 
 // Command line flags
 var (
-	showBuffers   bool
-	verbose       bool
-	outputFile    string
-	logLevel      string
-	userlandMode  bool
-	monitorStdio  bool
-	monitorHTTP   bool
-	monitorSSL    bool
-	monitorPackets bool
-	httpPort      string
-	sslPort       string
-	networkInterface string
+	showBuffers bool
+	verbose     bool
+	outputFile  string
+	logLevel    string
+	mode        string
 )
 
 func main() {
@@ -52,16 +44,7 @@ communication by analyzing JSON-RPC 2.0 messages across multiple transports.`,
 	rootCmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "Enable verbose logging (debug level)")
 	rootCmd.Flags().StringVarP(&outputFile, "output", "o", "", "Output file (JSONL format will be written to file)")
 	rootCmd.Flags().StringVarP(&logLevel, "log-level", "l", "info", "Set log level (trace, debug, info, warn, error, fatal, panic)")
-	
-	// Userland mode flags
-	rootCmd.Flags().BoolVar(&userlandMode, "userland", false, "Use userland monitoring instead of eBPF (supports more transports)")
-	rootCmd.Flags().BoolVar(&monitorStdio, "stdio", true, "Monitor stdio transport (default: true)")
-	rootCmd.Flags().BoolVar(&monitorHTTP, "http", true, "Monitor HTTP transport (userland mode only)")
-	rootCmd.Flags().BoolVar(&monitorSSL, "ssl", true, "Monitor SSL/TLS transport (userland mode only)")
-	rootCmd.Flags().BoolVar(&monitorPackets, "packets", false, "Monitor network packets (userland mode only)")
-	rootCmd.Flags().StringVar(&httpPort, "http-port", "8080", "HTTP proxy port for monitoring")
-	rootCmd.Flags().StringVar(&sslPort, "ssl-port", "8443", "SSL proxy port for monitoring")
-	rootCmd.Flags().StringVar(&networkInterface, "interface", "any", "Network interface for packet capture")
+	rootCmd.Flags().StringVarP(&mode, "mode", "m", "ebpf", "Monitoring mode: 'ebpf' (kernel-level) or 'userland' (LD_PRELOAD)")
 
 	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)
@@ -116,10 +99,13 @@ func run(cmd *cobra.Command, args []string) error {
 	parser := mcp.NewParser()
 	stats := make(map[string]int)
 
-	if userlandMode {
+	switch mode {
+	case "userland":
 		return runUserlandMode(ctx, consoleDisplay, fileDisplay, parser, stats, level)
-	} else {
+	case "ebpf":
 		return runEBPFMode(ctx, consoleDisplay, fileDisplay, parser, stats, level)
+	default:
+		return fmt.Errorf("invalid mode '%s': must be 'ebpf' or 'userland'", mode)
 	}
 }
 
@@ -207,15 +193,12 @@ func runEBPFMode(ctx context.Context, consoleDisplay *output.ConsoleDisplay, fil
 }
 
 func runUserlandMode(ctx context.Context, consoleDisplay *output.ConsoleDisplay, fileDisplay output.OutputHandler, parser *mcp.Parser, stats map[string]int, level logrus.Level) error {
-	// Create userland monitor config
+	// Create userland monitor config with defaults
 	config := &userland.Config{
-		MonitorStdio:   monitorStdio,
-		MonitorHTTP:    monitorHTTP,
-		MonitorSSL:     monitorSSL,
-		MonitorPackets: monitorPackets,
-		HTTPPort:       httpPort,
-		SSLPort:        sslPort,
-		Interface:      networkInterface,
+		MonitorStdio:   true,   // Primary transport for MCP
+		MonitorHTTP:    false,  // Disabled in simplified version
+		MonitorSSL:     false,  // Disabled in simplified version  
+		MonitorPackets: false,  // Disabled in simplified version
 		LogLevel:       level,
 	}
 
@@ -227,21 +210,7 @@ func runUserlandMode(ctx context.Context, consoleDisplay *output.ConsoleDisplay,
 		return fmt.Errorf("failed to start userland monitor: %w", err)
 	}
 
-	var transports []string
-	if monitorStdio {
-		transports = append(transports, "stdio")
-	}
-	if monitorHTTP {
-		transports = append(transports, fmt.Sprintf("HTTP:%s", httpPort))
-	}
-	if monitorSSL {
-		transports = append(transports, fmt.Sprintf("SSL:%s", sslPort))
-	}
-	if monitorPackets {
-		transports = append(transports, fmt.Sprintf("packets:%s", networkInterface))
-	}
-
-	consoleDisplay.PrintInfo(fmt.Sprintf("Monitoring MCP communication with userland mode (%s)... Press Ctrl+C to stop", strings.Join(transports, ", ")))
+	consoleDisplay.PrintInfo("Monitoring MCP communication with userland mode (stdio)... Press Ctrl+C to stop")
 	consoleDisplay.PrintInfo("")
 
 	// Main event loop
