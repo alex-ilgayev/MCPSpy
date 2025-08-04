@@ -1,11 +1,11 @@
-# Userland MCPSpy Library Makefile
+# Userland MCPSpy Library Makefile - Simplified for stdio monitoring only
 
 # Compiler and flags
 CC = gcc
 CFLAGS = -Wall -Wextra -fPIC -g -O2 -std=gnu99
 LDFLAGS = -shared -ldl -lpthread
 
-# Source files
+# Source files (stdio monitoring only)
 SOURCES = libmcpspy.c stdio_monitor.c
 OBJECTS = $(SOURCES:.c=.o)
 TARGET = libmcpspy.so
@@ -67,8 +67,6 @@ config:
 	@echo "  CC: $(CC)"
 	@echo "  CFLAGS: $(CFLAGS)"
 	@echo "  LDFLAGS: $(LDFLAGS)"
-	@echo "  libpcap available: $(PCAP_AVAILABLE)"
-	@echo "  OpenSSL available: $(SSL_AVAILABLE)"
 	@echo "  Target: $(TARGET)"
 
 # Help target
@@ -91,10 +89,5 @@ help:
 	@echo ""
 	@echo "Environment variables:"
 	@echo "  MCPSPY_ENABLE=1           - Auto-enable monitoring"
-	@echo "  MCPSPY_LOG_FILE=file.log  - Log to file"
-	@echo "  MCPSPY_MONITOR_STDIO=1    - Monitor stdio (default: 1)"
-	@echo "  MCPSPY_MONITOR_HTTP=1     - Monitor HTTP (default: 1)"
-	@echo "  MCPSPY_MONITOR_HTTPS=1    - Monitor HTTPS (default: 1)"
-	@echo "  MCPSPY_MONITOR_PACKETS=1  - Monitor packets (default: 0)"
 
 .DEFAULT_GOAL := all

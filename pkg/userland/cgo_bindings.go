@@ -3,9 +3,6 @@ package userland
 /*
 #cgo CFLAGS: -I../../userland
 #cgo LDFLAGS: -L../../userland -lmcpspy -ldl -lpthread
-#cgo darwin CFLAGS: -I/opt/homebrew/opt/libpcap/include -I/opt/homebrew/Cellar/openssl@3/3.5.1/include
-#cgo darwin LDFLAGS: -L/opt/homebrew/opt/libpcap/lib -lpcap -L/opt/homebrew/Cellar/openssl@3/3.5.1/lib -lssl -lcrypto
-#cgo linux pkg-config: libpcap openssl
 
 #include <stdlib.h>
 #include <string.h>
@@ -42,8 +39,6 @@ type CGOEvent struct {
 	Size        uint64
 	BufSize     uint64
 	Data        []byte
-	RemoteAddr  string
-	RemotePort  int
 }
 
 // CGOMonitor wraps the C library for userland monitoring
@@ -147,8 +142,6 @@ func (m *CGOMonitor) convertCEventToGo(cEvent *C.mcp_event_t) *CGOEvent {
 		FD:         int(cEvent.fd),
 		Size:       uint64(cEvent.size),
 		BufSize:    uint64(cEvent.buf_size),
-		RemoteAddr: C.GoString(&cEvent.remote_addr[0]),
-		RemotePort: int(cEvent.remote_port),
 	}
 
 	// Copy buffer data
@@ -164,14 +157,6 @@ func (m *CGOMonitor) transportTypeToString(transportType int) string {
 	switch transportType {
 	case 1: // TRANSPORT_STDIO
 		return "stdio"
-	case 2: // TRANSPORT_HTTP
-		return "http"
-	case 3: // TRANSPORT_HTTPS
-		return "https"
-	case 4: // TRANSPORT_SOCKET
-		return "socket"
-	case 5: // TRANSPORT_PACKET
-		return "packet"
 	default:
 		return "unknown"
 	}
@@ -184,12 +169,6 @@ func (m *CGOMonitor) eventTypeToString(eventType int) string {
 		return "read"
 	case 2: // EVENT_TYPE_WRITE
 		return "write"
-	case 3: // EVENT_TYPE_CONNECT
-		return "connect"
-	case 4: // EVENT_TYPE_ACCEPT
-		return "accept"
-	case 5: // EVENT_TYPE_CLOSE
-		return "close"
 	default:
 		return "unknown"
 	}

@@ -26,14 +26,7 @@ type Monitor struct {
 
 // Config holds configuration for userland monitoring
 type Config struct {
-	MonitorStdio   bool
-	MonitorHTTP    bool
-	MonitorSSL     bool
-	MonitorPackets bool
-	HTTPPort       string
-	SSLPort        string
-	Interface      string
-	LogLevel       logrus.Level
+	LogLevel logrus.Level
 }
 
 // ProcessInfo holds information about monitored processes
@@ -88,8 +81,8 @@ func (m *Monitor) forwardCGOEvents() {
 		// Convert CGO event to eBPF-compatible event for existing parser
 		event := &ebpf.DataEvent{
 			EventHeader: ebpf.EventHeader{
-				PID:       uint32(cgoEvent.PID),
 				EventType: m.convertEventType(cgoEvent.EventType),
+				PID:       uint32(cgoEvent.PID),
 			},
 			BufSize: uint32(cgoEvent.BufSize),
 		}

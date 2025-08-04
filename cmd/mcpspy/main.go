@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	"github.com/sirupsen/logrus"
@@ -21,11 +22,11 @@ import (
 
 // Command line flags
 var (
-	showBuffers bool
-	verbose     bool
-	outputFile  string
-	logLevel    string
-	mode        string
+	showBuffers   bool
+	verbose       bool
+	outputFile    string
+	logLevel      string
+	mode          string  // "ebpf" or "userland"
 )
 
 func main() {
@@ -44,7 +45,7 @@ communication by analyzing JSON-RPC 2.0 messages across multiple transports.`,
 	rootCmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "Enable verbose logging (debug level)")
 	rootCmd.Flags().StringVarP(&outputFile, "output", "o", "", "Output file (JSONL format will be written to file)")
 	rootCmd.Flags().StringVarP(&logLevel, "log-level", "l", "info", "Set log level (trace, debug, info, warn, error, fatal, panic)")
-	rootCmd.Flags().StringVarP(&mode, "mode", "m", "ebpf", "Monitoring mode: 'ebpf' (kernel-level) or 'userland' (LD_PRELOAD)")
+	rootCmd.Flags().StringVarP(&mode, "mode", "m", "ebpf", "Monitoring mode: 'ebpf' (default) or 'userland'")
 
 	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)
@@ -99,11 +100,12 @@ func run(cmd *cobra.Command, args []string) error {
 	parser := mcp.NewParser()
 	stats := make(map[string]int)
 
-	switch mode {
-	case "userland":
-		return runUserlandMode(ctx, consoleDisplay, fileDisplay, parser, stats, level)
+	// Validate mode flag
+	switch strings.ToLower(mode) {
 	case "ebpf":
 		return runEBPFMode(ctx, consoleDisplay, fileDisplay, parser, stats, level)
+	case "userland":
+		return runUserlandMode(ctx, consoleDisplay, fileDisplay, parser, stats, level)
 	default:
 		return fmt.Errorf("invalid mode '%s': must be 'ebpf' or 'userland'", mode)
 	}
@@ -193,13 +195,9 @@ func runEBPFMode(ctx context.Context, consoleDisplay *output.ConsoleDisplay, fil
 }
 
 func runUserlandMode(ctx context.Context, consoleDisplay *output.ConsoleDisplay, fileDisplay output.OutputHandler, parser *mcp.Parser, stats map[string]int, level logrus.Level) error {
-	// Create userland monitor config with defaults
+	// Create userland monitor config (stdio only for now)
 	config := &userland.Config{
-		MonitorStdio:   true,   // Primary transport for MCP
-		MonitorHTTP:    false,  // Disabled in simplified version
-		MonitorSSL:     false,  // Disabled in simplified version  
-		MonitorPackets: false,  // Disabled in simplified version
-		LogLevel:       level,
+		LogLevel: level,
 	}
 
 	// Create and start userland monitor

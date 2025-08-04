@@ -1,3 +1,5 @@
+//go:build !userland
+
 package ebpf
 
 import (

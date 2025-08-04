@@ -13,15 +13,9 @@ int g_initialized = 0;
 pthread_mutex_t g_log_mutex = PTHREAD_MUTEX_INITIALIZER;
 FILE* g_log_file = NULL;
 
-// Original system call function pointers
+// Original system call function pointers (stdio only)
 static ssize_t (*original_read)(int fd, void *buf, size_t count) = NULL;
 static ssize_t (*original_write)(int fd, const void *buf, size_t count) = NULL;
-static ssize_t (*original_send)(int sockfd, const void *buf, size_t len, int flags) = NULL;
-static ssize_t (*original_recv)(int sockfd, void *buf, size_t len, int flags) = NULL;
-static int (*original_connect)(int sockfd, const struct sockaddr *addr, socklen_t addrlen) = NULL;
-static int (*original_accept)(int sockfd, struct sockaddr *addr, socklen_t *addrlen) = NULL;
-static int (*original_accept4)(int sockfd, struct sockaddr *addr, socklen_t *addrlen, int flags) = NULL;
-static int (*original_close)(int fd) = NULL;
 
 // Event queue for CGO interface
 #define EVENT_QUEUE_SIZE 1000
@@ -39,24 +33,6 @@ static void load_original_functions(void) {
     if (original_write == NULL) {
         original_write = (ssize_t (*)(int, const void *, size_t))dlsym(RTLD_NEXT, "write");
     }
-    if (original_send == NULL) {
-        original_send = (ssize_t (*)(int, const void *, size_t, int))dlsym(RTLD_NEXT, "send");
-    }
-    if (original_recv == NULL) {
-        original_recv = (ssize_t (*)(int, void *, size_t, int))dlsym(RTLD_NEXT, "recv");
-    }
-    if (original_connect == NULL) {
-        original_connect = (int (*)(int, const struct sockaddr *, socklen_t))dlsym(RTLD_NEXT, "connect");
-    }
-    if (original_accept == NULL) {
-        original_accept = (int (*)(int, struct sockaddr *, socklen_t *))dlsym(RTLD_NEXT, "accept");
-    }
-    if (original_accept4 == NULL) {
-        original_accept4 = (int (*)(int, struct sockaddr *, socklen_t *, int))dlsym(RTLD_NEXT, "accept4");
-    }
-    if (original_close == NULL) {
-        original_close = (int (*)(int))dlsym(RTLD_NEXT, "close");
-    }
 }
 
 // Initialize MCPSpy monitoring
@@ -65,27 +41,18 @@ int mcpspy_init(const mcpspy_config_t* config) {
         return 0; // Already initialized
     }
 
-    // Load configuration
+    // Set default configuration (hardcoded)
+    g_config.monitor_stdio = 1;
+
+    // Override with provided config if available
     if (config) {
         memcpy(&g_config, config, sizeof(mcpspy_config_t));
-    } else {
-        // Load from environment variables
-        mcpspy_load_config_from_env(&g_config);
     }
 
     // Load original function pointers
     load_original_functions();
 
-    // Open log file if specified
-    if (strlen(g_config.log_file) > 0) {
-        g_log_file = fopen(g_config.log_file, "a");
-        if (!g_log_file) {
-            fprintf(stderr, "mcpspy: Failed to open log file: %s\n", g_config.log_file);
-            return -1;
-        }
-    }
-
-    // Initialize transport-specific monitoring
+    // Initialize stdio monitoring
     if (g_config.monitor_stdio && stdio_monitor_init() != 0) {
         fprintf(stderr, "mcpspy: Failed to initialize stdio monitoring\n");
         return -1;
@@ -101,7 +68,7 @@ void mcpspy_cleanup(void) {
         return;
     }
 
-    // Cleanup transport-specific monitoring
+    // Cleanup stdio monitoring
     if (g_config.monitor_stdio) {
         stdio_monitor_cleanup();
     }
@@ -200,10 +167,6 @@ void mcpspy_log_event(const mcp_event_t* event) {
         fprintf(output, "\"");
     }
 
-    if (strlen(event->remote_addr) > 0) {
-        fprintf(output, ",\"remote_addr\":\"%s\",\"remote_port\":%d", event->remote_addr, event->remote_port);
-    }
-
     fprintf(output, "}\n");
     fflush(output);
 
@@ -246,15 +209,10 @@ void create_and_log_event(int fd, const void* buf, size_t size, event_type_t eve
         memcpy(event.buf, buf, event.buf_size);
     }
 
-    // Get socket info if applicable
-    if (is_socket_fd(fd)) {
-        get_socket_info(fd, event.remote_addr, &event.remote_port);
-    }
-
     mcpspy_log_event(&event);
 }
 
-// LD_PRELOAD hooked functions
+// LD_PRELOAD hooked functions (stdio only)
 ssize_t read(int fd, void *buf, size_t count) {
     if (!original_read) {
         load_original_functions();
@@ -262,14 +220,8 @@ ssize_t read(int fd, void *buf, size_t count) {
 
     ssize_t result = original_read(fd, buf, count);
     
-    if (result > 0 && g_initialized) {
-        transport_type_t transport = is_stdio_fd(fd) ? TRANSPORT_STDIO : 
-                                   is_socket_fd(fd) ? TRANSPORT_SOCKET : TRANSPORT_STDIO;
-        
-        if ((transport == TRANSPORT_STDIO && g_config.monitor_stdio) ||
-            (transport == TRANSPORT_SOCKET && g_config.monitor_sockets)) {
-            create_and_log_event(fd, buf, result, EVENT_TYPE_READ, transport);
-        }
+    if (result > 0 && g_initialized && is_stdio_fd(fd) && g_config.monitor_stdio) {
+        create_and_log_event(fd, buf, result, EVENT_TYPE_READ, TRANSPORT_STDIO);
     }
 
     return result;
@@ -282,135 +234,22 @@ ssize_t write(int fd, const void *buf, size_t count) {
 
     ssize_t result = original_write(fd, buf, count);
     
-    if (result > 0 && g_initialized) {
-        transport_type_t transport = is_stdio_fd(fd) ? TRANSPORT_STDIO : 
-                                   is_socket_fd(fd) ? TRANSPORT_SOCKET : TRANSPORT_STDIO;
-        
-        if ((transport == TRANSPORT_STDIO && g_config.monitor_stdio) ||
-            (transport == TRANSPORT_SOCKET && g_config.monitor_sockets)) {
-            create_and_log_event(fd, buf, result, EVENT_TYPE_WRITE, transport);
-        }
+    if (result > 0 && g_initialized && is_stdio_fd(fd) && g_config.monitor_stdio) {
+        create_and_log_event(fd, buf, result, EVENT_TYPE_WRITE, TRANSPORT_STDIO);
     }
 
     return result;
 }
 
-ssize_t send(int sockfd, const void *buf, size_t len, int flags) {
-    if (!original_send) {
-        load_original_functions();
-    }
-
-    ssize_t result = original_send(sockfd, buf, len, flags);
-    
-    if (result > 0 && g_initialized && g_config.monitor_sockets) {
-        create_and_log_event(sockfd, buf, result, EVENT_TYPE_WRITE, TRANSPORT_SOCKET);
-    }
-
-    return result;
-}
-
-ssize_t recv(int sockfd, void *buf, size_t len, int flags) {
-    if (!original_recv) {
-        load_original_functions();
-    }
-
-    ssize_t result = original_recv(sockfd, buf, len, flags);
-    
-    if (result > 0 && g_initialized && g_config.monitor_sockets) {
-        create_and_log_event(sockfd, buf, result, EVENT_TYPE_READ, TRANSPORT_SOCKET);
-    }
-
-    return result;
-}
-
-int connect(int sockfd, const struct sockaddr *addr, socklen_t addrlen) {
-    if (!original_connect) {
-        load_original_functions();
-    }
-
-    int result = original_connect(sockfd, addr, addrlen);
-    
-    if (result == 0 && g_initialized && g_config.monitor_sockets) {
-        create_and_log_event(sockfd, NULL, 0, EVENT_TYPE_CONNECT, TRANSPORT_SOCKET);
-    }
-
-    return result;
-}
-
-int accept(int sockfd, struct sockaddr *addr, socklen_t *addrlen) {
-    if (!original_accept) {
-        load_original_functions();
-    }
-
-    int result = original_accept(sockfd, addr, addrlen);
-    
-    if (result >= 0 && g_initialized && g_config.monitor_sockets) {
-        create_and_log_event(result, NULL, 0, EVENT_TYPE_ACCEPT, TRANSPORT_SOCKET);
-    }
-
-    return result;
-}
-
-int accept4(int sockfd, struct sockaddr *addr, socklen_t *addrlen, int flags) {
-    if (!original_accept4) {
-        load_original_functions();
-    }
-
-    int result = original_accept4(sockfd, addr, addrlen, flags);
-    
-    if (result >= 0 && g_initialized && g_config.monitor_sockets) {
-        create_and_log_event(result, NULL, 0, EVENT_TYPE_ACCEPT, TRANSPORT_SOCKET);
-    }
-
-    return result;
-}
-
-int close(int fd) {
-    if (!original_close) {
-        load_original_functions();
-    }
-
-    if (g_initialized && (is_stdio_fd(fd) || is_socket_fd(fd))) {
-        transport_type_t transport = is_stdio_fd(fd) ? TRANSPORT_STDIO : TRANSPORT_SOCKET;
-        if ((transport == TRANSPORT_STDIO && g_config.monitor_stdio) ||
-            (transport == TRANSPORT_SOCKET && g_config.monitor_sockets)) {
-            create_and_log_event(fd, NULL, 0, EVENT_TYPE_CLOSE, transport);
-        }
-    }
-
-    return original_close(fd);
-}
 
 // Utility functions
 int is_stdio_fd(int fd) {
     return fd == STDIN_FILENO || fd == STDOUT_FILENO || fd == STDERR_FILENO;
 }
 
-int is_socket_fd(int fd) {
-    struct stat stat_buf;
-    if (fstat(fd, &stat_buf) == 0) {
-        return S_ISSOCK(stat_buf.st_mode);
-    }
-    return 0;
-}
-
-void get_socket_info(int sockfd, char* addr_buf, int* port) {
-    struct sockaddr_in addr;
-    socklen_t addr_len = sizeof(addr);
-    
-    if (getpeername(sockfd, (struct sockaddr*)&addr, &addr_len) == 0) {
-        inet_ntop(AF_INET, &addr.sin_addr, addr_buf, INET_ADDRSTRLEN);
-        *port = ntohs(addr.sin_port);
-    }
-}
-
 const char* transport_type_to_string(transport_type_t type) {
     switch (type) {
         case TRANSPORT_STDIO: return "stdio";
-        case TRANSPORT_HTTP: return "http";
-        case TRANSPORT_HTTPS: return "https";
-        case TRANSPORT_SOCKET: return "socket";
-        case TRANSPORT_PACKET: return "packet";
         default: return "unknown";
     }
 }
@@ -419,54 +258,14 @@ const char* event_type_to_string(event_type_t type) {
     switch (type) {
         case EVENT_TYPE_READ: return "read";
         case EVENT_TYPE_WRITE: return "write";
-        case EVENT_TYPE_CONNECT: return "connect";
-        case EVENT_TYPE_ACCEPT: return "accept";
-        case EVENT_TYPE_CLOSE: return "close";
         default: return "unknown";
     }
 }
 
-// Load configuration from environment variables
-void mcpspy_load_config_from_env(mcpspy_config_t* config) {
-    // Set defaults
-    config->monitor_stdio = 1;
-    config->monitor_http = 1;
-    config->monitor_https = 1;
-    config->monitor_sockets = 1;
-    config->monitor_packets = 0; // Disabled by default
-    config->log_level = 1;
-    config->enable_ssl_mitm = 0;
-    strcpy(config->log_file, "");
-
-    // Override with environment variables
-    char* env_val;
-    
-    if ((env_val = getenv("MCPSPY_MONITOR_STDIO"))) {
-        config->monitor_stdio = atoi(env_val);
-    }
-    if ((env_val = getenv("MCPSPY_MONITOR_HTTP"))) {
-        config->monitor_http = atoi(env_val);
-    }
-    if ((env_val = getenv("MCPSPY_MONITOR_HTTPS"))) {
-        config->monitor_https = atoi(env_val);
-    }
-    if ((env_val = getenv("MCPSPY_MONITOR_SOCKETS"))) {
-        config->monitor_sockets = atoi(env_val);
-    }
-    if ((env_val = getenv("MCPSPY_MONITOR_PACKETS"))) {
-        config->monitor_packets = atoi(env_val);
-    }
-    if ((env_val = getenv("MCPSPY_LOG_FILE"))) {
-        strncpy(config->log_file, env_val, sizeof(config->log_file) - 1);
-    }
-    if ((env_val = getenv("MCPSPY_LOG_LEVEL"))) {
-        config->log_level = atoi(env_val);
-    }
-}
 
 // CGO interface functions
 int mcpspy_start_monitoring(const char* config_json) {
-    // For now, use default config - TODO: parse JSON config
+    // Use default config (ignore JSON config for simplicity)
     (void)config_json; // Suppress unused parameter warning
     return mcpspy_init(NULL);
 }
