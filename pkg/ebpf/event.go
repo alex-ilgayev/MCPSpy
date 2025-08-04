@@ -98,6 +98,7 @@ func (e *LibraryEvent) Path() string {
 type TlsEvent struct {
 	EventHeader
 
+	SSLContext  uint64           // SSL context pointer (session identifier)
 	Size        uint32           // Actual data size
 	BufSize     uint32           // Size of data in buf (may be truncated)
 	HttpVersion HttpVersion      // Identified HTTP version
@@ -105,3 +106,6 @@ type TlsEvent struct {
 }
 
 func (e *TlsEvent) Type() EventType { return e.EventType }
+func (e *TlsEvent) Buffer() []byte {
+	return e.Buf[:e.BufSize]
+}

@@ -11,6 +11,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/alex-ilgayev/mcpspy/pkg/ebpf"
+	"github.com/alex-ilgayev/mcpspy/pkg/http"
 	"github.com/alex-ilgayev/mcpspy/pkg/mcp"
 	"github.com/alex-ilgayev/mcpspy/pkg/output"
 	"github.com/alex-ilgayev/mcpspy/pkg/version"
@@ -98,6 +99,10 @@ func run(cmd *cobra.Command, args []string) error {
 	// and creates uprobe hooks for dynamically loaded libraries
 	libManager := ebpf.NewLibraryManager(loader)
 
+	// Manage HTTP sessions (1.1/2/chunked encoding/SSE)
+	httpManager := http.NewSessionManager()
+	defer httpManager.Close()
+
 	consoleDisplay.PrintInfo("Loading eBPF programs...")
 	if err := loader.Load(); err != nil {
 		return fmt.Errorf("failed to load eBPF programs: %w", err)
@@ -138,6 +143,21 @@ func run(cmd *cobra.Command, args []string) error {
 			consoleDisplay.PrintStats(stats)
 			return nil
 
+		case httpEvt, ok := <-httpManager.HTTPEvents():
+			if !ok {
+				// Channel closed, exit
+				consoleDisplay.PrintStats(stats)
+				return nil
+			}
+
+			// Handle HTTP event
+			logrus.WithFields(logrus.Fields{
+				"method":     httpEvt.Method,
+				"host":       httpEvt.Host,
+				"path":       httpEvt.Path,
+				"code":       httpEvt.Code,
+				"is_chunked": httpEvt.IsChunked,
+			}).Trace("HTTP event")
 		case event, ok := <-loader.Events():
 			if !ok {
 				// Channel closed, exit
@@ -199,6 +219,10 @@ func run(cmd *cobra.Command, args []string) error {
 					"buf_size": e.BufSize,
 					"version":  e.HttpVersion,
 				}).Trace("TLS event")
+				// Raw TLS event, we need to aggregate it into HTTP sessions
+				if err := httpManager.ProcessTlsEvent(e); err != nil {
+					logrus.WithError(err).Warn("Failed to process TLS event")
+				}
 			default:
 				logrus.WithField("type", event.Type()).Warn("Unknown event type")
 			}

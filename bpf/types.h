@@ -65,6 +65,7 @@ struct library_event {
 struct tls_event {
     struct event_header header;
 
+    __u64 ssl_ctx;     // SSL context pointer (session identifier)
     __u32 size;        // Actual data size
     __u32 buf_size;    // Size of data in buf (may be truncated)
     __u8 http_version; // Identified HTTP version of the session

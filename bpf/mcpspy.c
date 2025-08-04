@@ -269,6 +269,7 @@ int BPF_URETPROBE(ssl_read_exit, int ret) {
     event->header.event_type = EVENT_TLS_RECV;
     event->header.pid = pid;
     bpf_get_current_comm(&event->header.comm, sizeof(event->header.comm));
+    event->ssl_ctx = ssl_ptr;
     event->http_version = session->http_version;
 
     // Ensure buf_size is within bounds and positive for the verifier
@@ -324,6 +325,7 @@ int BPF_UPROBE(ssl_write_entry, void *ssl, const void *buf, int num) {
     __u32 pid = bpf_get_current_pid_tgid() >> 32;
     event->header.pid = pid;
     bpf_get_current_comm(&event->header.comm, sizeof(event->header.comm));
+    event->ssl_ctx = ssl_ptr;
     event->http_version = session->http_version;
 
     // Ensure buf_size is within bounds and positive for the verifier
@@ -409,6 +411,7 @@ int BPF_URETPROBE(ssl_read_ex_exit, int ret) {
     event->header.event_type = EVENT_TLS_RECV;
     event->header.pid = pid;
     bpf_get_current_comm(&event->header.comm, sizeof(event->header.comm));
+    event->ssl_ctx = ssl_ptr;
     event->http_version = session->http_version;
     event->size = actual_read;
     event->buf_size = actual_read > MAX_BUF_SIZE ? MAX_BUF_SIZE : actual_read;
@@ -462,6 +465,7 @@ int BPF_UPROBE(ssl_write_ex_entry, void *ssl, const void *buf, size_t num,
     __u32 pid = bpf_get_current_pid_tgid() >> 32;
     event->header.pid = pid;
     bpf_get_current_comm(&event->header.comm, sizeof(event->header.comm));
+    event->ssl_ctx = ssl_ptr;
     event->http_version = session->http_version;
     event->size = num;
     event->buf_size = num > MAX_BUF_SIZE ? MAX_BUF_SIZE : num;
