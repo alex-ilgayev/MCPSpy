@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/alex-ilgayev/mcpspy/pkg/ebpf"
+	"github.com/alex-ilgayev/mcpspy/pkg/event"
 )
 
 func TestSessionManager_BasicRequestResponse(t *testing.T) {
@@ -15,12 +15,12 @@ func TestSessionManager_BasicRequestResponse(t *testing.T) {
 
 	// Simulate HTTP request
 	requestData := []byte("GET /api/test HTTP/1.1\r\nHost: example.com\r\nContent-Length: 0\r\n\r\n")
-	requestEvent := &ebpf.TlsEvent{
-		EventHeader: ebpf.EventHeader{
-			EventType: ebpf.EventTypeTlsSend,
+	requestEvent := &event.TlsEvent{
+		EventHeader: event.EventHeader{
+			EventType: event.EventTypeTlsSend,
 		},
 		SSLContext:  sslCtx,
-		HttpVersion: ebpf.HttpVersion1,
+		HttpVersion: event.HttpVersion1,
 		BufSize:     uint32(len(requestData)),
 	}
 	copy(requestEvent.Buf[:], requestData)
@@ -33,12 +33,12 @@ func TestSessionManager_BasicRequestResponse(t *testing.T) {
 
 	// Simulate HTTP response
 	responseData := []byte("HTTP/1.1 200 OK\r\nContent-Length: 13\r\n\r\nHello, World!")
-	responseEvent := &ebpf.TlsEvent{
-		EventHeader: ebpf.EventHeader{
-			EventType: ebpf.EventTypeTlsRecv,
+	responseEvent := &event.TlsEvent{
+		EventHeader: event.EventHeader{
+			EventType: event.EventTypeTlsRecv,
 		},
 		SSLContext:  sslCtx,
-		HttpVersion: ebpf.HttpVersion1,
+		HttpVersion: event.HttpVersion1,
 		BufSize:     uint32(len(responseData)),
 	}
 	copy(responseEvent.Buf[:], responseData)
@@ -92,24 +92,24 @@ func TestSessionManager_FragmentedPayload(t *testing.T) {
 	requestPart2 := []byte("example.com\r\nContent-Length: 0\r\n\r\n")
 
 	// First fragment
-	event1 := &ebpf.TlsEvent{
-		EventHeader: ebpf.EventHeader{
-			EventType: ebpf.EventTypeTlsSend,
+	event1 := &event.TlsEvent{
+		EventHeader: event.EventHeader{
+			EventType: event.EventTypeTlsSend,
 		},
 		SSLContext:  sslCtx,
-		HttpVersion: ebpf.HttpVersion1,
+		HttpVersion: event.HttpVersion1,
 		BufSize:     uint32(len(requestPart1)),
 	}
 	copy(event1.Buf[:], requestPart1)
 	sm.ProcessTlsEvent(event1)
 
 	// Second fragment
-	event2 := &ebpf.TlsEvent{
-		EventHeader: ebpf.EventHeader{
-			EventType: ebpf.EventTypeTlsSend,
+	event2 := &event.TlsEvent{
+		EventHeader: event.EventHeader{
+			EventType: event.EventTypeTlsSend,
 		},
 		SSLContext:  sslCtx,
-		HttpVersion: ebpf.HttpVersion1,
+		HttpVersion: event.HttpVersion1,
 		BufSize:     uint32(len(requestPart2)),
 	}
 	copy(event2.Buf[:], requestPart2)
@@ -117,12 +117,12 @@ func TestSessionManager_FragmentedPayload(t *testing.T) {
 
 	// Send complete response
 	responseData := []byte("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
-	responseEvent := &ebpf.TlsEvent{
-		EventHeader: ebpf.EventHeader{
-			EventType: ebpf.EventTypeTlsRecv,
+	responseEvent := &event.TlsEvent{
+		EventHeader: event.EventHeader{
+			EventType: event.EventTypeTlsRecv,
 		},
 		SSLContext:  sslCtx,
-		HttpVersion: ebpf.HttpVersion1,
+		HttpVersion: event.HttpVersion1,
 		BufSize:     uint32(len(responseData)),
 	}
 	copy(responseEvent.Buf[:], responseData)
@@ -157,12 +157,12 @@ func TestSessionManager_MultipleSessions(t *testing.T) {
 
 	// Session 1 request
 	req1 := []byte("GET /session1 HTTP/1.1\r\nHost: example.com\r\nContent-Length: 0\r\n\r\n")
-	event1 := &ebpf.TlsEvent{
-		EventHeader: ebpf.EventHeader{
-			EventType: ebpf.EventTypeTlsSend,
+	event1 := &event.TlsEvent{
+		EventHeader: event.EventHeader{
+			EventType: event.EventTypeTlsSend,
 		},
 		SSLContext:  sslCtx1,
-		HttpVersion: ebpf.HttpVersion1,
+		HttpVersion: event.HttpVersion1,
 		BufSize:     uint32(len(req1)),
 	}
 	copy(event1.Buf[:], req1)
@@ -170,12 +170,12 @@ func TestSessionManager_MultipleSessions(t *testing.T) {
 
 	// Session 2 request
 	req2 := []byte("GET /session2 HTTP/1.1\r\nHost: example.com\r\nContent-Length: 0\r\n\r\n")
-	event2 := &ebpf.TlsEvent{
-		EventHeader: ebpf.EventHeader{
-			EventType: ebpf.EventTypeTlsSend,
+	event2 := &event.TlsEvent{
+		EventHeader: event.EventHeader{
+			EventType: event.EventTypeTlsSend,
 		},
 		SSLContext:  sslCtx2,
-		HttpVersion: ebpf.HttpVersion1,
+		HttpVersion: event.HttpVersion1,
 		BufSize:     uint32(len(req2)),
 	}
 	copy(event2.Buf[:], req2)
@@ -183,12 +183,12 @@ func TestSessionManager_MultipleSessions(t *testing.T) {
 
 	// Session 2 response (completes session 2 first)
 	resp2 := []byte("HTTP/1.1 200 OK\r\nContent-Length: 8\r\n\r\nsession2")
-	event3 := &ebpf.TlsEvent{
-		EventHeader: ebpf.EventHeader{
-			EventType: ebpf.EventTypeTlsRecv,
+	event3 := &event.TlsEvent{
+		EventHeader: event.EventHeader{
+			EventType: event.EventTypeTlsRecv,
 		},
 		SSLContext:  sslCtx2,
-		HttpVersion: ebpf.HttpVersion1,
+		HttpVersion: event.HttpVersion1,
 		BufSize:     uint32(len(resp2)),
 	}
 	copy(event3.Buf[:], resp2)
@@ -196,19 +196,19 @@ func TestSessionManager_MultipleSessions(t *testing.T) {
 
 	// Session 1 response
 	resp1 := []byte("HTTP/1.1 200 OK\r\nContent-Length: 8\r\n\r\nsession1")
-	event4 := &ebpf.TlsEvent{
-		EventHeader: ebpf.EventHeader{
-			EventType: ebpf.EventTypeTlsRecv,
+	event4 := &event.TlsEvent{
+		EventHeader: event.EventHeader{
+			EventType: event.EventTypeTlsRecv,
 		},
 		SSLContext:  sslCtx1,
-		HttpVersion: ebpf.HttpVersion1,
+		HttpVersion: event.HttpVersion1,
 		BufSize:     uint32(len(resp1)),
 	}
 	copy(event4.Buf[:], resp1)
 	sm.ProcessTlsEvent(event4)
 
 	// Verify both events are received
-	events := make(map[uint64]*Event)
+	events := make(map[uint64]*event.HttpEvent)
 	for i := 0; i < 2; i++ {
 		select {
 		case event := <-sm.HTTPEvents():
@@ -248,12 +248,12 @@ func TestSessionManager_IgnoresNonHTTP11(t *testing.T) {
 	defer sm.Close()
 
 	// HTTP/2 event should be ignored
-	event := &ebpf.TlsEvent{
-		EventHeader: ebpf.EventHeader{
-			EventType: ebpf.EventTypeTlsSend,
+	event := &event.TlsEvent{
+		EventHeader: event.EventHeader{
+			EventType: event.EventTypeTlsSend,
 		},
 		SSLContext:  uint64(999),
-		HttpVersion: ebpf.HttpVersion2,
+		HttpVersion: event.HttpVersion2,
 		BufSize:     10,
 	}
 	copy(event.Buf[:], []byte("some data"))
@@ -486,12 +486,12 @@ func TestChunkedTransferEncoding(t *testing.T) {
 
 	// Request
 	requestData := []byte("GET /api/chunked HTTP/1.1\r\nHost: example.com\r\n\r\n")
-	requestEvent := &ebpf.TlsEvent{
-		EventHeader: ebpf.EventHeader{
-			EventType: ebpf.EventTypeTlsSend,
+	requestEvent := &event.TlsEvent{
+		EventHeader: event.EventHeader{
+			EventType: event.EventTypeTlsSend,
 		},
 		SSLContext:  sslCtx,
-		HttpVersion: ebpf.HttpVersion1,
+		HttpVersion: event.HttpVersion1,
 		BufSize:     uint32(len(requestData)),
 	}
 	copy(requestEvent.Buf[:], requestData)
@@ -499,12 +499,12 @@ func TestChunkedTransferEncoding(t *testing.T) {
 
 	// Chunked response
 	responseData := []byte("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n6\r\n world\r\n0\r\n\r\n")
-	responseEvent := &ebpf.TlsEvent{
-		EventHeader: ebpf.EventHeader{
-			EventType: ebpf.EventTypeTlsRecv,
+	responseEvent := &event.TlsEvent{
+		EventHeader: event.EventHeader{
+			EventType: event.EventTypeTlsRecv,
 		},
 		SSLContext:  sslCtx,
-		HttpVersion: ebpf.HttpVersion1,
+		HttpVersion: event.HttpVersion1,
 		BufSize:     uint32(len(responseData)),
 	}
 	copy(responseEvent.Buf[:], responseData)
@@ -605,12 +605,12 @@ func TestSessionManager_FragmentedChunkedResponse(t *testing.T) {
 
 	// Request
 	requestData := []byte("GET /api/test HTTP/1.1\r\nHost: example.com\r\n\r\n")
-	requestEvent := &ebpf.TlsEvent{
-		EventHeader: ebpf.EventHeader{
-			EventType: ebpf.EventTypeTlsSend,
+	requestEvent := &event.TlsEvent{
+		EventHeader: event.EventHeader{
+			EventType: event.EventTypeTlsSend,
 		},
 		SSLContext:  sslCtx,
-		HttpVersion: ebpf.HttpVersion1,
+		HttpVersion: event.HttpVersion1,
 		BufSize:     uint32(len(requestData)),
 	}
 	copy(requestEvent.Buf[:], requestData)
@@ -618,12 +618,12 @@ func TestSessionManager_FragmentedChunkedResponse(t *testing.T) {
 
 	// Response fragment 1 - headers and first chunk
 	respPart1 := []byte("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello")
-	event1 := &ebpf.TlsEvent{
-		EventHeader: ebpf.EventHeader{
-			EventType: ebpf.EventTypeTlsRecv,
+	event1 := &event.TlsEvent{
+		EventHeader: event.EventHeader{
+			EventType: event.EventTypeTlsRecv,
 		},
 		SSLContext:  sslCtx,
-		HttpVersion: ebpf.HttpVersion1,
+		HttpVersion: event.HttpVersion1,
 		BufSize:     uint32(len(respPart1)),
 	}
 	copy(event1.Buf[:], respPart1)
@@ -639,12 +639,12 @@ func TestSessionManager_FragmentedChunkedResponse(t *testing.T) {
 
 	// Response fragment 2 - complete the message
 	respPart2 := []byte("\r\n0\r\n\r\n")
-	event2 := &ebpf.TlsEvent{
-		EventHeader: ebpf.EventHeader{
-			EventType: ebpf.EventTypeTlsRecv,
+	event2 := &event.TlsEvent{
+		EventHeader: event.EventHeader{
+			EventType: event.EventTypeTlsRecv,
 		},
 		SSLContext:  sslCtx,
-		HttpVersion: ebpf.HttpVersion1,
+		HttpVersion: event.HttpVersion1,
 		BufSize:     uint32(len(respPart2)),
 	}
 	copy(event2.Buf[:], respPart2)
@@ -672,12 +672,12 @@ func TestSessionManager_RequestWithPayload(t *testing.T) {
 
 	// POST request with JSON payload
 	requestData := []byte("POST /api/users HTTP/1.1\r\nHost: api.example.com\r\nContent-Type: application/json\r\nContent-Length: 24\r\n\r\n{\"name\":\"John\",\"age\":30}")
-	requestEvent := &ebpf.TlsEvent{
-		EventHeader: ebpf.EventHeader{
-			EventType: ebpf.EventTypeTlsSend,
+	requestEvent := &event.TlsEvent{
+		EventHeader: event.EventHeader{
+			EventType: event.EventTypeTlsSend,
 		},
 		SSLContext:  sslCtx,
-		HttpVersion: ebpf.HttpVersion1,
+		HttpVersion: event.HttpVersion1,
 		BufSize:     uint32(len(requestData)),
 	}
 	copy(requestEvent.Buf[:], requestData)
@@ -685,12 +685,12 @@ func TestSessionManager_RequestWithPayload(t *testing.T) {
 
 	// Response
 	responseData := []byte("HTTP/1.1 201 Created\r\nContent-Type: application/json\r\nContent-Length: 14\r\n\r\n{\"id\":\"12345\"}")
-	responseEvent := &ebpf.TlsEvent{
-		EventHeader: ebpf.EventHeader{
-			EventType: ebpf.EventTypeTlsRecv,
+	responseEvent := &event.TlsEvent{
+		EventHeader: event.EventHeader{
+			EventType: event.EventTypeTlsRecv,
 		},
 		SSLContext:  sslCtx,
-		HttpVersion: ebpf.HttpVersion1,
+		HttpVersion: event.HttpVersion1,
 		BufSize:     uint32(len(responseData)),
 	}
 	copy(responseEvent.Buf[:], responseData)

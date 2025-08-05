@@ -3,6 +3,8 @@ package ebpf
 import (
 	"errors"
 	"testing"
+
+	"github.com/alex-ilgayev/mcpspy/pkg/event"
 )
 
 // testLoader is a test implementation that tracks attach calls
@@ -35,9 +37,9 @@ func TestLibraryManager_ProcessLibraryEvent(t *testing.T) {
 
 	// Test successful hook
 	t.Run("successful hook", func(t *testing.T) {
-		event := &LibraryEvent{
-			EventHeader: EventHeader{
-				EventType: EventTypeLibrary,
+		event := &event.LibraryEvent{
+			EventHeader: event.EventHeader{
+				EventType: event.EventTypeLibrary,
 				PID:       1234,
 				CommBytes: [16]uint8{'t', 'e', 's', 't'},
 			},
@@ -70,9 +72,9 @@ func TestLibraryManager_ProcessLibraryEvent(t *testing.T) {
 		// Set up failure for this path
 		tl.attachResults["/usr/lib/libssl.so.3"] = errors.New("probe failed")
 
-		event := &LibraryEvent{
-			EventHeader: EventHeader{
-				EventType: EventTypeLibrary,
+		event := &event.LibraryEvent{
+			EventHeader: event.EventHeader{
+				EventType: event.EventTypeLibrary,
 				PID:       1234,
 				CommBytes: [16]uint8{'t', 'e', 's', 't'},
 			},
@@ -96,9 +98,9 @@ func TestLibraryManager_ProcessLibraryEvent(t *testing.T) {
 	t.Run("duplicate hook", func(t *testing.T) {
 		initialCalls := len(tl.attachCalls)
 
-		event := &LibraryEvent{
-			EventHeader: EventHeader{
-				EventType: EventTypeLibrary,
+		event := &event.LibraryEvent{
+			EventHeader: event.EventHeader{
+				EventType: event.EventTypeLibrary,
 				PID:       5678,
 				CommBytes: [16]uint8{'t', 'e', 's', 't', '2'},
 			},
@@ -121,9 +123,9 @@ func TestLibraryManager_ProcessLibraryEvent(t *testing.T) {
 	t.Run("previously failed", func(t *testing.T) {
 		initialCalls := len(tl.attachCalls)
 
-		event := &LibraryEvent{
-			EventHeader: EventHeader{
-				EventType: EventTypeLibrary,
+		event := &event.LibraryEvent{
+			EventHeader: event.EventHeader{
+				EventType: event.EventTypeLibrary,
 				PID:       9999,
 				CommBytes: [16]uint8{'t', 'e', 's', 't', '3'},
 			},

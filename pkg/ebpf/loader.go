@@ -16,6 +16,8 @@ import (
 	"github.com/cilium/ebpf/ringbuf"
 	"github.com/cilium/ebpf/rlimit"
 	"github.com/sirupsen/logrus"
+
+	mcpevents "github.com/alex-ilgayev/mcpspy/pkg/event"
 )
 
 //go:generate go run github.com/cilium/ebpf/cmd/bpf2go -target amd64 -cc clang -cflags "-D__TARGET_ARCH_x86" mcpspy_bpfel_x86 ../../bpf/mcpspy.c
@@ -26,7 +28,7 @@ type Loader struct {
 	objs    *archObjects
 	links   []link.Link
 	reader  *ringbuf.Reader
-	eventCh chan Event
+	eventCh chan mcpevents.Event
 	debug   bool
 
 	// Iterator link for library enumeration
@@ -43,7 +45,7 @@ func New(debug bool) (*Loader, error) {
 
 	return &Loader{
 		// approximately maximum of 25-100MB memory.
-		eventCh: make(chan Event, 100000),
+		eventCh: make(chan mcpevents.Event, 100000),
 		debug:   debug,
 	}, nil
 }
@@ -105,7 +107,7 @@ func (l *Loader) Load() error {
 }
 
 // Events returns a channel for receiving events
-func (l *Loader) Events() <-chan Event {
+func (l *Loader) Events() <-chan mcpevents.Event {
 	return l.eventCh
 }
 
@@ -140,43 +142,43 @@ func (l *Loader) Start(ctx context.Context) error {
 					continue
 				}
 
-				eventType := EventType(record.RawSample[0])
+				eventType := mcpevents.EventType(record.RawSample[0])
 
-				var event Event
+				var event mcpevents.Event
 				reader := bytes.NewReader(record.RawSample)
 
 				switch eventType {
-				case EventTypeFSRead, EventTypeFSWrite:
-					if len(record.RawSample) < int(unsafe.Sizeof(DataEvent{})) {
+				case mcpevents.EventTypeFSRead, mcpevents.EventTypeFSWrite:
+					if len(record.RawSample) < int(unsafe.Sizeof(mcpevents.FSDataEvent{})) {
 						logrus.Warn("Received incomplete data event for data event")
 						continue
 					}
 
-					var dataEvent DataEvent
+					var dataEvent mcpevents.FSDataEvent
 					if err := binary.Read(reader, binary.LittleEndian, &dataEvent); err != nil {
 						logrus.WithError(err).Error("Failed to parse data event")
 						continue
 					}
 					event = &dataEvent
-				case EventTypeLibrary:
-					if len(record.RawSample) < int(unsafe.Sizeof(LibraryEvent{})) {
+				case mcpevents.EventTypeLibrary:
+					if len(record.RawSample) < int(unsafe.Sizeof(mcpevents.LibraryEvent{})) {
 						logrus.Warn("Received incomplete library event")
 						continue
 					}
 
-					var libraryEvent LibraryEvent
+					var libraryEvent mcpevents.LibraryEvent
 					if err := binary.Read(reader, binary.LittleEndian, &libraryEvent); err != nil {
 						logrus.WithError(err).Error("Failed to parse library event")
 						continue
 					}
 					event = &libraryEvent
-				case EventTypeTlsSend, EventTypeTlsRecv:
-					if len(record.RawSample) < int(unsafe.Sizeof(TlsEvent{})) {
+				case mcpevents.EventTypeTlsSend, mcpevents.EventTypeTlsRecv:
+					if len(record.RawSample) < int(unsafe.Sizeof(mcpevents.TlsEvent{})) {
 						logrus.Warn("Received incomplete TLS event")
 						continue
 					}
 
-					var tlsEvent TlsEvent
+					var tlsEvent mcpevents.TlsEvent
 					if err := binary.Read(reader, binary.LittleEndian, &tlsEvent); err != nil {
 						logrus.WithError(err).Error("Failed to parse TLS event")
 						continue

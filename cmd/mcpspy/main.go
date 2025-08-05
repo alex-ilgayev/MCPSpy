@@ -11,6 +11,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/alex-ilgayev/mcpspy/pkg/ebpf"
+	mcpevents "github.com/alex-ilgayev/mcpspy/pkg/event"
 	"github.com/alex-ilgayev/mcpspy/pkg/http"
 	"github.com/alex-ilgayev/mcpspy/pkg/mcp"
 	"github.com/alex-ilgayev/mcpspy/pkg/output"
@@ -167,7 +168,7 @@ func run(cmd *cobra.Command, args []string) error {
 
 			// Handle different event types
 			switch e := event.(type) {
-			case *ebpf.DataEvent:
+			case *mcpevents.FSDataEvent:
 				buf := e.Buf[:e.BufSize]
 				if len(buf) == 0 {
 					continue
@@ -197,7 +198,7 @@ func run(cmd *cobra.Command, args []string) error {
 				if fileDisplay != nil {
 					fileDisplay.PrintMessages(messages)
 				}
-			case *ebpf.LibraryEvent:
+			case *mcpevents.LibraryEvent:
 				// Handle library events
 				logrus.WithFields(logrus.Fields{
 					"pid":   e.PID,
@@ -209,7 +210,7 @@ func run(cmd *cobra.Command, args []string) error {
 				if err := libManager.ProcessLibraryEvent(e); err != nil {
 					logrus.WithError(err).WithField("path", e.Path()).Warn("Failed to process library event")
 				}
-			case *ebpf.TlsEvent:
+			case *mcpevents.TlsEvent:
 				// Handle TLS events
 				logrus.WithFields(logrus.Fields{
 					"type":     e.Type(),

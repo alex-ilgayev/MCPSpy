@@ -3,7 +3,7 @@ package mcp
 import (
 	"testing"
 
-	"github.com/alex-ilgayev/mcpspy/pkg/ebpf"
+	"github.com/alex-ilgayev/mcpspy/pkg/event"
 )
 
 func TestParseJSONRPC_ValidMessages(t *testing.T) {
@@ -74,13 +74,13 @@ func TestParseJSONRPC_ValidMessages(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			// Simulate write event first
-			_, err := parser.ParseData(tt.data, ebpf.EventTypeFSWrite, 100, "writer")
+			_, err := parser.ParseData(tt.data, event.EventTypeFSWrite, 100, "writer")
 			if err != nil {
 				t.Fatalf("ParseData write failed: %v", err)
 			}
 
 			// Then read event
-			msgs, err := parser.ParseData(tt.data, ebpf.EventTypeFSRead, 200, "reader")
+			msgs, err := parser.ParseData(tt.data, event.EventTypeFSRead, 200, "reader")
 			if err != nil {
 				t.Fatalf("ParseData read failed: %v", err)
 			}
@@ -548,12 +548,12 @@ func TestParseJSONRPC_AllSupportedMethods(t *testing.T) {
 			data := []byte(tc.data)
 
 			// Write then read
-			_, err := parser.ParseData(data, ebpf.EventTypeFSWrite, 100, "writer")
+			_, err := parser.ParseData(data, event.EventTypeFSWrite, 100, "writer")
 			if err != nil {
 				t.Fatalf("Write failed: %v", err)
 			}
 
-			msgs, err := parser.ParseData(data, ebpf.EventTypeFSRead, 200, "reader")
+			msgs, err := parser.ParseData(data, event.EventTypeFSRead, 200, "reader")
 			if err != nil {
 				t.Fatalf("Read failed for method %s: %v", tc.method, err)
 			}
@@ -679,13 +679,13 @@ func TestParseJSONRPC_InvalidMessages(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			// Write event
-			_, err := parser.ParseData(tt.data, ebpf.EventTypeFSWrite, 100, "writer")
+			_, err := parser.ParseData(tt.data, event.EventTypeFSWrite, 100, "writer")
 			if err != nil {
 				t.Fatalf("Write failed: %v", err)
 			}
 
 			// Read event should fail
-			_, err = parser.ParseData(tt.data, ebpf.EventTypeFSRead, 200, "reader")
+			_, err = parser.ParseData(tt.data, event.EventTypeFSRead, 200, "reader")
 			if err == nil {
 				t.Errorf("Expected error containing '%s', got nil", tt.expectError)
 				return
@@ -706,7 +706,7 @@ func TestParseData_WriteReadCorrelation(t *testing.T) {
 	// Test normal flow: write then read
 	t.Run("Normal flow", func(t *testing.T) {
 		// Write event
-		writeMsg, err := parser.ParseData(data, ebpf.EventTypeFSWrite, 100, "writer")
+		writeMsg, err := parser.ParseData(data, event.EventTypeFSWrite, 100, "writer")
 		if err != nil {
 			t.Fatalf("Write failed: %v", err)
 		}
@@ -715,7 +715,7 @@ func TestParseData_WriteReadCorrelation(t *testing.T) {
 		}
 
 		// Read event
-		readMsg, err := parser.ParseData(data, ebpf.EventTypeFSRead, 200, "reader")
+		readMsg, err := parser.ParseData(data, event.EventTypeFSRead, 200, "reader")
 		if err != nil {
 			t.Fatalf("Read failed: %v", err)
 		}
@@ -743,7 +743,7 @@ func TestParseData_WriteReadCorrelation(t *testing.T) {
 		newParser := NewParser()
 		data2 := []byte(`{"jsonrpc":"2.0","id":2,"method":"tools/list"}`)
 
-		_, err := newParser.ParseData(data2, ebpf.EventTypeFSRead, 200, "reader")
+		_, err := newParser.ParseData(data2, event.EventTypeFSRead, 200, "reader")
 		if err == nil {
 			t.Error("Expected error for read without write")
 		}
@@ -762,13 +762,13 @@ func TestParseData_MultipleMessages(t *testing.T) {
 {"jsonrpc":"2.0","method":"notifications/progress","params":{"value":50}}`)
 
 	// Write event
-	_, err := parser.ParseData(multipleData, ebpf.EventTypeFSWrite, 100, "writer")
+	_, err := parser.ParseData(multipleData, event.EventTypeFSWrite, 100, "writer")
 	if err != nil {
 		t.Fatalf("Write failed: %v", err)
 	}
 
 	// Read event
-	msgs, err := parser.ParseData(multipleData, ebpf.EventTypeFSRead, 200, "reader")
+	msgs, err := parser.ParseData(multipleData, event.EventTypeFSRead, 200, "reader")
 	if err != nil {
 		t.Fatalf("Read failed: %v", err)
 	}
@@ -964,7 +964,7 @@ func TestParseData_UnsupportedEventType(t *testing.T) {
 	data := []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`)
 
 	// Test unsupported event type
-	_, err := parser.ParseData(data, ebpf.EventType(99), 100, "test")
+	_, err := parser.ParseData(data, event.EventType(99), 100, "test")
 	if err == nil {
 		t.Error("Expected error for unsupported event type")
 	}

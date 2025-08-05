@@ -1,4 +1,4 @@
-package ebpf
+package event
 
 import (
 	"github.com/alex-ilgayev/mcpspy/pkg/encoder"
@@ -12,6 +12,7 @@ const (
 	EventTypeLibrary EventType = 3
 	EventTypeTlsSend EventType = 4
 	EventTypeTlsRecv EventType = 5
+	EventTypeHttp    EventType = 6
 )
 
 type HttpVersion uint8
@@ -67,9 +68,9 @@ func (h *EventHeader) Comm() string {
 	return encoder.BytesToStr(h.CommBytes[:])
 }
 
-// DataEvent represents the r/w payload which
+// FSDataEvent represents the r/w payload which
 // contains the mcp message.
-type DataEvent struct {
+type FSDataEvent struct {
 	EventHeader
 
 	Size    uint32           // Actual data size
@@ -77,7 +78,7 @@ type DataEvent struct {
 	Buf     [16 * 1024]uint8 // Data buffer
 }
 
-func (e *DataEvent) Type() EventType { return e.EventType }
+func (e *FSDataEvent) Type() EventType { return e.EventType }
 
 // LibraryEvent represents a new loaded library in memory.
 // used for uprobe hooking for tls inspection
@@ -93,7 +94,7 @@ func (e *LibraryEvent) Path() string {
 }
 
 // Even though it's similar to DataEvent,
-// we need to treat it differently, as it conasist
+// we need to treat it differently, as it consist
 // of HTTP data, and not neccesarily MCP data.
 type TlsEvent struct {
 	EventHeader
@@ -109,3 +110,26 @@ func (e *TlsEvent) Type() EventType { return e.EventType }
 func (e *TlsEvent) Buffer() []byte {
 	return e.Buf[:e.BufSize]
 }
+
+// HttpEvent is generated after aggregating TLS events.
+// (not generated from eBPF program)
+type HttpEvent struct {
+	EventHeader
+
+	SSLContext uint64
+
+	// Request
+	Method         string
+	Host           string
+	Path           string
+	RequestHeaders map[string]string
+	RequestPayload []byte
+
+	// Response
+	ResponseHeaders map[string]string
+	Code            int
+	IsChunked       bool
+	ResponsePayload []byte
+}
+
+func (e *HttpEvent) Type() EventType { return e.EventType }

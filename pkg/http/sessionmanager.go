@@ -6,27 +6,9 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/alex-ilgayev/mcpspy/pkg/ebpf"
+	"github.com/alex-ilgayev/mcpspy/pkg/event"
 	"github.com/sirupsen/logrus"
 )
-
-// Event represents a complete HTTP request-response pair
-type Event struct {
-	SSLContext uint64
-
-	// Request
-	Method         string
-	Host           string
-	Path           string
-	RequestHeaders map[string]string
-	RequestPayload []byte
-
-	// Response
-	ResponseHeaders map[string]string
-	Code            int
-	IsChunked       bool
-	ResponsePayload []byte
-}
 
 // httpRequest represents a parsed HTTP request
 // We do not include this in `Event` type, so we'll be able to change it freely
@@ -64,19 +46,19 @@ type SessionManager struct {
 	mu sync.Mutex
 
 	sessions map[uint64]*session // key is SSL context
-	eventCh  chan Event
+	eventCh  chan event.HttpEvent
 }
 
 func NewSessionManager() *SessionManager {
 	return &SessionManager{
 		sessions: make(map[uint64]*session),
-		eventCh:  make(chan Event, 100),
+		eventCh:  make(chan event.HttpEvent, 100),
 	}
 }
 
-func (s *SessionManager) ProcessTlsEvent(e *ebpf.TlsEvent) error {
+func (s *SessionManager) ProcessTlsEvent(e *event.TlsEvent) error {
 	// Only process HTTP/1.1 events for now.
-	if e.HttpVersion != ebpf.HttpVersion1 {
+	if e.HttpVersion != event.HttpVersion1 {
 		return nil
 	}
 
@@ -97,11 +79,11 @@ func (s *SessionManager) ProcessTlsEvent(e *ebpf.TlsEvent) error {
 	// Append data based on direction and parse
 	data := e.Buffer()
 	switch e.EventType {
-	case ebpf.EventTypeTlsSend:
+	case event.EventTypeTlsSend:
 		// Client -> Server (Request)
 		sess.requestBuf.Write(data)
 		sess.request = parseHTTPRequest(sess.requestBuf.Bytes())
-	case ebpf.EventTypeTlsRecv:
+	case event.EventTypeTlsRecv:
 		// Server -> Client (Response)
 		sess.responseBuf.Write(data)
 		sess.response = parseHTTPResponse(sess.responseBuf.Bytes())
@@ -111,7 +93,7 @@ func (s *SessionManager) ProcessTlsEvent(e *ebpf.TlsEvent) error {
 	if sess.request != nil && sess.request.isComplete &&
 		sess.response != nil && sess.response.isComplete {
 		// Build event from parsed data
-		event := Event{
+		event := event.HttpEvent{
 			SSLContext:      sess.sslContext,
 			Method:          sess.request.method,
 			Host:            sess.request.host,
@@ -138,7 +120,7 @@ func (s *SessionManager) ProcessTlsEvent(e *ebpf.TlsEvent) error {
 }
 
 // Events returns a channel for receiving events
-func (s *SessionManager) HTTPEvents() <-chan Event {
+func (s *SessionManager) HTTPEvents() <-chan event.HttpEvent {
 	return s.eventCh
 }
 

@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/alex-ilgayev/mcpspy/pkg/ebpf"
+	"github.com/alex-ilgayev/mcpspy/pkg/event"
 	"github.com/hashicorp/golang-lru/v2/expirable"
 	"github.com/tidwall/gjson"
 )
@@ -182,10 +182,10 @@ func NewParser() *Parser {
 //
 // We may receive several JSONs in single read / write event.
 // Splitting the data into seperate JSONs first. Assuming each JSON is separated by a newline.
-func (p *Parser) ParseData(data []byte, eventType ebpf.EventType, pid uint32, comm string) ([]*Message, error) {
+func (p *Parser) ParseData(data []byte, eventType event.EventType, pid uint32, comm string) ([]*Message, error) {
 	var messages []*Message
 
-	if eventType != ebpf.EventTypeFSWrite && eventType != ebpf.EventTypeFSRead {
+	if eventType != event.EventTypeFSWrite && eventType != event.EventTypeFSRead {
 		return []*Message{}, fmt.Errorf("unknown event type: %d", eventType)
 	}
 
@@ -197,7 +197,7 @@ func (p *Parser) ParseData(data []byte, eventType ebpf.EventType, pid uint32, co
 			continue
 		}
 
-		if eventType == ebpf.EventTypeFSWrite {
+		if eventType == event.EventTypeFSWrite {
 			p.cacheWriteEvent(msgData, pid, comm)
 		} else {
 			hash := p.calculateHash(msgData)

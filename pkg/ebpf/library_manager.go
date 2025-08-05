@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"sync"
 
+	"github.com/alex-ilgayev/mcpspy/pkg/event"
 	"github.com/sirupsen/logrus"
 )
 
@@ -31,7 +32,7 @@ func NewLibraryManager(attacher SSLProbeAttacher) *LibraryManager {
 }
 
 // ProcessLibraryEvent processes a library event and attempts to attach SSL probes if needed
-func (lm *LibraryManager) ProcessLibraryEvent(event *LibraryEvent) error {
+func (lm *LibraryManager) ProcessLibraryEvent(event *event.LibraryEvent) error {
 	lm.mu.Lock()
 	defer lm.mu.Unlock()
 
