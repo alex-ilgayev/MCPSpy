@@ -248,10 +248,19 @@ int BPF_URETPROBE(ssl_read_exit, int ret) {
         return 0;
     }
 
+    __u8 http_version = HTTP_VERSION_UNKNOWN;
+    __u8 http_message_type = HTTP_MESSAGE_UNKNOWN;
     if (session->http_version == HTTP_VERSION_UNKNOWN) {
-        __u8 http_version = identify_http_version(ssl_ptr, (const char *)params->buf, ret);
+        identify_http_version(ssl_ptr, (const char *)params->buf, ret,
+                              &http_version, &http_message_type);
 
         if (http_version == HTTP_VERSION_UNKNOWN) {
+            return 0;
+        }
+
+        // We only care about HTTP clients (not servers).
+        // ssl_read should be called only for responses.
+        if (http_message_type == HTTP_MESSAGE_REQUEST) {
             return 0;
         }
 
@@ -303,10 +312,19 @@ int BPF_UPROBE(ssl_write_entry, void *ssl, const void *buf, int num) {
         return 0;
     }
 
+    __u8 http_version = HTTP_VERSION_UNKNOWN;
+    __u8 http_message_type = HTTP_MESSAGE_UNKNOWN;
     if (session->http_version == HTTP_VERSION_UNKNOWN) {
-        __u8 http_version = identify_http_version(ssl_ptr, buf, num);
+        identify_http_version(ssl_ptr, buf, num, &http_version,
+                              &http_message_type);
 
         if (http_version == HTTP_VERSION_UNKNOWN) {
+            return 0;
+        }
+
+        // We only care about HTTP clients (not servers).
+        // SSL_write should be called only for requests.
+        if (http_message_type == HTTP_MESSAGE_RESPONSE) {
             return 0;
         }
 
@@ -389,10 +407,19 @@ int BPF_URETPROBE(ssl_read_ex_exit, int ret) {
         return 0;
     }
 
+    __u8 http_version = HTTP_VERSION_UNKNOWN;
+    __u8 http_message_type = HTTP_MESSAGE_UNKNOWN;
     if (session->http_version == HTTP_VERSION_UNKNOWN) {
-        __u8 http_version = identify_http_version(ssl_ptr, (const char *)params->buf, actual_read);
+        identify_http_version(ssl_ptr, (const char *)params->buf, ret,
+                              &http_version, &http_message_type);
 
         if (http_version == HTTP_VERSION_UNKNOWN) {
+            return 0;
+        }
+
+        // We only care about HTTP clients (not servers).
+        // SSL_read_ex should be called only for responses.
+        if (http_message_type == HTTP_MESSAGE_REQUEST) {
             return 0;
         }
 
@@ -442,10 +469,19 @@ int BPF_UPROBE(ssl_write_ex_entry, void *ssl, const void *buf, size_t num,
         return 0;
     }
 
+    __u8 http_version = HTTP_VERSION_UNKNOWN;
+    __u8 http_message_type = HTTP_MESSAGE_UNKNOWN;
     if (session->http_version == HTTP_VERSION_UNKNOWN) {
-        __u8 http_version = identify_http_version(ssl_ptr, buf, num);
+        identify_http_version(ssl_ptr, buf, num, &http_version,
+                              &http_message_type);
 
         if (http_version == HTTP_VERSION_UNKNOWN) {
+            return 0;
+        }
+
+        // We only care about HTTP clients (not servers).
+        // SSL_write_ex should be called only for requests.
+        if (http_message_type == HTTP_MESSAGE_RESPONSE) {
             return 0;
         }
 

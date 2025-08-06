@@ -34,6 +34,11 @@
 #define HTTP_VERSION_1 1
 #define HTTP_VERSION_2 2
 
+// HTTP message types
+#define HTTP_MESSAGE_REQUEST 1
+#define HTTP_MESSAGE_RESPONSE 2
+#define HTTP_MESSAGE_UNKNOWN 3
+
 struct {
     __uint(type, BPF_MAP_TYPE_RINGBUF);
     __uint(max_entries, 4 * 1024 * 1024); // 4MB buffer

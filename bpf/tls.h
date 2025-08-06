@@ -23,7 +23,7 @@ struct {
 } ssl_sessions SEC(".maps");
 
 // Check if data indicates HTTP/1.1 request
-static __always_inline bool is_http1_data(const char *buf, __u32 size) {
+static __always_inline bool is_http1_request(const char *buf, __u32 size) {
     if (size < 4) {
         return false;
     }
@@ -46,9 +46,18 @@ static __always_inline bool is_http1_data(const char *buf, __u32 size) {
         return true;
     }
 
+    return false;
+}
+
+// Check if data indicates HTTP/1.1 response
+static __always_inline bool is_http1_response(const char *buf, __u32 size) {
+    if (size < 8) {
+        return false;
+    }
+
     // Check for HTTP/1.1 response
-    if (size >= 8 && buf[0] == 'H' && buf[1] == 'T' && buf[2] == 'T' &&
-        buf[3] == 'P' && buf[4] == '/' && buf[5] == '1' && buf[6] == '.') {
+    if (buf[0] == 'H' && buf[1] == 'T' && buf[2] == 'T' && buf[3] == 'P' &&
+        buf[4] == '/' && buf[5] == '1' && buf[6] == '.') {
         return true;
     }
 
@@ -72,28 +81,44 @@ static __always_inline bool is_http2_data(const char *buf, __u32 size) {
             buf[23] == '\n');
 }
 
-// Process SSL data and get identified HTTP version.
+// Process SSL data and identifies the HTTP version and message type.
 // Returns HTTP_VERSION_UNKNOWN if the data is not HTTP.
-static __always_inline __u8 identify_http_version(__u64 ssl_ptr,
-                                                  const char *buf, __u32 size) {
+// Returns HTTP_MESSAGE_UNKNOWN if the message type is not identified.
+static __always_inline void identify_http_version(__u64 ssl_ptr,
+                                                  const char *buf, __u32 size,
+                                                  __u8 *http_version,
+                                                  __u8 *http_message_type) {
     // Can't be any HTTP version with less than 4 bytes.
     if (size < 4) {
-        return HTTP_VERSION_UNKNOWN;
+        *http_version = HTTP_VERSION_UNKNOWN;
+        *http_message_type = HTTP_MESSAGE_UNKNOWN;
+        return;
     }
 
     // Read data to check protocol
     char data_buf[24];
     if (bpf_probe_read(data_buf, sizeof(data_buf), buf) != 0) {
-        return HTTP_VERSION_UNKNOWN;
+        *http_version = HTTP_VERSION_UNKNOWN;
+        *http_message_type = HTTP_MESSAGE_UNKNOWN;
+        return;
     }
 
     if (is_http2_data(data_buf, size)) {
-        return HTTP_VERSION_2;
-    } else if (is_http1_data(data_buf, size)) {
-        return HTTP_VERSION_1;
+        *http_version = HTTP_VERSION_2;
+        *http_message_type = HTTP_MESSAGE_UNKNOWN;
+        return;
+    } else if (is_http1_request(data_buf, size)) {
+        *http_version = HTTP_VERSION_1;
+        *http_message_type = HTTP_MESSAGE_REQUEST;
+        return;
+    } else if (is_http1_response(data_buf, size)) {
+        *http_version = HTTP_VERSION_1;
+        *http_message_type = HTTP_MESSAGE_RESPONSE;
+        return;
     }
 
-    return HTTP_VERSION_UNKNOWN;
+    *http_version = HTTP_VERSION_UNKNOWN;
+    *http_message_type = HTTP_MESSAGE_UNKNOWN;
 }
 
 #endif // __TLS_H
