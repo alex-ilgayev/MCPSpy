@@ -7,12 +7,15 @@ import (
 type EventType uint8
 
 const (
-	EventTypeFSRead  EventType = 1
-	EventTypeFSWrite EventType = 2
-	EventTypeLibrary EventType = 3
-	EventTypeTlsSend EventType = 4
-	EventTypeTlsRecv EventType = 5
-	EventTypeHttp    EventType = 6
+	EventTypeFSRead         EventType = 1
+	EventTypeFSWrite        EventType = 2
+	EventTypeLibrary        EventType = 3
+	EventTypeTlsPayloadSend EventType = 4
+	EventTypeTlsPayloadRecv EventType = 5
+	EventTypeTlsFree        EventType = 6
+
+	// Event that is not originated from eBPF
+	EventTypeHttp EventType = 100
 )
 
 type HttpVersion uint8
@@ -42,10 +45,12 @@ func (e EventType) String() string {
 		return "fs_write"
 	case EventTypeLibrary:
 		return "library"
-	case EventTypeTlsSend:
+	case EventTypeTlsPayloadSend:
 		return "tls_send"
-	case EventTypeTlsRecv:
+	case EventTypeTlsPayloadRecv:
 		return "tls_recv"
+	case EventTypeTlsFree:
+		return "tls_free"
 	default:
 		return "unknown"
 	}
@@ -96,7 +101,7 @@ func (e *LibraryEvent) Path() string {
 // Even though it's similar to DataEvent,
 // we need to treat it differently, as it consist
 // of HTTP data, and not neccesarily MCP data.
-type TlsEvent struct {
+type TlsPayloadEvent struct {
 	EventHeader
 
 	SSLContext  uint64           // SSL context pointer (session identifier)
@@ -106,10 +111,18 @@ type TlsEvent struct {
 	Buf         [16 * 1024]uint8 // Data buffer
 }
 
-func (e *TlsEvent) Type() EventType { return e.EventType }
-func (e *TlsEvent) Buffer() []byte {
+func (e *TlsPayloadEvent) Type() EventType { return e.EventType }
+func (e *TlsPayloadEvent) Buffer() []byte {
 	return e.Buf[:e.BufSize]
 }
+
+type TlsFreeEvent struct {
+	EventHeader
+
+	SSLContext uint64
+}
+
+func (e *TlsFreeEvent) Type() EventType { return e.EventType }
 
 // HttpEvent is generated after aggregating TLS events.
 // (not generated from eBPF program)

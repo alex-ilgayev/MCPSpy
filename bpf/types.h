@@ -26,8 +26,9 @@
 #define EVENT_READ 1
 #define EVENT_WRITE 2
 #define EVENT_LIBRARY 3
-#define EVENT_TLS_SEND 4
-#define EVENT_TLS_RECV 5
+#define EVENT_TLS_PAYLOAD_SEND 4
+#define EVENT_TLS_PAYLOAD_RECV 5
+#define EVENT_TLS_FREE 6
 
 // HTTP version constants
 #define HTTP_VERSION_UNKNOWN 0
@@ -67,7 +68,7 @@ struct library_event {
     __u8 path[PATH_MAX];
 };
 
-struct tls_event {
+struct tls_payload_event {
     struct event_header header;
 
     __u64 ssl_ctx;     // SSL context pointer (session identifier)
@@ -75,6 +76,12 @@ struct tls_event {
     __u32 buf_size;    // Size of data in buf (may be truncated)
     __u8 http_version; // Identified HTTP version of the session
     __u8 buf[MAX_BUF_SIZE];
+};
+
+struct tls_free_event {
+    struct event_header header;
+    
+    __u64 ssl_ctx; // SSL context pointer (session identifier)
 };
 
 #endif // __TYPES_H

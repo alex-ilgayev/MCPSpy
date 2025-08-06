@@ -56,7 +56,7 @@ func NewSessionManager() *SessionManager {
 	}
 }
 
-func (s *SessionManager) ProcessTlsEvent(e *event.TlsEvent) error {
+func (s *SessionManager) ProcessTlsEvent(e *event.TlsPayloadEvent) error {
 	// Only process HTTP/1.1 events for now.
 	if e.HttpVersion != event.HttpVersion1 {
 		return nil
@@ -79,44 +79,80 @@ func (s *SessionManager) ProcessTlsEvent(e *event.TlsEvent) error {
 	// Append data based on direction and parse
 	data := e.Buffer()
 	switch e.EventType {
-	case event.EventTypeTlsSend:
+	case event.EventTypeTlsPayloadSend:
 		// Client -> Server (Request)
 		sess.requestBuf.Write(data)
 		sess.request = parseHTTPRequest(sess.requestBuf.Bytes())
-	case event.EventTypeTlsRecv:
+	case event.EventTypeTlsPayloadRecv:
 		// Server -> Client (Response)
 		sess.responseBuf.Write(data)
-		sess.response = parseHTTPResponse(sess.responseBuf.Bytes())
+		sess.response = parseHTTPResponse(sess.responseBuf.Bytes(), false)
 	}
 
 	// If we have both complete request and response, emit event
 	if sess.request != nil && sess.request.isComplete &&
 		sess.response != nil && sess.response.isComplete {
-		// Build event from parsed data
-		event := event.HttpEvent{
-			SSLContext:      sess.sslContext,
-			Method:          sess.request.method,
-			Host:            sess.request.host,
-			Path:            sess.request.path,
-			Code:            sess.response.statusCode,
-			IsChunked:       sess.response.isChunked,
-			RequestHeaders:  sess.request.headers,
-			ResponseHeaders: sess.response.headers,
-			RequestPayload:  sess.request.body,
-			ResponsePayload: sess.response.body,
-		}
 
-		select {
-		case s.eventCh <- event:
-		default:
-			logrus.Warn("HTTP event channel is full, dropping event")
-		}
+		s.emitEvent(sess)
 
 		// Clean up session
 		delete(s.sessions, e.SSLContext)
 	}
 
 	return nil
+}
+
+func (s *SessionManager) ProcessTlsFreeEvent(e *event.TlsFreeEvent) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// Check if we have a session for this SSL context
+	sess, exists := s.sessions[e.SSLContext]
+	if !exists {
+		// No session to clean up
+		return nil
+	}
+
+	// Only handle incomplete chunked transfers
+	// Check if we have an incomplete chunked response that didn't receive the final 0-sized chunk
+	if sess.response != nil && sess.response.isChunked && !sess.response.isComplete {
+		// Re-parse the response buffer with partial=true to extract what we have
+		responseData := sess.responseBuf.Bytes()
+		sess.response = parseHTTPResponse(responseData, true)
+	}
+
+	// If we have both complete request and response, emit event
+	if sess.request != nil && sess.request.isComplete &&
+		sess.response != nil && sess.response.isComplete {
+		s.emitEvent(sess)
+	}
+
+	// Clean up the session
+	delete(s.sessions, e.SSLContext)
+
+	return nil
+}
+
+func (s *SessionManager) emitEvent(sess *session) {
+	// Build event from parsed data
+	event := event.HttpEvent{
+		SSLContext:      sess.sslContext,
+		Method:          sess.request.method,
+		Host:            sess.request.host,
+		Path:            sess.request.path,
+		Code:            sess.response.statusCode,
+		IsChunked:       sess.response.isChunked,
+		RequestHeaders:  sess.request.headers,
+		ResponseHeaders: sess.response.headers,
+		RequestPayload:  sess.request.body,
+		ResponsePayload: sess.response.body,
+	}
+
+	select {
+	case s.eventCh <- event:
+	default:
+		logrus.Warn("HTTP event channel is full, dropping event")
+	}
 }
 
 // Events returns a channel for receiving events
@@ -158,23 +194,26 @@ func parseHTTPRequest(data []byte) *httpRequest {
 	req.path = parts[1]
 
 	// Parse headers
-	headerLines := string(data[firstLineEnd+2 : headerEnd])
 	hasContentLength := false
 	contentLength := 0
 
-	for _, line := range strings.Split(headerLines, "\r\n") {
-		colonIdx := strings.Index(line, ":")
-		if colonIdx > 0 {
-			key := strings.TrimSpace(line[:colonIdx])
-			value := strings.TrimSpace(line[colonIdx+1:])
-			req.headers[key] = value
+	// Handle case where there are no headers (empty header section)
+	if headerEnd > firstLineEnd+2 {
+		headerLines := string(data[firstLineEnd+2 : headerEnd])
+		for _, line := range strings.Split(headerLines, "\r\n") {
+			colonIdx := strings.Index(line, ":")
+			if colonIdx > 0 {
+				key := strings.TrimSpace(line[:colonIdx])
+				value := strings.TrimSpace(line[colonIdx+1:])
+				req.headers[key] = value
 
-			lowerKey := strings.ToLower(key)
-			if lowerKey == "host" {
-				req.host = value
-			} else if lowerKey == "content-length" {
-				hasContentLength = true
-				fmt.Sscanf(value, "%d", &contentLength)
+				lowerKey := strings.ToLower(key)
+				if lowerKey == "host" {
+					req.host = value
+				} else if lowerKey == "content-length" {
+					hasContentLength = true
+					fmt.Sscanf(value, "%d", &contentLength)
+				}
 			}
 		}
 	}
@@ -209,7 +248,8 @@ func parseHTTPRequest(data []byte) *httpRequest {
 }
 
 // parseHTTPResponse parses HTTP response data and returns parsed information
-func parseHTTPResponse(data []byte) *httpResponse {
+// If partial is true, it will attempt to parse incomplete chunked responses
+func parseHTTPResponse(data []byte, partial bool) *httpResponse {
 	resp := &httpResponse{
 		headers: make(map[string]string),
 	}
@@ -236,23 +276,26 @@ func parseHTTPResponse(data []byte) *httpResponse {
 	fmt.Sscanf(parts[1], "%d", &resp.statusCode)
 
 	// Parse headers
-	headerLines := string(data[firstLineEnd+2 : headerEnd])
 	hasContentLength := false
 	contentLength := 0
 
-	for _, line := range strings.Split(headerLines, "\r\n") {
-		colonIdx := strings.Index(line, ":")
-		if colonIdx > 0 {
-			key := strings.TrimSpace(line[:colonIdx])
-			value := strings.TrimSpace(line[colonIdx+1:])
-			resp.headers[key] = value
+	// Handle case where there are no headers (empty header section)
+	if headerEnd > firstLineEnd+2 {
+		headerLines := string(data[firstLineEnd+2 : headerEnd])
+		for _, line := range strings.Split(headerLines, "\r\n") {
+			colonIdx := strings.Index(line, ":")
+			if colonIdx > 0 {
+				key := strings.TrimSpace(line[:colonIdx])
+				value := strings.TrimSpace(line[colonIdx+1:])
+				resp.headers[key] = value
 
-			lowerKey := strings.ToLower(key)
-			if lowerKey == "transfer-encoding" && strings.Contains(strings.ToLower(value), "chunked") {
-				resp.isChunked = true
-			} else if lowerKey == "content-length" {
-				hasContentLength = true
-				fmt.Sscanf(value, "%d", &contentLength)
+				lowerKey := strings.ToLower(key)
+				if lowerKey == "transfer-encoding" && strings.Contains(strings.ToLower(value), "chunked") {
+					resp.isChunked = true
+				} else if lowerKey == "content-length" {
+					hasContentLength = true
+					fmt.Sscanf(value, "%d", &contentLength)
+				}
 			}
 		}
 	}
@@ -263,7 +306,7 @@ func parseHTTPResponse(data []byte) *httpResponse {
 	if resp.isChunked {
 		// For chunked encoding, parse and check completeness
 		if bodyStart < len(data) {
-			if body, complete := parseChunkedBody(data[bodyStart:]); complete {
+			if body, complete := parseChunkedBody(data[bodyStart:], partial); complete {
 				resp.body = body
 				resp.isComplete = true
 			}
@@ -297,7 +340,8 @@ func parseHTTPResponse(data []byte) *httpResponse {
 
 // parseChunkedBody attempts to parse chunked body data
 // Returns the parsed body and whether the chunked data is complete
-func parseChunkedBody(data []byte) (body []byte, isComplete bool) {
+// If partial is true, it will return whatever chunks are available without requiring the terminating zero chunk
+func parseChunkedBody(data []byte, partial bool) (body []byte, isComplete bool) {
 	var result bytes.Buffer
 	pos := 0
 
@@ -305,6 +349,10 @@ func parseChunkedBody(data []byte) (body []byte, isComplete bool) {
 		// Find chunk size line
 		lineEnd := bytes.Index(data[pos:], []byte("\r\n"))
 		if lineEnd == -1 {
+			// If partial mode and we have some data already parsed, return what we have
+			if partial && result.Len() > 0 {
+				return result.Bytes(), true
+			}
 			return nil, false // Incomplete - no chunk size line
 		}
 
@@ -323,6 +371,10 @@ func parseChunkedBody(data []byte) (body []byte, isComplete bool) {
 
 		// Check if we have enough data for this chunk
 		if pos+int(chunkSize)+2 > len(data) {
+			// If partial mode and we have some data already parsed, return what we have
+			if partial && result.Len() > 0 {
+				return result.Bytes(), true
+			}
 			return nil, false // Incomplete - not enough data for chunk
 		}
 
@@ -331,6 +383,11 @@ func parseChunkedBody(data []byte) (body []byte, isComplete bool) {
 
 		// Move past chunk data and trailing CRLF
 		pos += int(chunkSize) + 2
+	}
+
+	// If we reach here and partial is true, return what we have
+	if partial && result.Len() > 0 {
+		return result.Bytes(), true
 	}
 
 	return nil, false // Incomplete - no terminating chunk

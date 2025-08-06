@@ -15,9 +15,9 @@ func TestSessionManager_BasicRequestResponse(t *testing.T) {
 
 	// Simulate HTTP request
 	requestData := []byte("GET /api/test HTTP/1.1\r\nHost: example.com\r\nContent-Length: 0\r\n\r\n")
-	requestEvent := &event.TlsEvent{
+	requestEvent := &event.TlsPayloadEvent{
 		EventHeader: event.EventHeader{
-			EventType: event.EventTypeTlsSend,
+			EventType: event.EventTypeTlsPayloadSend,
 		},
 		SSLContext:  sslCtx,
 		HttpVersion: event.HttpVersion1,
@@ -33,9 +33,9 @@ func TestSessionManager_BasicRequestResponse(t *testing.T) {
 
 	// Simulate HTTP response
 	responseData := []byte("HTTP/1.1 200 OK\r\nContent-Length: 13\r\n\r\nHello, World!")
-	responseEvent := &event.TlsEvent{
+	responseEvent := &event.TlsPayloadEvent{
 		EventHeader: event.EventHeader{
-			EventType: event.EventTypeTlsRecv,
+			EventType: event.EventTypeTlsPayloadRecv,
 		},
 		SSLContext:  sslCtx,
 		HttpVersion: event.HttpVersion1,
@@ -92,9 +92,9 @@ func TestSessionManager_FragmentedPayload(t *testing.T) {
 	requestPart2 := []byte("example.com\r\nContent-Length: 0\r\n\r\n")
 
 	// First fragment
-	event1 := &event.TlsEvent{
+	event1 := &event.TlsPayloadEvent{
 		EventHeader: event.EventHeader{
-			EventType: event.EventTypeTlsSend,
+			EventType: event.EventTypeTlsPayloadSend,
 		},
 		SSLContext:  sslCtx,
 		HttpVersion: event.HttpVersion1,
@@ -104,9 +104,9 @@ func TestSessionManager_FragmentedPayload(t *testing.T) {
 	sm.ProcessTlsEvent(event1)
 
 	// Second fragment
-	event2 := &event.TlsEvent{
+	event2 := &event.TlsPayloadEvent{
 		EventHeader: event.EventHeader{
-			EventType: event.EventTypeTlsSend,
+			EventType: event.EventTypeTlsPayloadSend,
 		},
 		SSLContext:  sslCtx,
 		HttpVersion: event.HttpVersion1,
@@ -117,9 +117,9 @@ func TestSessionManager_FragmentedPayload(t *testing.T) {
 
 	// Send complete response
 	responseData := []byte("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
-	responseEvent := &event.TlsEvent{
+	responseEvent := &event.TlsPayloadEvent{
 		EventHeader: event.EventHeader{
-			EventType: event.EventTypeTlsRecv,
+			EventType: event.EventTypeTlsPayloadRecv,
 		},
 		SSLContext:  sslCtx,
 		HttpVersion: event.HttpVersion1,
@@ -157,9 +157,9 @@ func TestSessionManager_MultipleSessions(t *testing.T) {
 
 	// Session 1 request
 	req1 := []byte("GET /session1 HTTP/1.1\r\nHost: example.com\r\nContent-Length: 0\r\n\r\n")
-	event1 := &event.TlsEvent{
+	event1 := &event.TlsPayloadEvent{
 		EventHeader: event.EventHeader{
-			EventType: event.EventTypeTlsSend,
+			EventType: event.EventTypeTlsPayloadSend,
 		},
 		SSLContext:  sslCtx1,
 		HttpVersion: event.HttpVersion1,
@@ -170,9 +170,9 @@ func TestSessionManager_MultipleSessions(t *testing.T) {
 
 	// Session 2 request
 	req2 := []byte("GET /session2 HTTP/1.1\r\nHost: example.com\r\nContent-Length: 0\r\n\r\n")
-	event2 := &event.TlsEvent{
+	event2 := &event.TlsPayloadEvent{
 		EventHeader: event.EventHeader{
-			EventType: event.EventTypeTlsSend,
+			EventType: event.EventTypeTlsPayloadSend,
 		},
 		SSLContext:  sslCtx2,
 		HttpVersion: event.HttpVersion1,
@@ -183,9 +183,9 @@ func TestSessionManager_MultipleSessions(t *testing.T) {
 
 	// Session 2 response (completes session 2 first)
 	resp2 := []byte("HTTP/1.1 200 OK\r\nContent-Length: 8\r\n\r\nsession2")
-	event3 := &event.TlsEvent{
+	event3 := &event.TlsPayloadEvent{
 		EventHeader: event.EventHeader{
-			EventType: event.EventTypeTlsRecv,
+			EventType: event.EventTypeTlsPayloadRecv,
 		},
 		SSLContext:  sslCtx2,
 		HttpVersion: event.HttpVersion1,
@@ -196,9 +196,9 @@ func TestSessionManager_MultipleSessions(t *testing.T) {
 
 	// Session 1 response
 	resp1 := []byte("HTTP/1.1 200 OK\r\nContent-Length: 8\r\n\r\nsession1")
-	event4 := &event.TlsEvent{
+	event4 := &event.TlsPayloadEvent{
 		EventHeader: event.EventHeader{
-			EventType: event.EventTypeTlsRecv,
+			EventType: event.EventTypeTlsPayloadRecv,
 		},
 		SSLContext:  sslCtx1,
 		HttpVersion: event.HttpVersion1,
@@ -248,9 +248,9 @@ func TestSessionManager_IgnoresNonHTTP11(t *testing.T) {
 	defer sm.Close()
 
 	// HTTP/2 event should be ignored
-	event := &event.TlsEvent{
+	event := &event.TlsPayloadEvent{
 		EventHeader: event.EventHeader{
-			EventType: event.EventTypeTlsSend,
+			EventType: event.EventTypeTlsPayloadSend,
 		},
 		SSLContext:  uint64(999),
 		HttpVersion: event.HttpVersion2,
@@ -318,7 +318,7 @@ func TestParseHTTPMessage_Completeness(t *testing.T) {
 				req := parseHTTPRequest(tt.data)
 				isComplete = req.isComplete
 			} else {
-				resp := parseHTTPResponse(tt.data)
+				resp := parseHTTPResponse(tt.data, false)
 				isComplete = resp.isComplete
 			}
 			if isComplete != tt.complete {
@@ -455,7 +455,7 @@ func TestParseHTTPResponse(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			resp := parseHTTPResponse(tt.data)
+			resp := parseHTTPResponse(tt.data, false)
 
 			if resp.isComplete != tt.wantComplete {
 				t.Errorf("isComplete = %v, want %v", resp.isComplete, tt.wantComplete)
@@ -486,9 +486,9 @@ func TestChunkedTransferEncoding(t *testing.T) {
 
 	// Request
 	requestData := []byte("GET /api/chunked HTTP/1.1\r\nHost: example.com\r\n\r\n")
-	requestEvent := &event.TlsEvent{
+	requestEvent := &event.TlsPayloadEvent{
 		EventHeader: event.EventHeader{
-			EventType: event.EventTypeTlsSend,
+			EventType: event.EventTypeTlsPayloadSend,
 		},
 		SSLContext:  sslCtx,
 		HttpVersion: event.HttpVersion1,
@@ -499,9 +499,9 @@ func TestChunkedTransferEncoding(t *testing.T) {
 
 	// Chunked response
 	responseData := []byte("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n6\r\n world\r\n0\r\n\r\n")
-	responseEvent := &event.TlsEvent{
+	responseEvent := &event.TlsPayloadEvent{
 		EventHeader: event.EventHeader{
-			EventType: event.EventTypeTlsRecv,
+			EventType: event.EventTypeTlsPayloadRecv,
 		},
 		SSLContext:  sslCtx,
 		HttpVersion: event.HttpVersion1,
@@ -586,7 +586,7 @@ func TestParseChunkedBody_Completeness(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			body, complete := parseChunkedBody(tt.data)
+			body, complete := parseChunkedBody(tt.data, false)
 			if complete != tt.wantComplete {
 				t.Errorf("Expected complete=%v, got %v for data: %q", tt.wantComplete, complete, tt.data)
 			}
@@ -605,9 +605,9 @@ func TestSessionManager_FragmentedChunkedResponse(t *testing.T) {
 
 	// Request
 	requestData := []byte("GET /api/test HTTP/1.1\r\nHost: example.com\r\n\r\n")
-	requestEvent := &event.TlsEvent{
+	requestEvent := &event.TlsPayloadEvent{
 		EventHeader: event.EventHeader{
-			EventType: event.EventTypeTlsSend,
+			EventType: event.EventTypeTlsPayloadSend,
 		},
 		SSLContext:  sslCtx,
 		HttpVersion: event.HttpVersion1,
@@ -618,9 +618,9 @@ func TestSessionManager_FragmentedChunkedResponse(t *testing.T) {
 
 	// Response fragment 1 - headers and first chunk
 	respPart1 := []byte("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello")
-	event1 := &event.TlsEvent{
+	event1 := &event.TlsPayloadEvent{
 		EventHeader: event.EventHeader{
-			EventType: event.EventTypeTlsRecv,
+			EventType: event.EventTypeTlsPayloadRecv,
 		},
 		SSLContext:  sslCtx,
 		HttpVersion: event.HttpVersion1,
@@ -639,9 +639,9 @@ func TestSessionManager_FragmentedChunkedResponse(t *testing.T) {
 
 	// Response fragment 2 - complete the message
 	respPart2 := []byte("\r\n0\r\n\r\n")
-	event2 := &event.TlsEvent{
+	event2 := &event.TlsPayloadEvent{
 		EventHeader: event.EventHeader{
-			EventType: event.EventTypeTlsRecv,
+			EventType: event.EventTypeTlsPayloadRecv,
 		},
 		SSLContext:  sslCtx,
 		HttpVersion: event.HttpVersion1,
@@ -672,9 +672,9 @@ func TestSessionManager_RequestWithPayload(t *testing.T) {
 
 	// POST request with JSON payload
 	requestData := []byte("POST /api/users HTTP/1.1\r\nHost: api.example.com\r\nContent-Type: application/json\r\nContent-Length: 24\r\n\r\n{\"name\":\"John\",\"age\":30}")
-	requestEvent := &event.TlsEvent{
+	requestEvent := &event.TlsPayloadEvent{
 		EventHeader: event.EventHeader{
-			EventType: event.EventTypeTlsSend,
+			EventType: event.EventTypeTlsPayloadSend,
 		},
 		SSLContext:  sslCtx,
 		HttpVersion: event.HttpVersion1,
@@ -685,9 +685,9 @@ func TestSessionManager_RequestWithPayload(t *testing.T) {
 
 	// Response
 	responseData := []byte("HTTP/1.1 201 Created\r\nContent-Type: application/json\r\nContent-Length: 14\r\n\r\n{\"id\":\"12345\"}")
-	responseEvent := &event.TlsEvent{
+	responseEvent := &event.TlsPayloadEvent{
 		EventHeader: event.EventHeader{
-			EventType: event.EventTypeTlsRecv,
+			EventType: event.EventTypeTlsPayloadRecv,
 		},
 		SSLContext:  sslCtx,
 		HttpVersion: event.HttpVersion1,
@@ -732,5 +732,203 @@ func TestSessionManager_RequestWithPayload(t *testing.T) {
 		}
 	case <-time.After(100 * time.Millisecond):
 		t.Fatal("No event received")
+	}
+}
+
+func TestProcessTlsFreeEvent_DeletesSession(t *testing.T) {
+	sm := NewSessionManager()
+	defer sm.Close()
+
+	sslCtx := uint64(99999)
+
+	// Create a session with a request
+	requestData := []byte("GET /api/test HTTP/1.1\r\nHost: example.com\r\n\r\n")
+	requestEvent := &event.TlsPayloadEvent{
+		EventHeader: event.EventHeader{
+			EventType: event.EventTypeTlsPayloadSend,
+			PID:       1234,
+		},
+		SSLContext:  sslCtx,
+		HttpVersion: event.HttpVersion1,
+		BufSize:     uint32(len(requestData)),
+	}
+	copy(requestEvent.Buf[:], requestData)
+	sm.ProcessTlsEvent(requestEvent)
+
+	// Verify session exists
+	sm.mu.Lock()
+	_, exists := sm.sessions[sslCtx]
+	sm.mu.Unlock()
+	if !exists {
+		t.Fatal("Session should exist after processing request")
+	}
+
+	// Send TlsFreeEvent
+	freeEvent := &event.TlsFreeEvent{
+		EventHeader: event.EventHeader{
+			EventType: event.EventTypeTlsFree,
+			PID:       1234,
+		},
+		SSLContext: sslCtx,
+	}
+	err := sm.ProcessTlsFreeEvent(freeEvent)
+	if err != nil {
+		t.Fatalf("ProcessTlsFreeEvent failed: %v", err)
+	}
+
+	// Verify session is deleted
+	sm.mu.Lock()
+	_, exists = sm.sessions[sslCtx]
+	sm.mu.Unlock()
+	if exists {
+		t.Fatal("Session should be deleted after TlsFreeEvent")
+	}
+
+	// Should NOT receive an event (only chunked incomplete responses are emitted)
+	select {
+	case <-sm.HTTPEvents():
+		t.Fatal("Should not receive event for non-chunked incomplete session")
+	case <-time.After(100 * time.Millisecond):
+		// Expected - no event
+	}
+}
+
+func TestProcessTlsFreeEvent_IncompleteChunkedResponse(t *testing.T) {
+	sm := NewSessionManager()
+	defer sm.Close()
+
+	sslCtx := uint64(88888)
+
+	// Send request
+	requestData := []byte("GET /stream HTTP/1.1\r\nHost: example.com\r\n\r\n")
+	requestEvent := &event.TlsPayloadEvent{
+		EventHeader: event.EventHeader{
+			EventType: event.EventTypeTlsPayloadSend,
+			PID:       5678,
+		},
+		SSLContext:  sslCtx,
+		HttpVersion: event.HttpVersion1,
+		BufSize:     uint32(len(requestData)),
+	}
+	copy(requestEvent.Buf[:], requestData)
+	sm.ProcessTlsEvent(requestEvent)
+
+	// Send incomplete chunked response (missing final 0 chunk)
+	responseData := []byte("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nHello\r\n6\r\n World\r\n")
+	responseEvent := &event.TlsPayloadEvent{
+		EventHeader: event.EventHeader{
+			EventType: event.EventTypeTlsPayloadRecv,
+			PID:       5678,
+		},
+		SSLContext:  sslCtx,
+		HttpVersion: event.HttpVersion1,
+		BufSize:     uint32(len(responseData)),
+	}
+	copy(responseEvent.Buf[:], responseData)
+	sm.ProcessTlsEvent(responseEvent)
+
+	// No event should be emitted yet (incomplete)
+	select {
+	case <-sm.HTTPEvents():
+		t.Fatal("Should not receive event for incomplete chunked response")
+	case <-time.After(50 * time.Millisecond):
+		// Expected - no event
+	}
+
+	// Send TlsFreeEvent to force completion
+	freeEvent := &event.TlsFreeEvent{
+		EventHeader: event.EventHeader{
+			EventType: event.EventTypeTlsFree,
+			PID:       5678,
+		},
+		SSLContext: sslCtx,
+	}
+	sm.ProcessTlsFreeEvent(freeEvent)
+
+	// Should receive the incomplete event with partial body
+	select {
+	case event := <-sm.HTTPEvents():
+		if event.Method != "GET" {
+			t.Errorf("Expected method GET, got %s", event.Method)
+		}
+		if event.Code != 200 {
+			t.Errorf("Expected status code 200, got %d", event.Code)
+		}
+		if !event.IsChunked {
+			t.Error("Expected chunked response")
+		}
+		// Should have parsed partial body
+		expectedBody := "Hello World"
+		if string(event.ResponsePayload) != expectedBody {
+			t.Errorf("Expected body %q, got %q", expectedBody, event.ResponsePayload)
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("Should have received incomplete chunked event")
+	}
+}
+
+func TestProcessTlsFreeEvent_NoSession(t *testing.T) {
+	sm := NewSessionManager()
+	defer sm.Close()
+
+	// Send TlsFreeEvent for non-existent session
+	freeEvent := &event.TlsFreeEvent{
+		EventHeader: event.EventHeader{
+			EventType: event.EventTypeTlsFree,
+			PID:       1111,
+		},
+		SSLContext: 66666,
+	}
+
+	err := sm.ProcessTlsFreeEvent(freeEvent)
+	if err != nil {
+		t.Fatalf("ProcessTlsFreeEvent should not fail for non-existent session: %v", err)
+	}
+
+	// No event should be emitted
+	select {
+	case <-sm.HTTPEvents():
+		t.Fatal("Should not receive event for non-existent session")
+	case <-time.After(50 * time.Millisecond):
+		// Expected - no event
+	}
+}
+
+func TestProcessTlsFreeEvent_OnlyRequest(t *testing.T) {
+	sm := NewSessionManager()
+	defer sm.Close()
+
+	sslCtx := uint64(55555)
+
+	// Send only request (no response)
+	requestData := []byte("POST /api/data HTTP/1.1\r\nHost: api.example.com\r\nContent-Length: 7\r\n\r\n{\"a\":1}")
+	requestEvent := &event.TlsPayloadEvent{
+		EventHeader: event.EventHeader{
+			EventType: event.EventTypeTlsPayloadSend,
+			PID:       2222,
+		},
+		SSLContext:  sslCtx,
+		HttpVersion: event.HttpVersion1,
+		BufSize:     uint32(len(requestData)),
+	}
+	copy(requestEvent.Buf[:], requestData)
+	sm.ProcessTlsEvent(requestEvent)
+
+	// Send TlsFreeEvent
+	freeEvent := &event.TlsFreeEvent{
+		EventHeader: event.EventHeader{
+			EventType: event.EventTypeTlsFree,
+			PID:       2222,
+		},
+		SSLContext: sslCtx,
+	}
+	sm.ProcessTlsFreeEvent(freeEvent)
+
+	// Should NOT receive event (only chunked incomplete responses are emitted)
+	select {
+	case <-sm.HTTPEvents():
+		t.Fatal("Should not receive event for session with only request")
+	case <-time.After(100 * time.Millisecond):
+		// Expected - no event
 	}
 }

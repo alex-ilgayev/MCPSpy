@@ -172,18 +172,30 @@ func (l *Loader) Start(ctx context.Context) error {
 						continue
 					}
 					event = &libraryEvent
-				case mcpevents.EventTypeTlsSend, mcpevents.EventTypeTlsRecv:
-					if len(record.RawSample) < int(unsafe.Sizeof(mcpevents.TlsEvent{})) {
+				case mcpevents.EventTypeTlsPayloadSend, mcpevents.EventTypeTlsPayloadRecv:
+					if len(record.RawSample) < int(unsafe.Sizeof(mcpevents.TlsPayloadEvent{})) {
 						logrus.Warn("Received incomplete TLS event")
 						continue
 					}
 
-					var tlsEvent mcpevents.TlsEvent
+					var tlsEvent mcpevents.TlsPayloadEvent
 					if err := binary.Read(reader, binary.LittleEndian, &tlsEvent); err != nil {
 						logrus.WithError(err).Error("Failed to parse TLS event")
 						continue
 					}
 					event = &tlsEvent
+				case mcpevents.EventTypeTlsFree:
+					if len(record.RawSample) < int(unsafe.Sizeof(mcpevents.TlsFreeEvent{})) {
+						logrus.Warn("Received incomplete TLS free event")
+						continue
+					}
+
+					var tlsFreeEvent mcpevents.TlsFreeEvent
+					if err := binary.Read(reader, binary.LittleEndian, &tlsFreeEvent); err != nil {
+						logrus.WithError(err).Error("Failed to parse TLS free event")
+						continue
+					}
+					event = &tlsFreeEvent
 				default:
 					logrus.WithField("type", eventType).Warn("Unknown event type")
 					continue

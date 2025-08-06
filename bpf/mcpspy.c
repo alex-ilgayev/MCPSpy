@@ -268,14 +268,14 @@ int BPF_URETPROBE(ssl_read_exit, int ret) {
         bpf_map_update_elem(&ssl_sessions, &ssl_ptr, session, BPF_ANY);
     }
 
-    struct tls_event *event =
-        bpf_ringbuf_reserve(&events, sizeof(struct tls_event), 0);
+    struct tls_payload_event *event =
+        bpf_ringbuf_reserve(&events, sizeof(struct tls_payload_event), 0);
     if (!event) {
         bpf_printk("error: failed to reserve ring buffer for SSL_read event");
         return 0;
     }
 
-    event->header.event_type = EVENT_TLS_RECV;
+    event->header.event_type = EVENT_TLS_PAYLOAD_RECV;
     event->header.pid = pid;
     bpf_get_current_comm(&event->header.comm, sizeof(event->header.comm));
     event->ssl_ctx = ssl_ptr;
@@ -332,14 +332,14 @@ int BPF_UPROBE(ssl_write_entry, void *ssl, const void *buf, int num) {
         bpf_map_update_elem(&ssl_sessions, &ssl_ptr, session, BPF_ANY);
     }
 
-    struct tls_event *event =
-        bpf_ringbuf_reserve(&events, sizeof(struct tls_event), 0);
+    struct tls_payload_event *event =
+        bpf_ringbuf_reserve(&events, sizeof(struct tls_payload_event), 0);
     if (!event) {
         bpf_printk("error: failed to reserve ring buffer for SSL_write event");
         return 0;
     }
 
-    event->header.event_type = EVENT_TLS_SEND;
+    event->header.event_type = EVENT_TLS_PAYLOAD_SEND;
     __u32 pid = bpf_get_current_pid_tgid() >> 32;
     event->header.pid = pid;
     bpf_get_current_comm(&event->header.comm, sizeof(event->header.comm));
@@ -427,15 +427,15 @@ int BPF_URETPROBE(ssl_read_ex_exit, int ret) {
         bpf_map_update_elem(&ssl_sessions, &ssl_ptr, session, BPF_ANY);
     }
 
-    struct tls_event *event =
-        bpf_ringbuf_reserve(&events, sizeof(struct tls_event), 0);
+    struct tls_payload_event *event =
+        bpf_ringbuf_reserve(&events, sizeof(struct tls_payload_event), 0);
     if (!event) {
         bpf_printk(
             "error: failed to reserve ring buffer for SSL_read_ex event");
         return 0;
     }
 
-    event->header.event_type = EVENT_TLS_RECV;
+    event->header.event_type = EVENT_TLS_PAYLOAD_RECV;
     event->header.pid = pid;
     bpf_get_current_comm(&event->header.comm, sizeof(event->header.comm));
     event->ssl_ctx = ssl_ptr;
@@ -489,15 +489,15 @@ int BPF_UPROBE(ssl_write_ex_entry, void *ssl, const void *buf, size_t num,
         bpf_map_update_elem(&ssl_sessions, &ssl_ptr, session, BPF_ANY);
     }
 
-    struct tls_event *event =
-        bpf_ringbuf_reserve(&events, sizeof(struct tls_event), 0);
+    struct tls_payload_event *event =
+        bpf_ringbuf_reserve(&events, sizeof(struct tls_payload_event), 0);
     if (!event) {
         bpf_printk(
             "error: failed to reserve ring buffer for SSL_write_ex event");
         return 0;
     }
 
-    event->header.event_type = EVENT_TLS_SEND;
+    event->header.event_type = EVENT_TLS_PAYLOAD_SEND;
     __u32 pid = bpf_get_current_pid_tgid() >> 32;
     event->header.pid = pid;
     bpf_get_current_comm(&event->header.comm, sizeof(event->header.comm));
@@ -543,6 +543,21 @@ int BPF_UPROBE(ssl_free_entry, void *ssl) {
 
     __u64 ssl_ptr = (__u64)ssl;
     bpf_map_delete_elem(&ssl_sessions, &ssl_ptr);
+
+    struct tls_free_event *event =
+        bpf_ringbuf_reserve(&events, sizeof(struct tls_free_event), 0);
+    if (!event) {
+        bpf_printk("error: failed to reserve ring buffer for SSL_free event");
+        return 0;
+    }
+
+    event->header.event_type = EVENT_TLS_FREE;
+    event->header.pid = bpf_get_current_pid_tgid() >> 32;
+    bpf_get_current_comm(&event->header.comm, sizeof(event->header.comm));
+    event->ssl_ctx = ssl_ptr;
+
+    bpf_ringbuf_submit(event, 0);
+
     return 0;
 }
 

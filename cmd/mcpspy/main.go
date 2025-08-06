@@ -210,7 +210,7 @@ func run(cmd *cobra.Command, args []string) error {
 				if err := libManager.ProcessLibraryEvent(e); err != nil {
 					logrus.WithError(err).WithField("path", e.Path()).Warn("Failed to process library event")
 				}
-			case *mcpevents.TlsEvent:
+			case *mcpevents.TlsPayloadEvent:
 				// Handle TLS events
 				logrus.WithFields(logrus.Fields{
 					"type":     e.Type(),
@@ -223,6 +223,17 @@ func run(cmd *cobra.Command, args []string) error {
 				// Raw TLS event, we need to aggregate it into HTTP sessions
 				if err := httpManager.ProcessTlsEvent(e); err != nil {
 					logrus.WithError(err).Warn("Failed to process TLS event")
+				}
+			case *mcpevents.TlsFreeEvent:
+				// Handle TLS free event
+				logrus.WithFields(logrus.Fields{
+					"pid":     e.PID,
+					"comm":    e.Comm(),
+					"ssl_ctx": e.SSLContext,
+				}).Trace("TLS free event")
+
+				if err := httpManager.ProcessTlsFreeEvent(e); err != nil {
+					logrus.WithError(err).Warn("Failed to process TLS free event")
 				}
 			default:
 				logrus.WithField("type", event.Type()).Warn("Unknown event type")
