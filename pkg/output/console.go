@@ -9,6 +9,7 @@ import (
 	"github.com/alex-ilgayev/mcpspy/pkg/mcp"
 	"github.com/fatih/color"
 	"github.com/olekukonko/tablewriter"
+	"github.com/sirupsen/logrus"
 )
 
 // ConsoleDisplay handles the CLI output formatting for console output
@@ -28,9 +29,12 @@ func NewConsoleDisplay(writer io.Writer, showBuffers bool) *ConsoleDisplay {
 // Colors for different elements
 var (
 	timestampColor = color.New(color.FgHiBlack)
+	transportColor = color.New(color.FgHiCyan)
 	pidColor       = color.New(color.FgCyan)
 	commColor      = color.New(color.FgYellow)
 	methodColor    = color.New(color.FgGreen)
+	// urlColor        = color.New(color.FgBlue)
+	// statusCodeColor = color.New(color.FgHiGreen)
 	errorColor     = color.New(color.FgRed)
 	errorCodeColor = color.New(color.FgHiRed)
 	headerColor    = color.New(color.FgWhite, color.Bold)
@@ -83,25 +87,45 @@ func (d *ConsoleDisplay) PrintMessages(messages []*mcp.Message) {
 	}
 }
 
-// printCorrelatedMessage prints a correlated message showing process-to-process communication
+// printCorrelatedMessage prints a correlated message showing transport communication
 func (d *ConsoleDisplay) printMessage(msg *mcp.Message) {
 	// Format timestamp
 	ts := timestampColor.Sprint(msg.Timestamp.Format("15:04:05.000"))
 
-	// Format the communication flow
-	commFlow := fmt.Sprintf("%s[%s] → %s[%s]",
-		commColor.Sprint(msg.FromComm),
-		pidColor.Sprint(msg.FromPID),
-		commColor.Sprint(msg.ToComm),
-		pidColor.Sprint(msg.ToPID),
-	)
+	// Format the communication flow based on transport type
+	var commFlow string
+	switch msg.TransportType {
+	case mcp.TransportTypeStdio:
+		if msg.StdioTransport != nil {
+			commFlow = fmt.Sprintf("%s %s[%s] → %s[%s]",
+				transportColor.Sprint("STDIO"),
+				commColor.Sprint(msg.StdioTransport.FromComm),
+				pidColor.Sprint(msg.StdioTransport.FromPID),
+				commColor.Sprint(msg.StdioTransport.ToComm),
+				pidColor.Sprint(msg.StdioTransport.ToPID),
+			)
+		} else {
+			logrus.Warn("Unknown stdio transport")
+			return
+		}
+	case mcp.TransportTypeHTTP:
+		if msg.TransportType == mcp.TransportTypeHTTP {
+			commFlow = transportColor.Sprint("HTTP")
+		} else {
+			logrus.Warn("Unknown http transport")
+			return
+		}
+	default:
+		logrus.Warn("Unknown transport type")
+		return
+	}
 
 	// Format message type and method
 	var msgInfo string
-	switch msg.Type {
+	switch msg.JSONRPCMessage.Type {
 	case mcp.JSONRPCMessageTypeRequest:
-		msgInfo = fmt.Sprintf("%s REQ  %s", idColor.Sprint(fmt.Sprintf("[%v]", msg.ID)), methodColor.Sprint(msg.Method))
-		switch msg.Method {
+		msgInfo = fmt.Sprintf("%s REQ  %s", idColor.Sprint(fmt.Sprintf("[%v]", msg.JSONRPCMessage.ID)), methodColor.Sprint(msg.JSONRPCMessage.Method))
+		switch msg.JSONRPCMessage.Method {
 		case "tools/call":
 			if toolName := msg.ExtractToolName(); toolName != "" {
 				msgInfo += fmt.Sprintf(" (%s)", toolName)
@@ -112,13 +136,13 @@ func (d *ConsoleDisplay) printMessage(msg *mcp.Message) {
 			}
 		}
 	case mcp.JSONRPCMessageTypeResponse:
-		if msg.Error.Message != "" {
-			msgInfo = fmt.Sprintf("%s ERR  %s %s", idColor.Sprint(fmt.Sprintf("[%v]", msg.ID)), errorColor.Sprint(msg.Error.Message), errorCodeColor.Sprintf("(Code: %d)", msg.Error.Code))
+		if msg.JSONRPCMessage.Error.Message != "" {
+			msgInfo = fmt.Sprintf("%s ERR  %s %s", idColor.Sprint(fmt.Sprintf("[%v]", msg.JSONRPCMessage.ID)), errorColor.Sprint(msg.JSONRPCMessage.Error.Message), errorCodeColor.Sprintf("(Code: %d)", msg.JSONRPCMessage.Error.Code))
 		} else {
-			msgInfo = fmt.Sprintf("%s RESP OK", idColor.Sprint(fmt.Sprintf("[%v]", msg.ID)))
+			msgInfo = fmt.Sprintf("%s RESP OK", idColor.Sprint(fmt.Sprintf("[%v]", msg.JSONRPCMessage.ID)))
 		}
 	case mcp.JSONRPCMessageTypeNotification:
-		msgInfo = fmt.Sprintf("%s NOTF %s", idColor.Sprint("[-]"), methodColor.Sprint(msg.Method))
+		msgInfo = fmt.Sprintf("%s NOTF %s", idColor.Sprint("[-]"), methodColor.Sprint(msg.JSONRPCMessage.Method))
 	default:
 		msgInfo = "UNKN"
 	}
@@ -129,8 +153,8 @@ func (d *ConsoleDisplay) printMessage(msg *mcp.Message) {
 		commFlow,
 		msgInfo,
 	)
-	if msg.Type != mcp.JSONRPCMessageTypeResponse {
-		fmt.Fprintf(d.writer, " %s\n", mcp.GetMethodDescription(msg.Method))
+	if msg.JSONRPCMessage.Type != mcp.JSONRPCMessageTypeResponse {
+		fmt.Fprintf(d.writer, " %s\n", mcp.GetMethodDescription(msg.JSONRPCMessage.Method))
 	} else {
 		fmt.Fprintln(d.writer)
 	}

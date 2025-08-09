@@ -120,11 +120,11 @@ type Message struct {
 
 // ExtractToolName attempts to extract tool name from a tools/call request
 func (msg *Message) ExtractToolName() string {
-	if msg.Method != "tools/call" || msg.Params == nil {
+	if msg.JSONRPCMessage.Method != "tools/call" || msg.JSONRPCMessage.Params == nil {
 		return ""
 	}
 
-	if name, ok := msg.Params["name"].(string); ok {
+	if name, ok := msg.JSONRPCMessage.Params["name"].(string); ok {
 		return name
 	}
 
@@ -134,14 +134,14 @@ func (msg *Message) ExtractToolName() string {
 // ExtractResourceURI attempts to extract resource URI from resource-related requests
 func (msg *Message) ExtractResourceURI() string {
 	// Check if this is a resource method that has a URI parameter
-	if (msg.Method != "resources/read" &&
-		msg.Method != "resources/subscribe" &&
-		msg.Method != "resources/unsubscribe") ||
-		msg.Params == nil {
+	if (msg.JSONRPCMessage.Method != "resources/read" &&
+		msg.JSONRPCMessage.Method != "resources/subscribe" &&
+		msg.JSONRPCMessage.Method != "resources/unsubscribe") ||
+		msg.JSONRPCMessage.Params == nil {
 		return ""
 	}
 
-	if uri, ok := msg.Params["uri"].(string); ok {
+	if uri, ok := msg.JSONRPCMessage.Params["uri"].(string); ok {
 		return uri
 	}
 
@@ -186,7 +186,7 @@ func (p *Parser) ParseData(data []byte, eventType event.EventType, pid uint32, c
 	var messages []*Message
 
 	if eventType != event.EventTypeFSWrite && eventType != event.EventTypeFSRead {
-		return []*Message{}, fmt.Errorf("unknown event type: %d", eventType)
+		return []*Message{}, fmt.Errorf("unknown event type in stdio parsing: %d", eventType)
 	}
 
 	// Split the data into individual JSON messages
@@ -219,7 +219,7 @@ func (p *Parser) ParseData(data []byte, eventType event.EventType, pid uint32, c
 				return []*Message{}, err
 			}
 
-			// Currently, we only support stdio transport.
+			// Create stdio transport info from correlated events
 			messages = append(messages, &Message{
 				Timestamp:     time.Now(),
 				Raw:           string(msgData),
@@ -233,6 +233,45 @@ func (p *Parser) ParseData(data []byte, eventType event.EventType, pid uint32, c
 				JSONRPCMessage: jsonRpcMsg,
 			})
 		}
+	}
+
+	return messages, nil
+}
+
+// ParseDataHttp attempts to parse MCP messages from HTTP payload data
+// This method is used for HTTP transport where MCP messages are sent via HTTP requests/responses
+func (p *Parser) ParseDataHttp(data []byte, eventType event.EventType, pid uint32, comm string) ([]*Message, error) {
+	var messages []*Message
+
+	if eventType != event.EventTypeHttpRequest && eventType != event.EventTypeHttpResponse && eventType != event.EventTypeHttpSSE {
+		return []*Message{}, fmt.Errorf("unknown event type in http parsing: %d", eventType)
+	}
+
+	// Split the data into individual JSON messages
+	scanner := bufio.NewScanner(bytes.NewReader(data))
+	for scanner.Scan() {
+		msgData := scanner.Bytes()
+		if len(bytes.TrimSpace(msgData)) == 0 {
+			continue
+		}
+
+		// Parse the message
+		jsonRpcMsg, err := p.parseJSONRPC(msgData)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse JSON-RPC: %w", err)
+		}
+
+		if ok, err := p.validateMCPMessage(jsonRpcMsg); !ok {
+			return nil, fmt.Errorf("invalid MCP message: %w", err)
+		}
+
+		// Create http transport info from correlated events
+		messages = append(messages, &Message{
+			Timestamp:      time.Now(),
+			Raw:            string(msgData),
+			TransportType:  TransportTypeHTTP,
+			JSONRPCMessage: jsonRpcMsg,
+		})
 	}
 
 	return messages, nil

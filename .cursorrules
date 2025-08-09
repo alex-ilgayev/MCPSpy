@@ -56,8 +56,14 @@ sudo ./mcpspy
 
 ## Testing
 
+Running unit tests:
+
+```bash
+make test
+```
+
+Running end-to-end tests by creating a new execution of mcpspy, and running a test client that simulates MCP traffic to an MCP server:
+
 ```bash
 make test-e2e
 ```
-
-Testing creates a new execution of mcpspy, and runs a test client that simulates MCP traffic to an MCP server.

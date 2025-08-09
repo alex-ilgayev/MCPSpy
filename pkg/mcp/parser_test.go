@@ -90,31 +90,31 @@ func TestParseJSONRPC_ValidMessages(t *testing.T) {
 			}
 
 			msg := msgs[0]
-			if msg.Type != tt.expectedType {
-				t.Errorf("Expected type %s, got %s", tt.expectedType, msg.Type)
+			if msg.JSONRPCMessage.Type != tt.expectedType {
+				t.Errorf("Expected type %s, got %s", tt.expectedType, msg.JSONRPCMessage.Type)
 			}
 
-			if msg.Method != tt.expectedMethod {
-				t.Errorf("Expected method %s, got %s", tt.expectedMethod, msg.Method)
+			if msg.JSONRPCMessage.Method != tt.expectedMethod {
+				t.Errorf("Expected method %s, got %s", tt.expectedMethod, msg.JSONRPCMessage.Method)
 			}
 
-			if tt.expectedID != nil && msg.ID != tt.expectedID {
-				t.Errorf("Expected ID %v, got %v", tt.expectedID, msg.ID)
+			if tt.expectedID != nil && msg.JSONRPCMessage.ID != tt.expectedID {
+				t.Errorf("Expected ID %v, got %v", tt.expectedID, msg.JSONRPCMessage.ID)
 			}
 
-			if tt.hasParams && msg.Params == nil {
+			if tt.hasParams && msg.JSONRPCMessage.Params == nil {
 				t.Error("Expected params to be present")
 			}
 
-			if !tt.hasParams && msg.Params != nil {
+			if !tt.hasParams && msg.JSONRPCMessage.Params != nil {
 				t.Error("Expected params to be nil")
 			}
 
-			if tt.hasResult && msg.Result == nil {
+			if tt.hasResult && msg.JSONRPCMessage.Result == nil {
 				t.Error("Expected result to be present")
 			}
 
-			if tt.hasError && msg.Error.Code == 0 {
+			if tt.hasError && msg.JSONRPCMessage.Error.Code == 0 {
 				t.Error("Expected error to be present")
 			}
 		})
@@ -565,45 +565,45 @@ func TestParseJSONRPC_AllSupportedMethods(t *testing.T) {
 			msg := msgs[0]
 
 			// Validate message type
-			if msg.Type != tc.expectedType {
-				t.Errorf("Expected type %s, got %s", tc.expectedType, msg.Type)
+			if msg.JSONRPCMessage.Type != tc.expectedType {
+				t.Errorf("Expected type %s, got %s", tc.expectedType, msg.JSONRPCMessage.Type)
 			}
 
 			// Validate method name
-			if msg.Method != tc.expectedMethod {
-				t.Errorf("Expected method %s, got %s", tc.expectedMethod, msg.Method)
+			if msg.JSONRPCMessage.Method != tc.expectedMethod {
+				t.Errorf("Expected method %s, got %s", tc.expectedMethod, msg.JSONRPCMessage.Method)
 			}
 
 			// Validate ID for requests
-			if tc.expectedID != nil && msg.ID != tc.expectedID {
-				t.Errorf("Expected ID %v, got %v", tc.expectedID, msg.ID)
+			if tc.expectedID != nil && msg.JSONRPCMessage.ID != tc.expectedID {
+				t.Errorf("Expected ID %v, got %v", tc.expectedID, msg.JSONRPCMessage.ID)
 			}
 
 			// Validate ID presence/absence based on message type
-			if tc.messageType == "request" && msg.ID == nil {
+			if tc.messageType == "request" && msg.JSONRPCMessage.ID == nil {
 				t.Errorf("Request message %s should have ID", tc.method)
 			}
 
-			if tc.messageType == "notification" && msg.ID != nil {
+			if tc.messageType == "notification" && msg.JSONRPCMessage.ID != nil {
 				t.Errorf("Notification message %s should not have ID", tc.method)
 			}
 
 			// Validate parameters
-			if tc.hasParams && msg.Params == nil {
+			if tc.hasParams && msg.JSONRPCMessage.Params == nil {
 				t.Error("Expected params to be present")
 			}
 
-			if !tc.hasParams && msg.Params != nil {
+			if !tc.hasParams && msg.JSONRPCMessage.Params != nil {
 				t.Error("Expected params to be nil")
 			}
 
 			// Validate result (for response messages)
-			if tc.hasResult && msg.Result == nil {
+			if tc.hasResult && msg.JSONRPCMessage.Result == nil {
 				t.Error("Expected result to be present")
 			}
 
 			// Validate error (for error response messages)
-			if tc.hasError && msg.Error.Code == 0 {
+			if tc.hasError && msg.JSONRPCMessage.Error.Code == 0 {
 				t.Error("Expected error to be present")
 			}
 
@@ -624,7 +624,7 @@ func TestParseJSONRPC_AllSupportedMethods(t *testing.T) {
 			}
 
 			// Additional validation for realistic message structure
-			if tc.hasParams && msg.Params == nil {
+			if tc.hasParams && msg.JSONRPCMessage.Params == nil {
 				t.Error("Message marked as having params but params are nil")
 			}
 		})
@@ -641,38 +641,38 @@ func TestParseJSONRPC_InvalidMessages(t *testing.T) {
 	}{
 		{
 			name:        "Invalid JSON",
-			data:        []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call"`),
-			expectError: "invalid JSON",
+			data:        []byte(`{"invalid": json}`),
+			expectError: "failed to parse JSON-RPC: invalid JSON",
 		},
 		{
 			name:        "Missing jsonrpc field",
 			data:        []byte(`{"id":1,"method":"tools/call"}`),
-			expectError: "invalid JSON-RPC version",
+			expectError: "failed to parse JSON-RPC: invalid JSON-RPC version",
 		},
 		{
 			name:        "Wrong jsonrpc version",
 			data:        []byte(`{"jsonrpc":"1.0","id":1,"method":"tools/call"}`),
-			expectError: "invalid JSON-RPC version",
+			expectError: "failed to parse JSON-RPC: invalid JSON-RPC version",
 		},
 		{
 			name:        "Unknown method",
 			data:        []byte(`{"jsonrpc":"2.0","id":1,"method":"unknown/method"}`),
-			expectError: "unknown MCP method",
+			expectError: "invalid MCP message: unknown MCP method",
 		},
 		{
 			name:        "Response without ID",
 			data:        []byte(`{"jsonrpc":"2.0","result":{"status":"ok"}}`),
-			expectError: "unknown JSON-RPC message type",
+			expectError: "failed to parse JSON-RPC: unknown JSON-RPC message type",
 		},
 		{
 			name:        "Unknown notification method",
 			data:        []byte(`{"jsonrpc":"2.0","method":"unknown/notification"}`),
-			expectError: "unknown MCP method",
+			expectError: "invalid MCP message: unknown MCP method",
 		},
 		{
 			name:        "Ambiguous message (no method, no result/error)",
 			data:        []byte(`{"jsonrpc":"2.0","id":1}`),
-			expectError: "unknown JSON-RPC message type",
+			expectError: "failed to parse JSON-RPC: unknown JSON-RPC message type",
 		},
 	}
 
