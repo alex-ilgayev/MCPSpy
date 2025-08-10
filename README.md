@@ -130,6 +130,35 @@ docker pull ghcr.io/alex-ilgayev/mcpspy:v0.1.0
 docker run --rm -it --privileged ghcr.io/alex-ilgayev/mcpspy:latest
 ```
 
+### Kubernetes
+
+MCPSpy can be deployed in Kubernetes clusters to monitor MCP traffic from AI/LLM services like LangFlow, LangGraph, and other applications that use the Model Context Protocol.
+
+```bash
+# Deploy MCPSpy as a DaemonSet
+kubectl apply -f https://raw.githubusercontent.com/alex-ilgayev/mcpspy/v0.0.2/manifests/mcpspy.yaml
+
+```
+
+#### Real-World Use Cases in Kubernetes
+
+1. **Monitoring LangFlow/LangGraph Deployments**
+   - Observe MCP traffic between LangFlow/LangGraph and AI services
+   - Debug integration issues in complex AI workflows
+   - Audit AI interactions for security and compliance
+
+2. **AI Service Monitoring**
+   - Track interactions with both remote and local MCP servers
+   - Identify performance bottlenecks in AI service calls
+   - Detect potential data leakage in AI communications
+
+3. **Development and Testing**
+   - Test MCP implementations in containerized environments
+   - Validate AI service integrations before production deployment
+   - Ensure consistent behavior across different environments
+
+For detailed instructions and real-world examples of monitoring AI services in Kubernetes, see the [Kubernetes Usage Guide](docs/kubernetes-usage.md).
+
 ## Usage
 
 ### Basic Usage
