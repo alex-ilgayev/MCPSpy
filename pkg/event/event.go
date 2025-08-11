@@ -14,8 +14,15 @@ const (
 	EventTypeTlsPayloadRecv EventType = 5
 	EventTypeTlsFree        EventType = 6
 
-	// Event that is not originated from eBPF
-	EventTypeHttp EventType = 100
+	// Events that are not originated from eBPF
+
+	// The request portion of the HTTP event was delievered.
+	EventTypeHttpRequest EventType = 100
+	// The response portion of the HTTP event was delievered.
+	// (means http event is complete)
+	EventTypeHttpResponse EventType = 101
+	// Received an SSE event through an existing HTTP connection.
+	EventTypeHttpSSE EventType = 102
 )
 
 type HttpVersion uint8
@@ -124,19 +131,29 @@ type TlsFreeEvent struct {
 
 func (e *TlsFreeEvent) Type() EventType { return e.EventType }
 
-// HttpEvent is generated after aggregating TLS events.
+// HttpRequestEvent is generated after aggregating TLS events for a request.
 // (not generated from eBPF program)
-type HttpEvent struct {
+type HttpRequestEvent struct {
 	EventHeader
 
 	SSLContext uint64
 
-	// Request
 	Method         string
 	Host           string
 	Path           string
 	RequestHeaders map[string]string
 	RequestPayload []byte
+}
+
+func (e *HttpRequestEvent) Type() EventType { return e.EventType }
+
+// HttpResponseEvent is generated after aggregating TLS events for a response.
+// (not generated from eBPF program)
+type HttpResponseEvent struct {
+	EventHeader
+	HttpRequestEvent
+
+	SSLContext uint64 // SSL context pointer (session identifier)
 
 	// Response
 	ResponseHeaders map[string]string
@@ -145,4 +162,18 @@ type HttpEvent struct {
 	ResponsePayload []byte
 }
 
-func (e *HttpEvent) Type() EventType { return e.EventType }
+func (e *HttpResponseEvent) Type() EventType { return e.EventType }
+
+// SSEEvent represents Server-Sent Events received through an HTTP connection
+// Will create EventTypeHttpSSE
+type SSEEvent struct {
+	EventHeader
+	HttpRequestEvent
+
+	SSLContext uint64 // SSL context pointer (session identifier)
+
+	// SSE data. Currently only 'data' is supported.
+	Data []byte
+}
+
+func (e *SSEEvent) Type() EventType { return e.EventType }

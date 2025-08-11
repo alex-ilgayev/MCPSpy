@@ -7,6 +7,29 @@ import (
 	"github.com/alex-ilgayev/mcpspy/pkg/event"
 )
 
+// containsBytes is a helper function to check if a slice contains a subsequence
+func containsBytes(haystack, needle []byte) bool {
+	if len(needle) == 0 {
+		return true
+	}
+	if len(haystack) < len(needle) {
+		return false
+	}
+	for i := 0; i <= len(haystack)-len(needle); i++ {
+		found := true
+		for j := 0; j < len(needle); j++ {
+			if haystack[i+j] != needle[j] {
+				found = false
+				break
+			}
+		}
+		if found {
+			return true
+		}
+	}
+	return false
+}
+
 func TestSessionManager_BasicRequestResponse(t *testing.T) {
 	sm := NewSessionManager()
 	defer sm.Close()
@@ -49,35 +72,62 @@ func TestSessionManager_BasicRequestResponse(t *testing.T) {
 		t.Fatalf("Failed to process response: %v", err)
 	}
 
-	// Check if event was emitted
+	// Check if request event was emitted
 	select {
-	case event := <-sm.HTTPEvents():
-		if event.SSLContext != sslCtx {
-			t.Errorf("Expected SSL context %d, got %d", sslCtx, event.SSLContext)
+	case evt := <-sm.HTTPEvents():
+		if evt.Type() != event.EventTypeHttpRequest {
+			t.Errorf("Expected EventTypeHttpRequest, got %v", evt.Type())
 		}
-		if event.Method != "GET" {
-			t.Errorf("Expected method GET, got %s", event.Method)
+		httpEvent := evt.(*event.HttpRequestEvent)
+		if httpEvent.SSLContext != sslCtx {
+			t.Errorf("Expected SSL context %d, got %d", sslCtx, httpEvent.SSLContext)
 		}
-		if event.Path != "/api/test" {
-			t.Errorf("Expected path /api/test, got %s", event.Path)
+		if httpEvent.Method != "GET" {
+			t.Errorf("Expected method GET, got %s", httpEvent.Method)
 		}
-		if event.Host != "example.com" {
-			t.Errorf("Expected host example.com, got %s", event.Host)
+		if httpEvent.Path != "/api/test" {
+			t.Errorf("Expected path /api/test, got %s", httpEvent.Path)
 		}
-		if event.Code != 200 {
-			t.Errorf("Expected status code 200, got %d", event.Code)
+		if httpEvent.Host != "example.com" {
+			t.Errorf("Expected host example.com, got %s", httpEvent.Host)
 		}
-		if string(event.ResponsePayload) != "Hello, World!" {
-			t.Errorf("Expected response payload 'Hello, World!', got %q", event.ResponsePayload)
-		}
-		if len(event.RequestPayload) != 0 {
-			t.Errorf("Expected empty request payload, got %q", event.RequestPayload)
-		}
-		if event.ResponseHeaders["Content-Length"] != "13" {
-			t.Errorf("Expected Content-Length header '13', got %s", event.ResponseHeaders["Content-Length"])
+		if len(httpEvent.RequestPayload) != 0 {
+			t.Errorf("Expected empty request payload, got %q", httpEvent.RequestPayload)
 		}
 	case <-time.After(100 * time.Millisecond):
-		t.Fatal("No event received")
+		t.Fatal("No request event received")
+	}
+
+	// Check if response event was emitted
+	select {
+	case evt := <-sm.HTTPEvents():
+		if evt.Type() != event.EventTypeHttpResponse {
+			t.Errorf("Expected EventTypeHttpResponse, got %v", evt.Type())
+		}
+		httpEvent := evt.(*event.HttpResponseEvent)
+		if httpEvent.SSLContext != sslCtx {
+			t.Errorf("Expected SSL context %d, got %d", sslCtx, httpEvent.SSLContext)
+		}
+		if httpEvent.Method != "GET" {
+			t.Errorf("Expected method GET, got %s", httpEvent.Method)
+		}
+		if httpEvent.Path != "/api/test" {
+			t.Errorf("Expected path /api/test, got %s", httpEvent.Path)
+		}
+		if httpEvent.Host != "example.com" {
+			t.Errorf("Expected host example.com, got %s", httpEvent.Host)
+		}
+		if httpEvent.Code != 200 {
+			t.Errorf("Expected status code 200, got %d", httpEvent.Code)
+		}
+		if string(httpEvent.ResponsePayload) != "Hello, World!" {
+			t.Errorf("Expected response payload 'Hello, World!', got %q", httpEvent.ResponsePayload)
+		}
+		if httpEvent.ResponseHeaders["Content-Length"] != "13" {
+			t.Errorf("Expected Content-Length header '13', got %s", httpEvent.ResponseHeaders["Content-Length"])
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("No response event received")
 	}
 }
 
@@ -128,23 +178,38 @@ func TestSessionManager_FragmentedPayload(t *testing.T) {
 	copy(responseEvent.Buf[:], responseData)
 	sm.ProcessTlsEvent(responseEvent)
 
-	// Check aggregated event
+	// Check request event
 	select {
-	case event := <-sm.HTTPEvents():
-		if event.Method != "GET" {
-			t.Errorf("Expected method GET, got %s", event.Method)
+	case evt := <-sm.HTTPEvents():
+		if evt.Type() != event.EventTypeHttpRequest {
+			t.Errorf("Expected EventTypeHttpRequest, got %v", evt.Type())
 		}
-		if event.Path != "/api/test" {
-			t.Errorf("Expected path /api/test, got %s", event.Path)
+		httpEvent := evt.(*event.HttpRequestEvent)
+		if httpEvent.Method != "GET" {
+			t.Errorf("Expected method GET, got %s", httpEvent.Method)
 		}
-		if event.Host != "example.com" {
-			t.Errorf("Expected host example.com, got %s", event.Host)
+		if httpEvent.Path != "/api/test" {
+			t.Errorf("Expected path /api/test, got %s", httpEvent.Path)
 		}
-		if event.Code != 200 {
-			t.Errorf("Expected status code 200, got %d", event.Code)
+		if httpEvent.Host != "example.com" {
+			t.Errorf("Expected host example.com, got %s", httpEvent.Host)
 		}
 	case <-time.After(100 * time.Millisecond):
-		t.Fatal("No event received")
+		t.Fatal("No request event received")
+	}
+
+	// Check response event
+	select {
+	case evt := <-sm.HTTPEvents():
+		if evt.Type() != event.EventTypeHttpResponse {
+			t.Errorf("Expected EventTypeHttpResponse, got %v", evt.Type())
+		}
+		httpEvent := evt.(*event.HttpResponseEvent)
+		if httpEvent.Code != 200 {
+			t.Errorf("Expected status code 200, got %d", httpEvent.Code)
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("No response event received")
 	}
 }
 
@@ -207,35 +272,59 @@ func TestSessionManager_MultipleSessions(t *testing.T) {
 	copy(event4.Buf[:], resp1)
 	sm.ProcessTlsEvent(event4)
 
-	// Verify both events are received
-	events := make(map[uint64]*event.HttpEvent)
-	for i := 0; i < 2; i++ {
+	// Verify all events are received (2 requests + 2 responses = 4 events)
+	requestEvents := make(map[uint64]*event.HttpRequestEvent)
+	responseEvents := make(map[uint64]*event.HttpResponseEvent)
+
+	for i := 0; i < 4; i++ {
 		select {
-		case event := <-sm.HTTPEvents():
-			events[event.SSLContext] = &event
+		case evt := <-sm.HTTPEvents():
+			if evt.Type() == event.EventTypeHttpRequest {
+				requestEvents[evt.(*event.HttpRequestEvent).SSLContext] = evt.(*event.HttpRequestEvent)
+			} else if evt.Type() == event.EventTypeHttpResponse {
+				responseEvents[evt.(*event.HttpResponseEvent).SSLContext] = evt.(*event.HttpResponseEvent)
+			}
 		case <-time.After(100 * time.Millisecond):
-			t.Fatal("Expected 2 events, timeout waiting")
+			t.Fatal("Expected 4 events, timeout waiting")
 		}
 	}
 
-	// Verify session 1
-	if event1, ok := events[sslCtx1]; !ok {
-		t.Error("Did not receive event for session 1")
+	// Verify session 1 request
+	if event1, ok := requestEvents[sslCtx1]; !ok {
+		t.Error("Did not receive request event for session 1")
 	} else {
 		if event1.Path != "/session1" {
-			t.Errorf("Session 1: expected path /session1, got %s", event1.Path)
+			t.Errorf("Session 1 request: expected path /session1, got %s", event1.Path)
+		}
+	}
+
+	// Verify session 1 response
+	if event1, ok := responseEvents[sslCtx1]; !ok {
+		t.Error("Did not receive response event for session 1")
+	} else {
+		if event1.Path != "/session1" {
+			t.Errorf("Session 1 response: expected path /session1, got %s", event1.Path)
 		}
 		if string(event1.ResponsePayload) != "session1" {
 			t.Errorf("Session 1: expected response payload 'session1', got %q", event1.ResponsePayload)
 		}
 	}
 
-	// Verify session 2
-	if event2, ok := events[sslCtx2]; !ok {
-		t.Error("Did not receive event for session 2")
+	// Verify session 2 request
+	if event2, ok := requestEvents[sslCtx2]; !ok {
+		t.Error("Did not receive request event for session 2")
 	} else {
 		if event2.Path != "/session2" {
-			t.Errorf("Session 2: expected path /session2, got %s", event2.Path)
+			t.Errorf("Session 2 request: expected path /session2, got %s", event2.Path)
+		}
+	}
+
+	// Verify session 2 response
+	if event2, ok := responseEvents[sslCtx2]; !ok {
+		t.Error("Did not receive response event for session 2")
+	} else {
+		if event2.Path != "/session2" {
+			t.Errorf("Session 2 response: expected path /session2, got %s", event2.Path)
 		}
 		if string(event2.ResponsePayload) != "session2" {
 			t.Errorf("Session 2: expected response payload 'session2', got %q", event2.ResponsePayload)
@@ -318,7 +407,7 @@ func TestParseHTTPMessage_Completeness(t *testing.T) {
 				req := parseHTTPRequest(tt.data)
 				isComplete = req.isComplete
 			} else {
-				resp := parseHTTPResponse(tt.data, false)
+				resp := parseHTTPResponse(tt.data)
 				isComplete = resp.isComplete
 			}
 			if isComplete != tt.complete {
@@ -455,7 +544,7 @@ func TestParseHTTPResponse(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			resp := parseHTTPResponse(tt.data, false)
+			resp := parseHTTPResponse(tt.data)
 
 			if resp.isComplete != tt.wantComplete {
 				t.Errorf("isComplete = %v, want %v", resp.isComplete, tt.wantComplete)
@@ -510,20 +599,34 @@ func TestChunkedTransferEncoding(t *testing.T) {
 	copy(responseEvent.Buf[:], responseData)
 	sm.ProcessTlsEvent(responseEvent)
 
-	// Check event
+	// Check request event
 	select {
-	case event := <-sm.HTTPEvents():
-		if !event.IsChunked {
-			t.Error("Expected IsChunked to be true")
-		}
-		if string(event.ResponsePayload) != "hello world" {
-			t.Errorf("Expected aggregated response payload 'hello world', got %q", event.ResponsePayload)
-		}
-		if event.ResponseHeaders["Transfer-Encoding"] != "chunked" {
-			t.Errorf("Expected Transfer-Encoding header 'chunked', got %s", event.ResponseHeaders["Transfer-Encoding"])
+	case evt := <-sm.HTTPEvents():
+		if evt.Type() != event.EventTypeHttpRequest {
+			t.Errorf("Expected EventTypeHttpRequest, got %v", evt.Type())
 		}
 	case <-time.After(100 * time.Millisecond):
-		t.Fatal("No event received")
+		t.Fatal("No request event received")
+	}
+
+	// Check response event
+	select {
+	case evt := <-sm.HTTPEvents():
+		if evt.Type() != event.EventTypeHttpResponse {
+			t.Errorf("Expected EventTypeHttpResponse, got %v", evt.Type())
+		}
+		httpEvent := evt.(*event.HttpResponseEvent)
+		if !httpEvent.IsChunked {
+			t.Error("Expected IsChunked to be true")
+		}
+		if string(httpEvent.ResponsePayload) != "hello world" {
+			t.Errorf("Expected aggregated response payload 'hello world', got %q", httpEvent.ResponsePayload)
+		}
+		if httpEvent.ResponseHeaders["Transfer-Encoding"] != "chunked" {
+			t.Errorf("Expected Transfer-Encoding header 'chunked', got %s", httpEvent.ResponseHeaders["Transfer-Encoding"])
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("No response event received")
 	}
 }
 
@@ -586,7 +689,7 @@ func TestParseChunkedBody_Completeness(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			body, complete := parseChunkedBody(tt.data, false)
+			body, complete := parseChunkedBody(tt.data)
 			if complete != tt.wantComplete {
 				t.Errorf("Expected complete=%v, got %v for data: %q", tt.wantComplete, complete, tt.data)
 			}
@@ -616,6 +719,16 @@ func TestSessionManager_FragmentedChunkedResponse(t *testing.T) {
 	copy(requestEvent.Buf[:], requestData)
 	sm.ProcessTlsEvent(requestEvent)
 
+	// Should emit request event immediately after request is complete
+	select {
+	case evt := <-sm.HTTPEvents():
+		if evt.Type() != event.EventTypeHttpRequest {
+			t.Errorf("Expected EventTypeHttpRequest, got %v", evt.Type())
+		}
+	case <-time.After(50 * time.Millisecond):
+		t.Fatal("No request event received")
+	}
+
 	// Response fragment 1 - headers and first chunk
 	respPart1 := []byte("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello")
 	event1 := &event.TlsPayloadEvent{
@@ -629,10 +742,10 @@ func TestSessionManager_FragmentedChunkedResponse(t *testing.T) {
 	copy(event1.Buf[:], respPart1)
 	sm.ProcessTlsEvent(event1)
 
-	// Should not emit event yet
+	// Should not emit response event yet (response is incomplete)
 	select {
 	case <-sm.HTTPEvents():
-		t.Fatal("Should not emit event for incomplete chunked response")
+		t.Fatal("Should not emit response event for incomplete chunked response")
 	case <-time.After(50 * time.Millisecond):
 		// Expected
 	}
@@ -650,17 +763,21 @@ func TestSessionManager_FragmentedChunkedResponse(t *testing.T) {
 	copy(event2.Buf[:], respPart2)
 	sm.ProcessTlsEvent(event2)
 
-	// Now should emit event
+	// Now should emit response event (request was already emitted earlier)
 	select {
-	case event := <-sm.HTTPEvents():
-		if !event.IsChunked {
+	case evt := <-sm.HTTPEvents():
+		if evt.Type() != event.EventTypeHttpResponse {
+			t.Errorf("Expected EventTypeHttpResponse, got %v", evt.Type())
+		}
+		httpEvent := evt.(*event.HttpResponseEvent)
+		if !httpEvent.IsChunked {
 			t.Error("Expected IsChunked to be true")
 		}
-		if string(event.ResponsePayload) != "hello" {
-			t.Errorf("Expected response payload 'hello', got %q", event.ResponsePayload)
+		if string(httpEvent.ResponsePayload) != "hello" {
+			t.Errorf("Expected response payload 'hello', got %q", httpEvent.ResponsePayload)
 		}
 	case <-time.After(100 * time.Millisecond):
-		t.Fatal("No event received")
+		t.Fatal("No response event received")
 	}
 }
 
@@ -696,42 +813,57 @@ func TestSessionManager_RequestWithPayload(t *testing.T) {
 	copy(responseEvent.Buf[:], responseData)
 	sm.ProcessTlsEvent(responseEvent)
 
-	// Check event
+	// Check request event
 	select {
-	case event := <-sm.HTTPEvents():
-		if event.Method != "POST" {
-			t.Errorf("Expected method POST, got %s", event.Method)
+	case evt := <-sm.HTTPEvents():
+		if evt.Type() != event.EventTypeHttpRequest {
+			t.Errorf("Expected EventTypeHttpRequest, got %v", evt.Type())
 		}
-		if event.Path != "/api/users" {
-			t.Errorf("Expected path /api/users, got %s", event.Path)
+		httpEvent := evt.(*event.HttpRequestEvent)
+		if httpEvent.Method != "POST" {
+			t.Errorf("Expected method POST, got %s", httpEvent.Method)
 		}
-		if event.Host != "api.example.com" {
-			t.Errorf("Expected host api.example.com, got %s", event.Host)
+		if httpEvent.Path != "/api/users" {
+			t.Errorf("Expected path /api/users, got %s", httpEvent.Path)
 		}
-		if event.Code != 201 {
-			t.Errorf("Expected status code 201, got %d", event.Code)
+		if httpEvent.Host != "api.example.com" {
+			t.Errorf("Expected host api.example.com, got %s", httpEvent.Host)
 		}
 		expectedReqPayload := "{\"name\":\"John\",\"age\":30}"
-		if string(event.RequestPayload) != expectedReqPayload {
-			t.Errorf("Expected request payload %q, got %q", expectedReqPayload, event.RequestPayload)
-		}
-		expectedRespPayload := "{\"id\":\"12345\"}"
-		if string(event.ResponsePayload) != expectedRespPayload {
-			t.Errorf("Expected response payload %q, got %q", expectedRespPayload, event.ResponsePayload)
+		if string(httpEvent.RequestPayload) != expectedReqPayload {
+			t.Errorf("Expected request payload %q, got %q", expectedReqPayload, httpEvent.RequestPayload)
 		}
 		// Check request headers
-		if event.RequestHeaders["Content-Type"] != "application/json" {
-			t.Errorf("Expected request Content-Type 'application/json', got %s", event.RequestHeaders["Content-Type"])
+		if httpEvent.RequestHeaders["Content-Type"] != "application/json" {
+			t.Errorf("Expected request Content-Type 'application/json', got %s", httpEvent.RequestHeaders["Content-Type"])
 		}
-		if event.RequestHeaders["Content-Length"] != "24" {
-			t.Errorf("Expected request Content-Length '24', got %s", event.RequestHeaders["Content-Length"])
-		}
-		// Check response headers
-		if event.ResponseHeaders["Content-Type"] != "application/json" {
-			t.Errorf("Expected response Content-Type 'application/json', got %s", event.ResponseHeaders["Content-Type"])
+		if httpEvent.RequestHeaders["Content-Length"] != "24" {
+			t.Errorf("Expected request Content-Length '24', got %s", httpEvent.RequestHeaders["Content-Length"])
 		}
 	case <-time.After(100 * time.Millisecond):
-		t.Fatal("No event received")
+		t.Fatal("No request event received")
+	}
+
+	// Check response event
+	select {
+	case evt := <-sm.HTTPEvents():
+		if evt.Type() != event.EventTypeHttpResponse {
+			t.Errorf("Expected EventTypeHttpResponse, got %v", evt.Type())
+		}
+		httpEvent := evt.(*event.HttpResponseEvent)
+		if httpEvent.Code != 201 {
+			t.Errorf("Expected status code 201, got %d", httpEvent.Code)
+		}
+		expectedRespPayload := "{\"id\":\"12345\"}"
+		if string(httpEvent.ResponsePayload) != expectedRespPayload {
+			t.Errorf("Expected response payload %q, got %q", expectedRespPayload, httpEvent.ResponsePayload)
+		}
+		// Check response headers
+		if httpEvent.ResponseHeaders["Content-Type"] != "application/json" {
+			t.Errorf("Expected response Content-Type 'application/json', got %s", httpEvent.ResponseHeaders["Content-Type"])
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("No response event received")
 	}
 }
 
@@ -784,12 +916,14 @@ func TestProcessTlsFreeEvent_DeletesSession(t *testing.T) {
 		t.Fatal("Session should be deleted after TlsFreeEvent")
 	}
 
-	// Should NOT receive an event (only chunked incomplete responses are emitted)
+	// Should receive a request event (request is complete)
 	select {
-	case <-sm.HTTPEvents():
-		t.Fatal("Should not receive event for non-chunked incomplete session")
+	case evt := <-sm.HTTPEvents():
+		if evt.Type() != event.EventTypeHttpRequest {
+			t.Errorf("Expected EventTypeHttpRequest, got %v", evt.Type())
+		}
 	case <-time.After(100 * time.Millisecond):
-		// Expected - no event
+		t.Fatal("Should have received request event")
 	}
 }
 
@@ -827,15 +961,29 @@ func TestProcessTlsFreeEvent_IncompleteChunkedResponse(t *testing.T) {
 	copy(responseEvent.Buf[:], responseData)
 	sm.ProcessTlsEvent(responseEvent)
 
-	// No event should be emitted yet (incomplete)
+	// Should receive request event (request is complete)
+	select {
+	case evt := <-sm.HTTPEvents():
+		if evt.Type() != event.EventTypeHttpRequest {
+			t.Errorf("Expected EventTypeHttpRequest, got %v", evt.Type())
+		}
+		httpEvent := evt.(*event.HttpRequestEvent)
+		if httpEvent.Method != "GET" {
+			t.Errorf("Expected method GET, got %s", httpEvent.Method)
+		}
+	case <-time.After(50 * time.Millisecond):
+		t.Fatal("Should have received request event")
+	}
+
+	// No response event should be emitted yet (incomplete)
 	select {
 	case <-sm.HTTPEvents():
-		t.Fatal("Should not receive event for incomplete chunked response")
+		t.Fatal("Should not receive response event for incomplete chunked response")
 	case <-time.After(50 * time.Millisecond):
 		// Expected - no event
 	}
 
-	// Send TlsFreeEvent to force completion
+	// Send TlsFreeEvent to force cleanup
 	freeEvent := &event.TlsFreeEvent{
 		EventHeader: event.EventHeader{
 			EventType: event.EventTypeTlsFree,
@@ -845,25 +993,12 @@ func TestProcessTlsFreeEvent_IncompleteChunkedResponse(t *testing.T) {
 	}
 	sm.ProcessTlsFreeEvent(freeEvent)
 
-	// Should receive the incomplete event with partial body
+	// Session should be deleted but no response event (incomplete response)
 	select {
-	case event := <-sm.HTTPEvents():
-		if event.Method != "GET" {
-			t.Errorf("Expected method GET, got %s", event.Method)
-		}
-		if event.Code != 200 {
-			t.Errorf("Expected status code 200, got %d", event.Code)
-		}
-		if !event.IsChunked {
-			t.Error("Expected chunked response")
-		}
-		// Should have parsed partial body
-		expectedBody := "Hello World"
-		if string(event.ResponsePayload) != expectedBody {
-			t.Errorf("Expected body %q, got %q", expectedBody, event.ResponsePayload)
-		}
+	case <-sm.HTTPEvents():
+		t.Fatal("Should not receive response event for incomplete chunked response even after TlsFree")
 	case <-time.After(100 * time.Millisecond):
-		t.Fatal("Should have received incomplete chunked event")
+		// Expected - no response event for incomplete response
 	}
 }
 
@@ -914,6 +1049,23 @@ func TestProcessTlsFreeEvent_OnlyRequest(t *testing.T) {
 	copy(requestEvent.Buf[:], requestData)
 	sm.ProcessTlsEvent(requestEvent)
 
+	// Should receive request event (request is complete)
+	select {
+	case evt := <-sm.HTTPEvents():
+		if evt.Type() != event.EventTypeHttpRequest {
+			t.Errorf("Expected EventTypeHttpRequest, got %v", evt.Type())
+		}
+		httpEvent := evt.(*event.HttpRequestEvent)
+		if httpEvent.Method != "POST" {
+			t.Errorf("Expected method POST, got %s", httpEvent.Method)
+		}
+		if string(httpEvent.RequestPayload) != "{\"a\":1}" {
+			t.Errorf("Expected request payload '{\"a\":1}', got %q", httpEvent.RequestPayload)
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("Should have received request event")
+	}
+
 	// Send TlsFreeEvent
 	freeEvent := &event.TlsFreeEvent{
 		EventHeader: event.EventHeader{
@@ -924,11 +1076,422 @@ func TestProcessTlsFreeEvent_OnlyRequest(t *testing.T) {
 	}
 	sm.ProcessTlsFreeEvent(freeEvent)
 
-	// Should NOT receive event (only chunked incomplete responses are emitted)
+	// Should NOT receive response event (no response was sent)
 	select {
 	case <-sm.HTTPEvents():
-		t.Fatal("Should not receive event for session with only request")
+		t.Fatal("Should not receive response event for session with only request")
 	case <-time.After(100 * time.Millisecond):
+		// Expected - no response event
+	}
+}
+
+func TestSessionManager_SSEResponse(t *testing.T) {
+	// Create session manager without callback (will use channel)
+	sm := NewSessionManager()
+	defer sm.Close()
+
+	// Track SSE events from channel
+	var sseEvents [][]byte
+	var sseContexts []*event.SSEEvent
+
+	sslCtx := uint64(77777)
+
+	// Send request
+	requestData := []byte("GET /events HTTP/1.1\r\nHost: example.com\r\nAccept: text/event-stream\r\n\r\n")
+	requestEvent := &event.TlsPayloadEvent{
+		EventHeader: event.EventHeader{
+			EventType: event.EventTypeTlsPayloadSend,
+			PID:       3333,
+		},
+		SSLContext:  sslCtx,
+		HttpVersion: event.HttpVersion1,
+		BufSize:     uint32(len(requestData)),
+	}
+	copy(requestEvent.Buf[:], requestData)
+	sm.ProcessTlsEvent(requestEvent)
+
+	// Should receive request event first
+	select {
+	case evt := <-sm.HTTPEvents():
+		if evt.Type() != event.EventTypeHttpRequest {
+			t.Errorf("Expected EventTypeHttpRequest, got %v", evt.Type())
+		}
+		httpEvent := evt.(*event.HttpRequestEvent)
+		if httpEvent.Method != "GET" {
+			t.Errorf("Expected method GET, got %s", httpEvent.Method)
+		}
+		if httpEvent.Path != "/events" {
+			t.Errorf("Expected path /events, got %s", httpEvent.Path)
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("No request event received")
+	}
+
+	// Send SSE response headers
+	responseHeaders := []byte("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n")
+	responseEvent1 := &event.TlsPayloadEvent{
+		EventHeader: event.EventHeader{
+			EventType: event.EventTypeTlsPayloadRecv,
+			PID:       3333,
+		},
+		SSLContext:  sslCtx,
+		HttpVersion: event.HttpVersion1,
+		BufSize:     uint32(len(responseHeaders)),
+	}
+	copy(responseEvent1.Buf[:], responseHeaders)
+	sm.ProcessTlsEvent(responseEvent1)
+
+	// Send first SSE event chunk
+	chunk1 := []byte("1a\r\ndata: {\"type\":\"message\"}\n\n\r\n")
+	responseEvent2 := &event.TlsPayloadEvent{
+		EventHeader: event.EventHeader{
+			EventType: event.EventTypeTlsPayloadRecv,
+			PID:       3333,
+		},
+		SSLContext:  sslCtx,
+		HttpVersion: event.HttpVersion1,
+		BufSize:     uint32(len(chunk1)),
+	}
+	copy(responseEvent2.Buf[:], chunk1)
+	sm.ProcessTlsEvent(responseEvent2)
+
+	// Check first SSE event was received through channel
+	select {
+	case sseEvt := <-sm.HTTPEvents():
+		// Make a copy of the SSE data
+		sseEvent := sseEvt.(*event.SSEEvent)
+		dataCopy := make([]byte, len(sseEvent.Data))
+		copy(dataCopy, sseEvent.Data)
+		sseEvents = append(sseEvents, dataCopy)
+		// Clone the SSE event for context
+		eventCopy := *sseEvent
+		sseContexts = append(sseContexts, &eventCopy)
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("No SSE event received")
+	}
+
+	// Check first SSE event was received
+	if len(sseEvents) != 1 {
+		t.Fatalf("Expected 1 SSE event, got %d", len(sseEvents))
+	}
+	// Now we extract just the data portion, not the full SSE format
+	expectedData := "{\"type\":\"message\"}"
+	if string(sseEvents[0]) != expectedData {
+		t.Errorf("Expected SSE event data to be %q, got %q", expectedData, sseEvents[0])
+	}
+
+	// Verify HTTP context
+	if len(sseContexts) != 1 {
+		t.Fatalf("Expected 1 SSE event context, got %d", len(sseContexts))
+	}
+	sseCtx := sseContexts[0]
+	if sseCtx.Method != "GET" {
+		t.Errorf("Expected method GET, got %s", sseCtx.Method)
+	}
+	if sseCtx.Path != "/events" {
+		t.Errorf("Expected path /events, got %s", sseCtx.Path)
+	}
+	if sseCtx.Host != "example.com" {
+		t.Errorf("Expected host example.com, got %s", sseCtx.Host)
+	}
+
+	// Send second SSE event chunk with multiple events
+	chunk2 := []byte("42\r\nevent: update\ndata: {\"id\":1}\n\ndata: {\"id\":2}\n\nid: 123\ndata: test\n\n\r\n")
+	responseEvent3 := &event.TlsPayloadEvent{
+		EventHeader: event.EventHeader{
+			EventType: event.EventTypeTlsPayloadRecv,
+			PID:       3333,
+		},
+		SSLContext:  sslCtx,
+		HttpVersion: event.HttpVersion1,
+		BufSize:     uint32(len(chunk2)),
+	}
+	copy(responseEvent3.Buf[:], chunk2)
+	sm.ProcessTlsEvent(responseEvent3)
+
+	// Receive 3 more SSE events from channel
+	for i := 0; i < 3; i++ {
+		select {
+		case sseEvt := <-sm.HTTPEvents():
+			// Make a copy of the SSE data
+			sseEvent := sseEvt.(*event.SSEEvent)
+			dataCopy := make([]byte, len(sseEvent.Data))
+			copy(dataCopy, sseEvent.Data)
+			sseEvents = append(sseEvents, dataCopy)
+			// Clone the SSE event for context
+			eventCopy := *sseEvent
+			sseContexts = append(sseContexts, &eventCopy)
+		case <-time.After(100 * time.Millisecond):
+			t.Fatalf("Expected 3 more SSE events, only got %d", i)
+		}
+	}
+
+	// Should have received 3 more SSE events (total 4)
+	if len(sseEvents) != 4 {
+		t.Fatalf("Expected 4 SSE events total, got %d", len(sseEvents))
+	}
+
+	// Verify the new events (now containing just the data portion)
+	expectedData2 := "{\"id\":1}"
+	if string(sseEvents[1]) != expectedData2 {
+		t.Errorf("Expected second SSE event data to be %q, got %q", expectedData2, sseEvents[1])
+	}
+	expectedData3 := "{\"id\":2}"
+	if string(sseEvents[2]) != expectedData3 {
+		t.Errorf("Expected third SSE event data to be %q, got %q", expectedData3, sseEvents[2])
+	}
+	expectedData4 := "test"
+	if string(sseEvents[3]) != expectedData4 {
+		t.Errorf("Expected fourth SSE event data to be %q, got %q", expectedData4, sseEvents[3])
+	}
+
+	// No regular HTTP event should be emitted yet (response not complete)
+	select {
+	case <-sm.HTTPEvents():
+		t.Fatal("Should not emit regular HTTP event for ongoing SSE stream")
+	case <-time.After(50 * time.Millisecond):
 		// Expected - no event
+	}
+}
+
+func TestSessionManager_SSEWithNonSSEResponse(t *testing.T) {
+	// Create session manager
+	sm := NewSessionManager()
+	defer sm.Close()
+
+	sslCtx := uint64(88888)
+
+	// Send request
+	requestData := []byte("GET /api/data HTTP/1.1\r\nHost: example.com\r\n\r\n")
+	requestEvent := &event.TlsPayloadEvent{
+		EventHeader: event.EventHeader{
+			EventType: event.EventTypeTlsPayloadSend,
+			PID:       4444,
+		},
+		SSLContext:  sslCtx,
+		HttpVersion: event.HttpVersion1,
+		BufSize:     uint32(len(requestData)),
+	}
+	copy(requestEvent.Buf[:], requestData)
+	sm.ProcessTlsEvent(requestEvent)
+
+	// Should receive request event first
+	select {
+	case evt := <-sm.HTTPEvents():
+		if evt.Type() != event.EventTypeHttpRequest {
+			t.Errorf("Expected EventTypeHttpRequest, got %v", evt.Type())
+		}
+		httpEvent := evt.(*event.HttpRequestEvent)
+		if httpEvent.Method != "GET" {
+			t.Errorf("Expected method GET, got %s", httpEvent.Method)
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("No request event received")
+	}
+
+	// Send non-SSE chunked response
+	responseData := []byte("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\n\r\nf\r\n{\"status\":\"ok\"}\r\n0\r\n\r\n")
+	responseEvent := &event.TlsPayloadEvent{
+		EventHeader: event.EventHeader{
+			EventType: event.EventTypeTlsPayloadRecv,
+			PID:       4444,
+		},
+		SSLContext:  sslCtx,
+		HttpVersion: event.HttpVersion1,
+		BufSize:     uint32(len(responseData)),
+	}
+	copy(responseEvent.Buf[:], responseData)
+	sm.ProcessTlsEvent(responseEvent)
+
+	// Regular HTTP response event should be emitted (no SSE events)
+	select {
+	case evt := <-sm.HTTPEvents():
+		if evt.Type() == event.EventTypeHttpSSE {
+			t.Error("Should not receive SSE events for non-SSE responses")
+		}
+		if evt.Type() != event.EventTypeHttpResponse {
+			t.Errorf("Expected EventTypeHttpResponse, got %v", evt.Type())
+		}
+		httpEvent := evt.(*event.HttpResponseEvent)
+		if httpEvent.Method != "GET" {
+			t.Errorf("Expected method GET, got %s", httpEvent.Method)
+		}
+		if string(httpEvent.ResponsePayload) != "{\"status\":\"ok\"}" {
+			t.Errorf("Expected response payload '{\"status\":\"ok\"}', got %q", httpEvent.ResponsePayload)
+		}
+		if httpEvent.ResponseHeaders["Content-Type"] != "application/json" {
+			t.Errorf("Expected Content-Type application/json, got %s", httpEvent.ResponseHeaders["Content-Type"])
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("Expected HTTP response event for non-SSE response")
+	}
+}
+
+func TestSessionManager_SSECompleteResponse(t *testing.T) {
+	// Create session manager
+	sm := NewSessionManager()
+	defer sm.Close()
+
+	sslCtx := uint64(55555)
+
+	// Send request
+	requestData := []byte("GET /events HTTP/1.1\r\nHost: example.com\r\n\r\n")
+	requestEvent := &event.TlsPayloadEvent{
+		EventHeader: event.EventHeader{
+			EventType: event.EventTypeTlsPayloadSend,
+			PID:       6666,
+		},
+		SSLContext:  sslCtx,
+		HttpVersion: event.HttpVersion1,
+		BufSize:     uint32(len(requestData)),
+	}
+	copy(requestEvent.Buf[:], requestData)
+	sm.ProcessTlsEvent(requestEvent)
+
+	// Should receive request event first
+	select {
+	case evt := <-sm.HTTPEvents():
+		if evt.Type() != event.EventTypeHttpRequest {
+			t.Errorf("Expected EventTypeHttpRequest, got %v", evt.Type())
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("No request event received")
+	}
+
+	// Send SSE response with one event (complete response with terminating chunk)
+	responseData := []byte("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n11\r\ndata: complete\n\n\r\n0\r\n\r\n")
+	responseEvent := &event.TlsPayloadEvent{
+		EventHeader: event.EventHeader{
+			EventType: event.EventTypeTlsPayloadRecv,
+			PID:       6666,
+		},
+		SSLContext:  sslCtx,
+		HttpVersion: event.HttpVersion1,
+		BufSize:     uint32(len(responseData)),
+	}
+	copy(responseEvent.Buf[:], responseData)
+	sm.ProcessTlsEvent(responseEvent)
+
+	// Check SSE event was received through channel
+	select {
+	case sseEvt := <-sm.HTTPEvents():
+		expectedData := "complete"
+		sseEvent := sseEvt.(*event.SSEEvent)
+		if string(sseEvent.Data) != expectedData {
+			t.Errorf("Expected SSE data %q, got %q", expectedData, sseEvent.Data)
+		}
+		// Verify HTTP context
+		if sseEvent.Method != "GET" {
+			t.Errorf("Expected method GET, got %s", sseEvent.Method)
+		}
+		if sseEvent.Host != "example.com" {
+			t.Errorf("Expected host example.com, got %s", sseEvent.Host)
+		}
+		if sseEvent.Path != "/events" {
+			t.Errorf("Expected path /events, got %s", sseEvent.Path)
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("No SSE event received through channel")
+	}
+
+	// Response should complete and be emitted
+	select {
+	case evt := <-sm.HTTPEvents():
+		if evt.Type() != event.EventTypeHttpResponse {
+			t.Errorf("Expected EventTypeHttpResponse, got %v", evt.Type())
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("Expected HTTP response event")
+	}
+}
+
+func TestSessionManager_SSENoCallback(t *testing.T) {
+	// Create session manager without SSE callback
+	sm := NewSessionManager()
+	defer sm.Close()
+
+	sslCtx := uint64(99999)
+
+	// Send request
+	requestData := []byte("GET /events HTTP/1.1\r\nHost: example.com\r\n\r\n")
+	requestEvent := &event.TlsPayloadEvent{
+		EventHeader: event.EventHeader{
+			EventType: event.EventTypeTlsPayloadSend,
+			PID:       5555,
+		},
+		SSLContext:  sslCtx,
+		HttpVersion: event.HttpVersion1,
+		BufSize:     uint32(len(requestData)),
+	}
+	copy(requestEvent.Buf[:], requestData)
+	sm.ProcessTlsEvent(requestEvent)
+
+	// Send SSE response
+	responseData := []byte("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n18\r\ndata: {\"test\":\"data\"}\n\n\r\n0\r\n\r\n")
+	responseEvent := &event.TlsPayloadEvent{
+		EventHeader: event.EventHeader{
+			EventType: event.EventTypeTlsPayloadRecv,
+			PID:       5555,
+		},
+		SSLContext:  sslCtx,
+		HttpVersion: event.HttpVersion1,
+		BufSize:     uint32(len(responseData)),
+	}
+	copy(responseEvent.Buf[:], responseData)
+
+	// Should receive request event first
+	select {
+	case evt := <-sm.HTTPEvents():
+		if evt.Type() != event.EventTypeHttpRequest {
+			t.Errorf("Expected EventTypeHttpRequest, got %v", evt.Type())
+		}
+		httpEvent := evt.(*event.HttpRequestEvent)
+		if httpEvent.Method != "GET" {
+			t.Errorf("Expected method GET, got %s", httpEvent.Method)
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("No request event received")
+	}
+
+	// Should not panic even without callback
+	err := sm.ProcessTlsEvent(responseEvent)
+	if err != nil {
+		t.Fatalf("ProcessTlsEvent should not fail without SSE callback: %v", err)
+	}
+
+	// Should receive SSE event through channel even without callback
+	select {
+	case sseEvt := <-sm.HTTPEvents():
+		expectedData := "{\"test\":\"data\"}"
+		sseEvent := sseEvt.(*event.SSEEvent)
+		if string(sseEvent.Data) != expectedData {
+			t.Errorf("Expected SSE data %q, got %q", expectedData, sseEvent.Data)
+		}
+		if sseEvent.Method != "GET" {
+			t.Errorf("Expected method GET in SSE event, got %s", sseEvent.Method)
+		}
+		if sseEvent.Path != "/events" {
+			t.Errorf("Expected path /events in SSE event, got %s", sseEvent.Path)
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("Should receive SSE event through channel even without callback")
+	}
+
+	// Regular HTTP response event should still be emitted when response completes
+	select {
+	case evt := <-sm.HTTPEvents():
+		if evt.Type() != event.EventTypeHttpResponse {
+			t.Errorf("Expected EventTypeHttpResponse, got %v", evt.Type())
+		}
+		httpEvent := evt.(*event.HttpResponseEvent)
+		if httpEvent.ResponseHeaders["Content-Type"] != "text/event-stream" {
+			t.Errorf("Expected Content-Type text/event-stream, got %s", httpEvent.ResponseHeaders["Content-Type"])
+		}
+		// The body should contain the SSE data
+		if !containsBytes(httpEvent.ResponsePayload, []byte("data: {\"test\":\"data\"}")) {
+			t.Errorf("Expected response to contain SSE data, got %q", httpEvent.ResponsePayload)
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("Expected HTTP response event for complete SSE response")
 	}
 }

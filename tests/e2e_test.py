@@ -3,13 +3,14 @@
 End-to-End Test Utility for MCPSpy
 ================================
 
-This utility tests MCPSpy by running it in background, generating MCP traffic,
-and validating the captured JSONL output against expected test cases.
+This utility tests MCPSpy by:
+1. Running MCPSpy in the background to capture traffic
+2. Invoking make targets to generate MCP traffic (test-e2e-mcp-stdio or test-e2e-mcp-https)
+3. Validating the captured JSONL output against expected test cases
 
 Supports multiple transport layers:
 - stdio: Direct stdio communication (default)
-- streamable-http: HTTP-based communication
-- sse: Server-Sent Events communication
+- http: HTTP-based communication
 """
 
 import argparse
@@ -28,20 +29,15 @@ from deepdiff import DeepDiff
 class MCPSpyE2ETest:
     """End-to-end test runner for MCPSpy."""
 
-    def __init__(self, mcpspy_path: str = "../mcpspy", transport: str = "stdio"):
+    def __init__(
+        self,
+        mcpspy_path: str = "../mcpspy",
+        transport: str = "stdio",
+    ):
         self.mcpspy_path = mcpspy_path
         self.transport = transport
-        self.python_executable = sys.executable  # Use the same Python interpreter
         self.mcpspy_process: Optional[subprocess.Popen] = None
-        self.server_process: Optional[subprocess.Popen] = None
         self.output_file: Optional[str] = None
-
-        # Transport-specific configuration
-        self.server_url = None
-        if transport == "streamable-http":
-            self.server_url = "http://localhost:8000/mcp"
-        elif transport == "sse":
-            self.server_url = "http://localhost:8000/sse"
 
     def run_test(self) -> bool:
         """Run the complete end-to-end test. Returns True if all tests pass."""
@@ -63,14 +59,8 @@ class MCPSpyE2ETest:
             print("Waiting for eBPF initialization...")
             time.sleep(2)
 
-            # Start MCP server if needed (for HTTP transports)
-            if self.transport in ["streamable-http", "sse"]:
-                self._start_mcp_server()
-                # Wait for server to start
-                time.sleep(2)
-
-            # Run MCP client to generate traffic
-            self._run_mcp_client()
+            # Run MCP traffic generation via make target
+            self._run_mcp_traffic()
 
             # Stop MCPSpy
             self._stop_mcpspy()
@@ -108,81 +98,37 @@ class MCPSpyE2ETest:
                 except ProcessLookupError:
                     pass
 
-    def _start_mcp_server(self) -> None:
-        """Start MCP server for HTTP-based transports."""
-        server_script = Path(__file__).parent / "mcp_server.py"
+    def _run_mcp_traffic(self) -> None:
+        """Run MCP traffic generation using make targets."""
+        # Map transport types to make targets
+        make_targets = {
+            "stdio": "test-e2e-mcp-stdio",
+            "http": "test-e2e-mcp-https",
+        }
 
-        if not server_script.exists():
-            raise FileNotFoundError(f"MCP server script not found: {server_script}")
+        target = make_targets.get(self.transport)
+        if not target:
+            raise ValueError(f"No make target defined for transport: {self.transport}")
 
-        cmd = [
-            self.python_executable,
-            str(server_script),
-            "--transport",
-            self.transport,
-        ]
+        cmd = ["make", target]
+        print(f"Running MCP traffic generation: {' '.join(cmd)}")
 
-        print(f"Starting MCP server: {' '.join(cmd)}")
-
-        self.server_process = subprocess.Popen(
-            cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, preexec_fn=os.setsid
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            cwd=Path(__file__).parent.parent,  # Run from project root
         )
 
-    def _stop_mcp_server(self) -> None:
-        """Stop MCP server process."""
-        if self.server_process:
-            print("Stopping MCP server...")
-            try:
-                # Send SIGINT to the process group
-                os.killpg(os.getpgid(self.server_process.pid), signal.SIGINT)
-                self.server_process.wait(timeout=5)
-            except (subprocess.TimeoutExpired, ProcessLookupError):
-                # Force kill if it doesn't respond
-                try:
-                    os.killpg(os.getpgid(self.server_process.pid), signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
-
-    def _run_mcp_client(self) -> None:
-        """Run the MCP client to generate test traffic."""
-        client_script = Path(__file__).parent / "mcp_client.py"
-        server_script = Path(__file__).parent / "mcp_server.py"
-
-        if not client_script.exists():
-            raise FileNotFoundError(f"MCP client script not found: {client_script}")
-
-        # Build command based on transport type
-        if self.transport == "stdio":
-            if not server_script.exists():
-                raise FileNotFoundError(f"MCP server script not found: {server_script}")
-
-            cmd = [
-                self.python_executable,
-                str(client_script),
-                "--transport",
-                "stdio",
-                "--server",
-                f"{self.python_executable} {server_script} --transport stdio",
-            ]
-        else:
-            # HTTP-based transports
-            cmd = [
-                self.python_executable,
-                str(client_script),
-                "--transport",
-                self.transport,
-                "--url",
-                self.server_url,
-            ]
-
-        print(f"Running MCP client: {' '.join(cmd)}")
-
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
         if result.returncode != 0:
-            print(f"MCP client stderr: {result.stderr}")
-            raise RuntimeError(f"MCP client failed with code {result.returncode}")
+            print(f"Make target stderr: {result.stderr}")
+            print(f"Make target stdout: {result.stdout}")
+            raise RuntimeError(
+                f"Make target {target} failed with code {result.returncode}"
+            )
 
-        print("MCP client completed successfully")
+        print(f"MCP traffic generation completed successfully")
 
     def _validate_output(self) -> bool:
         """Validate the JSONL output against expected test cases using deepdiff."""
@@ -271,9 +217,6 @@ class MCPSpyE2ETest:
         if self.mcpspy_process:
             self._stop_mcpspy()
 
-        if self.server_process:
-            self._stop_mcp_server()
-
         if self.output_file and os.path.exists(self.output_file):
             try:
                 os.unlink(self.output_file)
@@ -294,7 +237,7 @@ def main():
     )
     parser.add_argument(
         "--transport",
-        choices=["stdio", "streamable-http", "sse"],
+        choices=["stdio", "http"],
         default="stdio",
         help="Transport layer to test (default: stdio)",
     )

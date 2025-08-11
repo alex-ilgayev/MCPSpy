@@ -171,7 +171,7 @@ func NewParser() *Parser {
 	}
 }
 
-// ParseData attempts to parse MCP messages from raw data
+// ParseDataStdio attempts to parse MCP messages from Stdio raw data
 // The parsing flow is as follows:
 // - If it's write event, we cache it for further correlation with read event.
 // - If it's read event, we try to find a matching write event in the cache.
@@ -182,11 +182,11 @@ func NewParser() *Parser {
 //
 // We may receive several JSONs in single read / write event.
 // Splitting the data into seperate JSONs first. Assuming each JSON is separated by a newline.
-func (p *Parser) ParseData(data []byte, eventType event.EventType, pid uint32, comm string) ([]*Message, error) {
+func (p *Parser) ParseDataStdio(data []byte, eventType event.EventType, pid uint32, comm string) ([]*Message, error) {
 	var messages []*Message
 
 	if eventType != event.EventTypeFSWrite && eventType != event.EventTypeFSRead {
-		return []*Message{}, fmt.Errorf("unknown event type: %d", eventType)
+		return []*Message{}, fmt.Errorf("unknown event type in stdio parsing: %d", eventType)
 	}
 
 	// Split the data into individual JSON messages
@@ -219,7 +219,7 @@ func (p *Parser) ParseData(data []byte, eventType event.EventType, pid uint32, c
 				return []*Message{}, err
 			}
 
-			// Currently, we only support stdio transport.
+			// Create stdio transport info from correlated events
 			messages = append(messages, &Message{
 				Timestamp:     time.Now(),
 				Raw:           string(msgData),
@@ -233,6 +233,45 @@ func (p *Parser) ParseData(data []byte, eventType event.EventType, pid uint32, c
 				JSONRPCMessage: jsonRpcMsg,
 			})
 		}
+	}
+
+	return messages, nil
+}
+
+// ParseDataHttp attempts to parse MCP messages from HTTP payload data
+// This method is used for HTTP transport where MCP messages are sent via HTTP requests/responses
+func (p *Parser) ParseDataHttp(data []byte, eventType event.EventType, pid uint32, comm string) ([]*Message, error) {
+	var messages []*Message
+
+	if eventType != event.EventTypeHttpRequest && eventType != event.EventTypeHttpResponse && eventType != event.EventTypeHttpSSE {
+		return []*Message{}, fmt.Errorf("unknown event type in http parsing: %d", eventType)
+	}
+
+	// Split the data into individual JSON messages
+	scanner := bufio.NewScanner(bytes.NewReader(data))
+	for scanner.Scan() {
+		msgData := scanner.Bytes()
+		if len(bytes.TrimSpace(msgData)) == 0 {
+			continue
+		}
+
+		// Parse the message
+		jsonRpcMsg, err := p.parseJSONRPC(msgData)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse JSON-RPC: %w", err)
+		}
+
+		if ok, err := p.validateMCPMessage(jsonRpcMsg); !ok {
+			return nil, fmt.Errorf("invalid MCP message: %w", err)
+		}
+
+		// Create http transport info from correlated events
+		messages = append(messages, &Message{
+			Timestamp:      time.Now(),
+			Raw:            string(msgData),
+			TransportType:  TransportTypeHTTP,
+			JSONRPCMessage: jsonRpcMsg,
+		})
 	}
 
 	return messages, nil

@@ -13,9 +13,9 @@ Usage:
 
     # HTTP-based transports (connect to existing server)
     python mcp_client.py --transport sse (default url: http://localhost:9000/sse)
-    python mcp_client.py --transport streamable-http (default url: http://localhost:9000/mcp)
+    python mcp_client.py --transport http (default url: http://localhost:9000/mcp)
     python mcp_client.py --transport sse --url "http://localhost:9000/sse"
-    python mcp_client.py --transport streamable-http --url "http://localhost:9000/mcp"
+    python mcp_client.py --transport http --url "http://localhost:9000/mcp"
 """
 
 import argparse
@@ -77,7 +77,7 @@ class MCPMessageSimulator:
 
         Args:
             server_command: Command to start the MCP server (only used for stdio transport)
-            transport: Transport layer to use ("stdio", "sse", "streamable-http")
+            transport: Transport layer to use ("stdio", "sse", "http")
             url: URL for HTTP-based transports (ignored for stdio)
         """
         self.server_command = server_command
@@ -92,7 +92,7 @@ class MCPMessageSimulator:
         # Set default URLs for HTTP-based transports
         if self.transport == "sse" and self.url is None:
             self.url = "http://localhost:8000/sse"
-        elif self.transport == "streamable-http" and self.url is None:
+        elif self.transport == "http" and self.url is None:
             self.url = "http://localhost:8000/mcp"
 
         # Configure logging
@@ -224,8 +224,8 @@ class MCPMessageSimulator:
                 await self._run_stdio_simulation()
             elif self.transport == "sse":
                 await self._run_sse_simulation()
-            elif self.transport == "streamable-http":
-                await self._run_streamable_http_simulation()
+            elif self.transport == "http":
+                await self._run_http_simulation()
             else:
                 raise ValueError(f"Unsupported transport: {self.transport}")
 
@@ -253,7 +253,7 @@ class MCPMessageSimulator:
                 self.session = session
                 await self._run_message_simulation()
 
-    async def _run_streamable_http_simulation(self) -> None:
+    async def _run_http_simulation(self) -> None:
         """Run simulation using streamable HTTP transport."""
         self.logger.info(f"Connecting to HTTP endpoint: {self.url}")
 
@@ -295,7 +295,7 @@ async def main():
     )
     parser.add_argument(
         "--transport",
-        choices=["stdio", "sse", "streamable-http"],
+        choices=["stdio", "sse", "http"],
         default="stdio",
         help="Transport layer to use (default: stdio)",
     )

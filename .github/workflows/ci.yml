@@ -48,7 +48,7 @@ jobs:
         run: make build
 
       - name: Run unit tests
-        run: make test
+        run: make test-unit
 
       - name: Run simple smoke test
         run: make test-smoke

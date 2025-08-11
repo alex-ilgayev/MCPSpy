@@ -9,6 +9,7 @@ import (
 	"github.com/alex-ilgayev/mcpspy/pkg/mcp"
 	"github.com/fatih/color"
 	"github.com/olekukonko/tablewriter"
+	"github.com/sirupsen/logrus"
 )
 
 // ConsoleDisplay handles the CLI output formatting for console output
@@ -28,6 +29,7 @@ func NewConsoleDisplay(writer io.Writer, showBuffers bool) *ConsoleDisplay {
 // Colors for different elements
 var (
 	timestampColor = color.New(color.FgHiBlack)
+	transportColor = color.New(color.FgHiCyan)
 	pidColor       = color.New(color.FgCyan)
 	commColor      = color.New(color.FgYellow)
 	methodColor    = color.New(color.FgGreen)
@@ -83,20 +85,60 @@ func (d *ConsoleDisplay) PrintMessages(messages []*mcp.Message) {
 	}
 }
 
-// printCorrelatedMessage prints a correlated message showing process-to-process communication
+// printCorrelatedMessage prints a correlated message showing transport communication
 func (d *ConsoleDisplay) printMessage(msg *mcp.Message) {
 	// Format timestamp
 	ts := timestampColor.Sprint(msg.Timestamp.Format("15:04:05.000"))
+	fmt.Fprintf(d.writer, "%s ", ts)
 
-	// Format the communication flow
-	commFlow := fmt.Sprintf("%s[%s] → %s[%s]",
-		commColor.Sprint(msg.FromComm),
-		pidColor.Sprint(msg.FromPID),
-		commColor.Sprint(msg.ToComm),
-		pidColor.Sprint(msg.ToPID),
-	)
+	// Format the communication flow based on transport type
+	d.printCommFlow(msg)
 
 	// Format message type and method
+	d.printMessageInfo(msg)
+
+	// Print a new line after the message info
+	fmt.Fprintln(d.writer)
+
+	// Print buffer content if requested
+	if d.showBuffers && msg.Raw != "" {
+		d.printBuffer(msg.Raw)
+	}
+}
+
+// printCommFlow formats the communication flow for a given message
+// Format: [transport] [from] → [to]
+func (d *ConsoleDisplay) printCommFlow(msg *mcp.Message) {
+	var commFlow string
+
+	switch msg.TransportType {
+	case mcp.TransportTypeStdio:
+		if msg.StdioTransport != nil {
+			commFlow = fmt.Sprintf("%s %s[%s] → %s[%s]",
+				transportColor.Sprint("STDIO"),
+				commColor.Sprint(msg.FromComm),
+				pidColor.Sprint(msg.FromPID),
+				commColor.Sprint(msg.ToComm),
+				pidColor.Sprint(msg.ToPID),
+			)
+		} else {
+			logrus.Warnf("unknown stdio transport: %v", msg.StdioTransport)
+			commFlow = transportColor.Sprint("UNKN")
+		}
+	case mcp.TransportTypeHTTP:
+		commFlow = transportColor.Sprint("HTTP")
+		// TODO: Add HTTP transport info
+	default:
+		logrus.Warnf("unknown transport type: %v", msg.TransportType)
+		commFlow = transportColor.Sprint("UNKN")
+	}
+
+	fmt.Fprintf(d.writer, "%s ", commFlow)
+}
+
+// printMessageInfo formats the message info for a given message
+// Format: [id] [type] [method]
+func (d *ConsoleDisplay) printMessageInfo(msg *mcp.Message) {
 	var msgInfo string
 	switch msg.Type {
 	case mcp.JSONRPCMessageTypeRequest:
@@ -123,22 +165,11 @@ func (d *ConsoleDisplay) printMessage(msg *mcp.Message) {
 		msgInfo = "UNKN"
 	}
 
-	// Print the main line with process-to-process communication
-	fmt.Fprintf(d.writer, "%s %s %s",
-		ts,
-		commFlow,
-		msgInfo,
-	)
 	if msg.Type != mcp.JSONRPCMessageTypeResponse {
-		fmt.Fprintf(d.writer, " %s\n", mcp.GetMethodDescription(msg.Method))
-	} else {
-		fmt.Fprintln(d.writer)
+		msgInfo += fmt.Sprintf(" %s", mcp.GetMethodDescription(msg.Method))
 	}
 
-	// Print buffer content if requested
-	if d.showBuffers && msg.Raw != "" {
-		d.printBuffer(msg.Raw)
-	}
+	fmt.Fprintf(d.writer, "%s ", msgInfo)
 }
 
 // printBuffer prints the raw message content with proper JSON formatting

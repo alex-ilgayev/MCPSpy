@@ -143,22 +143,86 @@ func run(cmd *cobra.Command, args []string) error {
 		case <-ctx.Done():
 			consoleDisplay.PrintStats(stats)
 			return nil
-
-		case httpEvt, ok := <-httpManager.HTTPEvents():
+		case event, ok := <-httpManager.HTTPEvents():
 			if !ok {
 				// Channel closed, exit
 				consoleDisplay.PrintStats(stats)
 				return nil
 			}
 
-			// Handle HTTP event
-			logrus.WithFields(logrus.Fields{
-				"method":     httpEvt.Method,
-				"host":       httpEvt.Host,
-				"path":       httpEvt.Path,
-				"code":       httpEvt.Code,
-				"is_chunked": httpEvt.IsChunked,
-			}).Trace("HTTP event")
+			var allMessages []*mcp.Message
+
+			switch event.Type() {
+			case mcpevents.EventTypeHttpRequest:
+				httpEvt := event.(*mcpevents.HttpRequestEvent)
+
+				logrus.WithFields(logrus.Fields{
+					"method": httpEvt.Method,
+					"host":   httpEvt.Host,
+					"path":   httpEvt.Path,
+				}).Trace("HTTP request event")
+
+				// Parse request payload for MCP messages
+				requestMessages, err := parser.ParseDataHttp(httpEvt.RequestPayload, httpEvt.EventType, httpEvt.PID, httpEvt.Comm())
+				if err != nil {
+					logrus.WithError(err).Debug("Failed to parse HTTP request payload")
+				} else {
+					allMessages = append(allMessages, requestMessages...)
+				}
+
+			case mcpevents.EventTypeHttpResponse:
+				httpEvt := event.(*mcpevents.HttpResponseEvent)
+
+				logrus.WithFields(logrus.Fields{
+					"method":     httpEvt.Method,
+					"host":       httpEvt.Host,
+					"path":       httpEvt.Path,
+					"code":       httpEvt.Code,
+					"is_chunked": httpEvt.IsChunked,
+				}).Trace("HTTP response event")
+
+				// Parse response payload for MCP messages
+				responseMessages, err := parser.ParseDataHttp(httpEvt.ResponsePayload, httpEvt.EventType, httpEvt.PID, httpEvt.Comm())
+				if err != nil {
+					logrus.WithError(err).Debug("Failed to parse HTTP response payload")
+				} else {
+					allMessages = append(allMessages, responseMessages...)
+				}
+
+			case mcpevents.EventTypeHttpSSE:
+				sseEvent := event.(*mcpevents.SSEEvent)
+
+				logrus.WithFields(logrus.Fields{
+					"method": sseEvent.Method,
+					"host":   sseEvent.Host,
+					"path":   sseEvent.Path,
+				}).Trace("HTTP SSE event")
+
+				// Parse SSE data as MCP messages
+				messages, err := parser.ParseDataHttp(sseEvent.Data, sseEvent.EventType, sseEvent.PID, sseEvent.Comm())
+				if err != nil {
+					logrus.WithError(err).Debug("Failed to parse SSE data as MCP")
+				} else {
+					allMessages = append(allMessages, messages...)
+				}
+			}
+
+			// Update statistics and display messages
+			for _, msg := range allMessages {
+				if msg.Method != "" {
+					stats[msg.Method]++
+				}
+			}
+
+			// Display messages to console
+			if len(allMessages) > 0 {
+				consoleDisplay.PrintMessages(allMessages)
+
+				// Also write to file if specified
+				if fileDisplay != nil {
+					fileDisplay.PrintMessages(allMessages)
+				}
+			}
 		case event, ok := <-loader.Events():
 			if !ok {
 				// Channel closed, exit
@@ -175,7 +239,7 @@ func run(cmd *cobra.Command, args []string) error {
 				}
 
 				// Parse raw eBPF event data into MCP messages
-				messages, err := parser.ParseData(buf, e.EventType, e.PID, e.Comm())
+				messages, err := parser.ParseDataStdio(buf, e.EventType, e.PID, e.Comm())
 				if err != nil {
 					// Ignore this error, it's expected for read events
 					if err.Error() != "no write event found for the parsed read event" {
@@ -211,7 +275,7 @@ func run(cmd *cobra.Command, args []string) error {
 					logrus.WithError(err).WithField("path", e.Path()).Warn("Failed to process library event")
 				}
 			case *mcpevents.TlsPayloadEvent:
-				// Handle TLS events
+				// Handle TLS payloads
 				logrus.WithFields(logrus.Fields{
 					"type":     e.Type(),
 					"pid":      e.PID,
@@ -219,7 +283,7 @@ func run(cmd *cobra.Command, args []string) error {
 					"size":     e.Size,
 					"buf_size": e.BufSize,
 					"version":  e.HttpVersion,
-				}).Trace("TLS event")
+				}).Trace("TLS payload event")
 				// Raw TLS event, we need to aggregate it into HTTP sessions
 				if err := httpManager.ProcessTlsEvent(e); err != nil {
 					logrus.WithError(err).Warn("Failed to process TLS event")

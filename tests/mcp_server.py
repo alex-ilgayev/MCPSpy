@@ -14,10 +14,10 @@ This server demonstrates various MCP capabilities including:
 Run the server:
     python mcp_server.py (default transport is stdio)
     python mcp_server.py --transport stdio
-    python mcp_server.py --transport streamable-http (default endpoint is http://localhost:8000/mcp)
+    python mcp_server.py --transport http (default endpoint is http://localhost:8000/mcp)
     python mcp_server.py --transport sse (default endpoint is http://localhost:8000/sse)
 
-Run the server with a self-signed certificate (transport is streamable-http):
+Run the server with a self-signed certificate (transport is http):
     uvicorn mcp_server:app --host 0.0.0.0 --port 12345 --ssl-keyfile=server.key --ssl-certfile=server.crt
 
 Or use with MCP development tools:
@@ -71,7 +71,7 @@ def parse_arguments():
     parser.add_argument(
         "--transport",
         "-t",
-        choices=["stdio", "streamable-http", "sse"],
+        choices=["stdio", "http", "sse"],
         default="stdio",
         help="Transport layer to use (default: stdio)",
     )

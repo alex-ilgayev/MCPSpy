@@ -56,8 +56,31 @@ sudo ./mcpspy
 
 ## Testing
 
+Running all tests (unit tests, and end-to-end tests for both stdio and https transports):
+
 ```bash
+make test
+```
+
+Running unit tests:
+
+```bash
+make test-unit
+```
+
+Running end-to-end tests (including mcpspy, and verifying the output):
+
+```bash
+make test-e2e-stdio
+make test-e2e-https
+
+# Or
 make test-e2e
 ```
 
-Testing creates a new execution of mcpspy, and runs a test client that simulates MCP traffic to an MCP server.
+Running solely the mcp e2e tests (without mcpspy):
+
+```bash
+make test-e2e-mcp-stdio
+make test-e2e-mcp-https
+```

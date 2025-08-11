@@ -154,9 +154,13 @@ lint: generate ## Run linters
 	@echo "Running linters..."
 	$(GO_BIN_DIR)/$(GOLANGCI_LINT) run --disable=errcheck
 
-# Run unit tests
+# Run all tests (unit and e2e for both transports)
 .PHONY: test
-test: ## Run unit tests
+test: test-unit test-e2e ## Run all tests (unit and e2e for both transports)
+
+# Run unit tests only
+.PHONY: test-unit
+test-unit: ## Run unit tests
 	@echo "Running unit tests..."
 	$(GO) test $(TEST_FLAGS) ./...
 
@@ -167,19 +171,51 @@ test-e2e-setup: ## Setup Python e2e test environment
 	@$(PYTHON) -m venv tests/venv || true
 	tests/venv/bin/pip install -r tests/requirements.txt
 
-# Run MCP client (without MCPSpy) with simulated traffic
-.PHONY: test-e2e-mcp
-test-e2e-mcp: test-e2e-setup ## Run MCP client (without MCPSpy) with simulated traffic
-	@echo "Running MCP client..."
+# Run MCP client (without MCPSpy) with simulated traffic - stdio transport
+.PHONY: test-e2e-mcp-stdio
+test-e2e-mcp-stdio: test-e2e-setup ## Run MCP client with stdio transport
+	@echo "Running MCP client with stdio transport..."
 	tests/venv/bin/python tests/mcp_client.py --server "tests/venv/bin/python tests/mcp_server.py"
 
-# Run end-to-end tests
-.PHONY: test-e2e
-test-e2e: build test-e2e-setup ## Run end-to-end tests
-	@echo "Running end-to-end tests..."
+# Run MCP client (without MCPSpy) with simulated traffic - HTTPS transport
+.PHONY: test-e2e-mcp-https
+test-e2e-mcp-https: test-e2e-setup ## Run MCP client with HTTPS transport
+	@echo "Running MCP client with HTTPS transport..."
+	@echo "Starting HTTPS server in background..."
+	tests/venv/bin/python -m uvicorn tests.mcp_server:app \
+		--host 0.0.0.0 --port 12345 \
+		--ssl-keyfile=tests/server.key --ssl-certfile=tests/server.crt \
+		--log-level=error & \
+	SERVER_PID=$$!; \
+	sleep 3; \
+	tests/venv/bin/python tests/mcp_client.py \
+		--transport http \
+		--url https://127.0.0.1:12345/mcp || true; \
+	kill $$SERVER_PID 2>/dev/null || true
+
+# Run end-to-end test for stdio transport
+.PHONY: test-e2e-stdio
+test-e2e-stdio: build test-e2e-setup ## Run end-to-end test for stdio transport
+	@echo "Running end-to-end test for stdio transport..."
 	@echo "Note: MCPSpy requires root privileges for eBPF operations"
-	# Ensure this points to the locally built binary
-	sudo -E tests/venv/bin/python tests/e2e_test.py --mcpspy $(BUILD_DIR)/$(BINARY_NAME)-$(PLATFORM)
+	sudo -E tests/venv/bin/python tests/e2e_test.py \
+		--mcpspy $(BUILD_DIR)/$(BINARY_NAME)-$(PLATFORM) \
+		--transport stdio
+
+# Run end-to-end test for HTTP transport
+.PHONY: test-e2e-https
+test-e2e-https: build test-e2e-setup ## Run end-to-end test for HTTP transport
+	@echo "Running end-to-end test for HTTP transport..."
+	@echo "Note: MCPSpy requires root privileges for eBPF operations"
+	sudo -E tests/venv/bin/python tests/e2e_test.py \
+		--mcpspy $(BUILD_DIR)/$(BINARY_NAME)-$(PLATFORM) \
+		--transport http
+
+# Run end-to-end tests for all transports
+.PHONY: test-e2e
+test-e2e: test-e2e-stdio test-e2e-https ## Run end-to-end tests for all transports
+	@echo ""
+	@echo "=== All transport tests completed ====="
 
 .PHONY: test-smoke
 test-smoke: ## Run smoke test (basic startup/shutdown test)

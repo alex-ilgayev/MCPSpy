@@ -1,10 +1,16 @@
 package mcp
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/alex-ilgayev/mcpspy/pkg/event"
 )
+
+// Helper function for string contains check
+func contains(s, substr string) bool {
+	return strings.Contains(s, substr)
+}
 
 func TestParseJSONRPC_ValidMessages(t *testing.T) {
 	parser := NewParser()
@@ -74,13 +80,13 @@ func TestParseJSONRPC_ValidMessages(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			// Simulate write event first
-			_, err := parser.ParseData(tt.data, event.EventTypeFSWrite, 100, "writer")
+			_, err := parser.ParseDataStdio(tt.data, event.EventTypeFSWrite, 100, "writer")
 			if err != nil {
 				t.Fatalf("ParseData write failed: %v", err)
 			}
 
 			// Then read event
-			msgs, err := parser.ParseData(tt.data, event.EventTypeFSRead, 200, "reader")
+			msgs, err := parser.ParseDataStdio(tt.data, event.EventTypeFSRead, 200, "reader")
 			if err != nil {
 				t.Fatalf("ParseData read failed: %v", err)
 			}
@@ -548,12 +554,12 @@ func TestParseJSONRPC_AllSupportedMethods(t *testing.T) {
 			data := []byte(tc.data)
 
 			// Write then read
-			_, err := parser.ParseData(data, event.EventTypeFSWrite, 100, "writer")
+			_, err := parser.ParseDataStdio(data, event.EventTypeFSWrite, 100, "writer")
 			if err != nil {
 				t.Fatalf("Write failed: %v", err)
 			}
 
-			msgs, err := parser.ParseData(data, event.EventTypeFSRead, 200, "reader")
+			msgs, err := parser.ParseDataStdio(data, event.EventTypeFSRead, 200, "reader")
 			if err != nil {
 				t.Fatalf("Read failed for method %s: %v", tc.method, err)
 			}
@@ -641,7 +647,7 @@ func TestParseJSONRPC_InvalidMessages(t *testing.T) {
 	}{
 		{
 			name:        "Invalid JSON",
-			data:        []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call"`),
+			data:        []byte(`{"invalid": json}`),
 			expectError: "invalid JSON",
 		},
 		{
@@ -679,19 +685,20 @@ func TestParseJSONRPC_InvalidMessages(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			// Write event
-			_, err := parser.ParseData(tt.data, event.EventTypeFSWrite, 100, "writer")
+			_, err := parser.ParseDataStdio(tt.data, event.EventTypeFSWrite, 100, "writer")
 			if err != nil {
 				t.Fatalf("Write failed: %v", err)
 			}
 
 			// Read event should fail
-			_, err = parser.ParseData(tt.data, event.EventTypeFSRead, 200, "reader")
+			_, err = parser.ParseDataStdio(tt.data, event.EventTypeFSRead, 200, "reader")
 			if err == nil {
 				t.Errorf("Expected error containing '%s', got nil", tt.expectError)
 				return
 			}
 
-			if len(tt.expectError) > 0 && err.Error()[:len(tt.expectError)] != tt.expectError {
+			// Use Contains to safely check for error substring
+			if !contains(err.Error(), tt.expectError) {
 				t.Errorf("Expected error containing '%s', got '%s'", tt.expectError, err.Error())
 			}
 		})
@@ -706,7 +713,7 @@ func TestParseData_WriteReadCorrelation(t *testing.T) {
 	// Test normal flow: write then read
 	t.Run("Normal flow", func(t *testing.T) {
 		// Write event
-		writeMsg, err := parser.ParseData(data, event.EventTypeFSWrite, 100, "writer")
+		writeMsg, err := parser.ParseDataStdio(data, event.EventTypeFSWrite, 100, "writer")
 		if err != nil {
 			t.Fatalf("Write failed: %v", err)
 		}
@@ -715,7 +722,7 @@ func TestParseData_WriteReadCorrelation(t *testing.T) {
 		}
 
 		// Read event
-		readMsg, err := parser.ParseData(data, event.EventTypeFSRead, 200, "reader")
+		readMsg, err := parser.ParseDataStdio(data, event.EventTypeFSRead, 200, "reader")
 		if err != nil {
 			t.Fatalf("Read failed: %v", err)
 		}
@@ -724,17 +731,17 @@ func TestParseData_WriteReadCorrelation(t *testing.T) {
 		}
 
 		msg := readMsg[0]
-		if msg.StdioTransport.FromPID != 100 {
-			t.Errorf("Expected FromPID 100, got %d", msg.StdioTransport.FromPID)
+		if msg.FromPID != 100 {
+			t.Errorf("Expected FromPID 100, got %d", msg.FromPID)
 		}
-		if msg.StdioTransport.FromComm != "writer" {
-			t.Errorf("Expected FromComm 'writer', got '%s'", msg.StdioTransport.FromComm)
+		if msg.FromComm != "writer" {
+			t.Errorf("Expected FromComm 'writer', got '%s'", msg.FromComm)
 		}
-		if msg.StdioTransport.ToPID != 200 {
-			t.Errorf("Expected ToPID 200, got %d", msg.StdioTransport.ToPID)
+		if msg.ToPID != 200 {
+			t.Errorf("Expected ToPID 200, got %d", msg.ToPID)
 		}
-		if msg.StdioTransport.ToComm != "reader" {
-			t.Errorf("Expected ToComm 'reader', got '%s'", msg.StdioTransport.ToComm)
+		if msg.ToComm != "reader" {
+			t.Errorf("Expected ToComm 'reader', got '%s'", msg.ToComm)
 		}
 	})
 
@@ -743,7 +750,7 @@ func TestParseData_WriteReadCorrelation(t *testing.T) {
 		newParser := NewParser()
 		data2 := []byte(`{"jsonrpc":"2.0","id":2,"method":"tools/list"}`)
 
-		_, err := newParser.ParseData(data2, event.EventTypeFSRead, 200, "reader")
+		_, err := newParser.ParseDataStdio(data2, event.EventTypeFSRead, 200, "reader")
 		if err == nil {
 			t.Error("Expected error for read without write")
 		}
@@ -762,13 +769,13 @@ func TestParseData_MultipleMessages(t *testing.T) {
 {"jsonrpc":"2.0","method":"notifications/progress","params":{"value":50}}`)
 
 	// Write event
-	_, err := parser.ParseData(multipleData, event.EventTypeFSWrite, 100, "writer")
+	_, err := parser.ParseDataStdio(multipleData, event.EventTypeFSWrite, 100, "writer")
 	if err != nil {
 		t.Fatalf("Write failed: %v", err)
 	}
 
 	// Read event
-	msgs, err := parser.ParseData(multipleData, event.EventTypeFSRead, 200, "reader")
+	msgs, err := parser.ParseDataStdio(multipleData, event.EventTypeFSRead, 200, "reader")
 	if err != nil {
 		t.Fatalf("Read failed: %v", err)
 	}
@@ -963,12 +970,354 @@ func TestParseData_UnsupportedEventType(t *testing.T) {
 	parser := NewParser()
 	data := []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`)
 
-	// Test unsupported event type
-	_, err := parser.ParseData(data, event.EventType(99), 100, "test")
+	// Test unsupported event type for stdio
+	_, err := parser.ParseDataStdio(data, event.EventType(99), 100, "test")
 	if err == nil {
 		t.Error("Expected error for unsupported event type")
 	}
-	if err.Error() != "unknown event type: 99" {
+	if !contains(err.Error(), "unknown event type") {
 		t.Errorf("Expected unknown event type error, got: %s", err.Error())
+	}
+
+	// Test unsupported event type for http
+	_, err = parser.ParseDataHttp(data, event.EventType(99), 100, "test")
+	if err == nil {
+		t.Error("Expected error for unsupported event type")
+	}
+	if !contains(err.Error(), "unknown event type") {
+		t.Errorf("Expected unknown event type error, got: %s", err.Error())
+	}
+}
+
+func TestParseDataHttp_ValidMessages(t *testing.T) {
+	parser := NewParser()
+
+	tests := []struct {
+		name           string
+		data           []byte
+		eventType      event.EventType
+		expectedType   JSONRPCMessageType
+		expectedMethod string
+		expectedID     interface{}
+		hasParams      bool
+		hasResult      bool
+		hasError       bool
+	}{
+		{
+			name:           "HTTP Request - Basic request",
+			data:           []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"test"}}`),
+			eventType:      event.EventTypeHttpRequest,
+			expectedType:   JSONRPCMessageTypeRequest,
+			expectedMethod: "tools/call",
+			expectedID:     int64(1),
+			hasParams:      true,
+		},
+		{
+			name:         "HTTP Response - Success",
+			data:         []byte(`{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"OK"}]}}`),
+			eventType:    event.EventTypeHttpResponse,
+			expectedType: JSONRPCMessageTypeResponse,
+			expectedID:   int64(1),
+			hasResult:    true,
+		},
+		{
+			name:           "HTTP SSE - Notification",
+			data:           []byte(`{"jsonrpc":"2.0","method":"notifications/progress","params":{"value":50}}`),
+			eventType:      event.EventTypeHttpSSE,
+			expectedType:   JSONRPCMessageTypeNotification,
+			expectedMethod: "notifications/progress",
+			hasParams:      true,
+		},
+		{
+			name:           "HTTP Request - Initialize",
+			data:           []byte(`{"jsonrpc":"2.0","id":"init-001","method":"initialize","params":{"version":"1.0.0"}}`),
+			eventType:      event.EventTypeHttpRequest,
+			expectedType:   JSONRPCMessageTypeRequest,
+			expectedMethod: "initialize",
+			expectedID:     "init-001",
+			hasParams:      true,
+		},
+		{
+			name:         "HTTP Response - Error",
+			data:         []byte(`{"jsonrpc":"2.0","id":1,"error":{"code":-32602,"message":"Invalid params"}}`),
+			eventType:    event.EventTypeHttpResponse,
+			expectedType: JSONRPCMessageTypeResponse,
+			expectedID:   int64(1),
+			hasError:     true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			msgs, err := parser.ParseDataHttp(tt.data, tt.eventType, 100, "http-process")
+			if err != nil {
+				t.Fatalf("ParseDataHttp failed: %v", err)
+			}
+
+			if len(msgs) != 1 {
+				t.Fatalf("Expected 1 message, got %d", len(msgs))
+			}
+
+			msg := msgs[0]
+
+			// Check transport type
+			if msg.TransportType != TransportTypeHTTP {
+				t.Errorf("Expected transport type HTTP, got %s", msg.TransportType)
+			}
+
+			// Check that stdio transport is nil for HTTP messages
+			if msg.StdioTransport != nil {
+				t.Error("Expected StdioTransport to be nil for HTTP transport")
+			}
+
+			if msg.Type != tt.expectedType {
+				t.Errorf("Expected type %s, got %s", tt.expectedType, msg.Type)
+			}
+
+			if msg.Method != tt.expectedMethod {
+				t.Errorf("Expected method %s, got %s", tt.expectedMethod, msg.Method)
+			}
+
+			if tt.expectedID != nil && msg.ID != tt.expectedID {
+				t.Errorf("Expected ID %v, got %v", tt.expectedID, msg.ID)
+			}
+
+			if tt.hasParams && msg.Params == nil {
+				t.Error("Expected params to be present")
+			}
+
+			if !tt.hasParams && msg.Params != nil {
+				t.Error("Expected params to be nil")
+			}
+
+			if tt.hasResult && msg.Result == nil {
+				t.Error("Expected result to be present")
+			}
+
+			if tt.hasError && msg.Error.Code == 0 {
+				t.Error("Expected error to be present")
+			}
+		})
+	}
+}
+
+func TestParseDataHttp_MultipleMessages(t *testing.T) {
+	parser := NewParser()
+
+	// Test multiple JSON messages separated by newlines
+	multipleData := []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"test"}}
+{"jsonrpc":"2.0","id":2,"method":"tools/list"}
+{"jsonrpc":"2.0","method":"notifications/progress","params":{"value":50}}`)
+
+	msgs, err := parser.ParseDataHttp(multipleData, event.EventTypeHttpRequest, 100, "http-process")
+	if err != nil {
+		t.Fatalf("ParseDataHttp failed: %v", err)
+	}
+
+	if len(msgs) != 3 {
+		t.Fatalf("Expected 3 messages, got %d", len(msgs))
+	}
+
+	// Verify message types
+	expectedTypes := []JSONRPCMessageType{
+		JSONRPCMessageTypeRequest,
+		JSONRPCMessageTypeRequest,
+		JSONRPCMessageTypeNotification,
+	}
+
+	for i, expectedType := range expectedTypes {
+		if msgs[i].Type != expectedType {
+			t.Errorf("Message %d: expected type %s, got %s", i, expectedType, msgs[i].Type)
+		}
+
+		// All should have HTTP transport type
+		if msgs[i].TransportType != TransportTypeHTTP {
+			t.Errorf("Message %d: expected transport type HTTP, got %s", i, msgs[i].TransportType)
+		}
+	}
+}
+
+func TestParseDataHttp_InvalidMessages(t *testing.T) {
+	parser := NewParser()
+
+	tests := []struct {
+		name        string
+		data        []byte
+		eventType   event.EventType
+		expectError string
+	}{
+		{
+			name:        "Invalid JSON",
+			data:        []byte(`{"invalid": json}`),
+			eventType:   event.EventTypeHttpRequest,
+			expectError: "failed to parse JSON-RPC: invalid JSON",
+		},
+		{
+			name:        "Missing jsonrpc field",
+			data:        []byte(`{"id":1,"method":"tools/call"}`),
+			eventType:   event.EventTypeHttpResponse,
+			expectError: "failed to parse JSON-RPC: invalid JSON-RPC version",
+		},
+		{
+			name:        "Wrong jsonrpc version",
+			data:        []byte(`{"jsonrpc":"1.0","id":1,"method":"tools/call"}`),
+			eventType:   event.EventTypeHttpSSE,
+			expectError: "failed to parse JSON-RPC: invalid JSON-RPC version",
+		},
+		{
+			name:        "Unknown method",
+			data:        []byte(`{"jsonrpc":"2.0","id":1,"method":"unknown/method"}`),
+			eventType:   event.EventTypeHttpRequest,
+			expectError: "invalid MCP message: unknown MCP method",
+		},
+		{
+			name:        "Response without ID",
+			data:        []byte(`{"jsonrpc":"2.0","result":{"status":"ok"}}`),
+			eventType:   event.EventTypeHttpResponse,
+			expectError: "failed to parse JSON-RPC: unknown JSON-RPC message type",
+		},
+		{
+			name:        "Unknown notification method",
+			data:        []byte(`{"jsonrpc":"2.0","method":"unknown/notification"}`),
+			eventType:   event.EventTypeHttpSSE,
+			expectError: "invalid MCP message: unknown MCP method",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := parser.ParseDataHttp(tt.data, tt.eventType, 100, "http-process")
+			if err == nil {
+				t.Errorf("Expected error containing '%s', got nil", tt.expectError)
+				return
+			}
+
+			// Check error message
+			if !contains(err.Error(), tt.expectError) {
+				t.Errorf("Expected error containing '%s', got '%s'", tt.expectError, err.Error())
+			}
+		})
+	}
+}
+
+func TestParseDataHttp_EmptyData(t *testing.T) {
+	parser := NewParser()
+
+	tests := []struct {
+		name      string
+		data      []byte
+		eventType event.EventType
+	}{
+		{
+			name:      "Empty string",
+			data:      []byte(""),
+			eventType: event.EventTypeHttpRequest,
+		},
+		{
+			name:      "Only whitespace",
+			data:      []byte("   \n\t\n   "),
+			eventType: event.EventTypeHttpResponse,
+		},
+		{
+			name:      "Only newlines",
+			data:      []byte("\n\n\n"),
+			eventType: event.EventTypeHttpSSE,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			msgs, err := parser.ParseDataHttp(tt.data, tt.eventType, 100, "http-process")
+			if err != nil {
+				t.Fatalf("ParseDataHttp failed: %v", err)
+			}
+
+			if len(msgs) != 0 {
+				t.Errorf("Expected 0 messages for empty data, got %d", len(msgs))
+			}
+		})
+	}
+}
+
+func TestParseDataHttp_AllSupportedMethods(t *testing.T) {
+	parser := NewParser()
+
+	// Test a subset of methods with HTTP transport
+	testCases := []struct {
+		method         string
+		data           string
+		eventType      event.EventType
+		expectedType   JSONRPCMessageType
+		expectedMethod string
+		expectedID     interface{}
+	}{
+		{
+			method:         "initialize",
+			data:           `{"jsonrpc":"2.0","id":"http-init-001","method":"initialize","params":{"protocolVersion":"2025-06-18"}}`,
+			eventType:      event.EventTypeHttpRequest,
+			expectedType:   JSONRPCMessageTypeRequest,
+			expectedMethod: "initialize",
+			expectedID:     "http-init-001",
+		},
+		{
+			method:         "tools/call",
+			data:           `{"jsonrpc":"2.0","id":"http-tool-001","method":"tools/call","params":{"name":"web_search"}}`,
+			eventType:      event.EventTypeHttpRequest,
+			expectedType:   JSONRPCMessageTypeRequest,
+			expectedMethod: "tools/call",
+			expectedID:     "http-tool-001",
+		},
+		{
+			method:         "resources/read",
+			data:           `{"jsonrpc":"2.0","id":"http-res-001","method":"resources/read","params":{"uri":"https://api.example.com/data"}}`,
+			eventType:      event.EventTypeHttpRequest,
+			expectedType:   JSONRPCMessageTypeRequest,
+			expectedMethod: "resources/read",
+			expectedID:     "http-res-001",
+		},
+		{
+			method:         "notifications/progress",
+			data:           `{"jsonrpc":"2.0","method":"notifications/progress","params":{"value":75}}`,
+			eventType:      event.EventTypeHttpSSE,
+			expectedType:   JSONRPCMessageTypeNotification,
+			expectedMethod: "notifications/progress",
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.method+"_HTTP", func(t *testing.T) {
+			data := []byte(tc.data)
+
+			msgs, err := parser.ParseDataHttp(data, tc.eventType, 100, "http-process")
+			if err != nil {
+				t.Fatalf("ParseDataHttp failed for method %s: %v", tc.method, err)
+			}
+
+			if len(msgs) != 1 {
+				t.Fatalf("Expected 1 message, got %d", len(msgs))
+			}
+
+			msg := msgs[0]
+
+			// Validate transport type
+			if msg.TransportType != TransportTypeHTTP {
+				t.Errorf("Expected transport type HTTP, got %s", msg.TransportType)
+			}
+
+			// Validate message type
+			if msg.Type != tc.expectedType {
+				t.Errorf("Expected type %s, got %s", tc.expectedType, msg.Type)
+			}
+
+			// Validate method name
+			if msg.Method != tc.expectedMethod {
+				t.Errorf("Expected method %s, got %s", tc.expectedMethod, msg.Method)
+			}
+
+			// Validate ID
+			if tc.expectedID != nil && msg.ID != tc.expectedID {
+				t.Errorf("Expected ID %v, got %v", tc.expectedID, msg.ID)
+			}
+		})
 	}
 }

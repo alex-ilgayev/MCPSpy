@@ -29,30 +29,42 @@ type httpResponse struct {
 	headers    map[string]string
 	body       []byte
 	isChunked  bool
+	isSSE      bool
 }
 
 // session tracks HTTP communication for a single SSL context
 type session struct {
 	sslContext uint64
 
+	pid  uint32
+	comm [16]uint8
+
 	request    *httpRequest
 	requestBuf *bytes.Buffer
 
 	response    *httpResponse
 	responseBuf *bytes.Buffer
+
+	// Event emission tracking
+	requestEventEmitted  bool
+	responseEventEmitted bool
+
+	// SSE tracking
+	isSSE         bool
+	sseEventsSent int // Track how many SSE events we've already sent
 }
 
 type SessionManager struct {
 	mu sync.Mutex
 
 	sessions map[uint64]*session // key is SSL context
-	eventCh  chan event.HttpEvent
+	eventCh  chan event.Event
 }
 
 func NewSessionManager() *SessionManager {
 	return &SessionManager{
 		sessions: make(map[uint64]*session),
-		eventCh:  make(chan event.HttpEvent, 100),
+		eventCh:  make(chan event.Event, 100),
 	}
 }
 
@@ -69,6 +81,8 @@ func (s *SessionManager) ProcessTlsEvent(e *event.TlsPayloadEvent) error {
 	sess, exists := s.sessions[e.SSLContext]
 	if !exists {
 		sess = &session{
+			pid:         e.PID,
+			comm:        e.CommBytes,
 			sslContext:  e.SSLContext,
 			requestBuf:  &bytes.Buffer{},
 			responseBuf: &bytes.Buffer{},
@@ -86,16 +100,35 @@ func (s *SessionManager) ProcessTlsEvent(e *event.TlsPayloadEvent) error {
 	case event.EventTypeTlsPayloadRecv:
 		// Server -> Client (Response)
 		sess.responseBuf.Write(data)
-		sess.response = parseHTTPResponse(sess.responseBuf.Bytes(), false)
+		sess.response = parseHTTPResponse(sess.responseBuf.Bytes())
+
+		// Check if this is an SSE response
+		if sess.response != nil && sess.response.isSSE {
+			logrus.Tracef("SSE response detected")
+			sess.isSSE = true
+		}
+
+		// For SSE and chunked responses, process incrementally
+		if sess.isSSE && sess.response != nil && sess.response.isChunked {
+			// Process SSE events from the current response buffer
+			s.processHTTPSSEResponse(sess)
+		}
 	}
 
-	// If we have both complete request and response, emit event
-	if sess.request != nil && sess.request.isComplete &&
-		sess.response != nil && sess.response.isComplete {
+	// Emit request event if complete and not yet emitted
+	if sess.request != nil && sess.request.isComplete && !sess.requestEventEmitted {
+		s.emitHttpRequestEvent(sess)
+		sess.requestEventEmitted = true
+	}
 
-		s.emitEvent(sess)
+	// Emit response event if complete and not yet emitted
+	if sess.response != nil && sess.response.isComplete && !sess.responseEventEmitted {
+		s.emitHttpResponseEvent(sess)
+		sess.responseEventEmitted = true
+	}
 
-		// Clean up session
+	// Clean up session when both events have been emitted
+	if sess.requestEventEmitted && sess.responseEventEmitted {
 		delete(s.sessions, e.SSLContext)
 	}
 
@@ -106,57 +139,108 @@ func (s *SessionManager) ProcessTlsFreeEvent(e *event.TlsFreeEvent) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// Check if we have a session for this SSL context
-	sess, exists := s.sessions[e.SSLContext]
-	if !exists {
-		// No session to clean up
-		return nil
-	}
-
-	// Only handle incomplete chunked transfers
-	// Check if we have an incomplete chunked response that didn't receive the final 0-sized chunk
-	if sess.response != nil && sess.response.isChunked && !sess.response.isComplete {
-		// Re-parse the response buffer with partial=true to extract what we have
-		responseData := sess.responseBuf.Bytes()
-		sess.response = parseHTTPResponse(responseData, true)
-	}
-
-	// If we have both complete request and response, emit event
-	if sess.request != nil && sess.request.isComplete &&
-		sess.response != nil && sess.response.isComplete {
-		s.emitEvent(sess)
-	}
-
 	// Clean up the session
 	delete(s.sessions, e.SSLContext)
 
 	return nil
 }
 
-func (s *SessionManager) emitEvent(sess *session) {
-	// Build event from parsed data
-	event := event.HttpEvent{
-		SSLContext:      sess.sslContext,
-		Method:          sess.request.method,
-		Host:            sess.request.host,
-		Path:            sess.request.path,
+func (s *SessionManager) emitHttpRequestEvent(sess *session) {
+	// Build request event
+	event := event.HttpRequestEvent{
+		EventHeader: event.EventHeader{
+			EventType: event.EventTypeHttpRequest,
+			PID:       sess.pid,
+			CommBytes: sess.comm,
+		},
+		SSLContext:     sess.sslContext,
+		Method:         sess.request.method,
+		Host:           sess.request.host,
+		Path:           sess.request.path,
+		RequestHeaders: sess.request.headers,
+		RequestPayload: sess.request.body,
+	}
+
+	select {
+	case s.eventCh <- &event:
+	default:
+		logrus.Warn("HTTP event channel is full, dropping HTTP request event")
+	}
+}
+
+func (s *SessionManager) emitHttpResponseEvent(sess *session) {
+	if !sess.request.isComplete {
+		logrus.Warn("HTTP request is not complete when HTTP response event is emitted. Expected inconsistent data.")
+	}
+
+	// Build response event - includes request info for context
+	event := event.HttpResponseEvent{
+		EventHeader: event.EventHeader{
+			EventType: event.EventTypeHttpResponse,
+			PID:       sess.pid,
+			CommBytes: sess.comm,
+		},
+		SSLContext: sess.sslContext,
+		HttpRequestEvent: event.HttpRequestEvent{
+			EventHeader: event.EventHeader{
+				EventType: event.EventTypeHttpRequest,
+				PID:       sess.pid,
+				CommBytes: sess.comm,
+			},
+			SSLContext:     sess.sslContext,
+			Method:         sess.request.method,
+			Host:           sess.request.host,
+			Path:           sess.request.path,
+			RequestHeaders: sess.request.headers,
+			RequestPayload: sess.request.body,
+		},
 		Code:            sess.response.statusCode,
 		IsChunked:       sess.response.isChunked,
-		RequestHeaders:  sess.request.headers,
 		ResponseHeaders: sess.response.headers,
-		RequestPayload:  sess.request.body,
 		ResponsePayload: sess.response.body,
 	}
 
 	select {
-	case s.eventCh <- event:
+	case s.eventCh <- &event:
 	default:
-		logrus.Warn("HTTP event channel is full, dropping event")
+		logrus.Warn("HTTP event channel is full, dropping HTTP response event")
 	}
 }
 
-// Events returns a channel for receiving events
-func (s *SessionManager) HTTPEvents() <-chan event.HttpEvent {
+func (s *SessionManager) emitSSEEvent(sess *session, data []byte) {
+	// Build SSE event - include request and response context
+	event := event.SSEEvent{
+		EventHeader: event.EventHeader{
+			EventType: event.EventTypeHttpSSE,
+			PID:       sess.pid,
+			CommBytes: sess.comm,
+		},
+		SSLContext: sess.sslContext,
+		HttpRequestEvent: event.HttpRequestEvent{
+			EventHeader: event.EventHeader{
+				EventType: event.EventTypeHttpRequest,
+				PID:       sess.pid,
+				CommBytes: sess.comm,
+			},
+			SSLContext:     sess.sslContext,
+			Method:         sess.request.method,
+			Host:           sess.request.host,
+			Path:           sess.request.path,
+			RequestHeaders: sess.request.headers,
+			RequestPayload: sess.request.body,
+		},
+		Data: data,
+	}
+
+	select {
+	case s.eventCh <- &event:
+	default:
+		logrus.Warn("HTTP event channel is full, dropping HTTP SSE event")
+	}
+}
+
+// HTTPEvents returns a channel for receiving HTTP events
+func (s *SessionManager) HTTPEvents() <-chan event.Event {
 	return s.eventCh
 }
 
@@ -208,9 +292,10 @@ func parseHTTPRequest(data []byte) *httpRequest {
 				req.headers[key] = value
 
 				lowerKey := strings.ToLower(key)
-				if lowerKey == "host" {
+				switch lowerKey {
+				case "host":
 					req.host = value
-				} else if lowerKey == "content-length" {
+				case "content-length":
 					hasContentLength = true
 					fmt.Sscanf(value, "%d", &contentLength)
 				}
@@ -248,8 +333,7 @@ func parseHTTPRequest(data []byte) *httpRequest {
 }
 
 // parseHTTPResponse parses HTTP response data and returns parsed information
-// If partial is true, it will attempt to parse incomplete chunked responses
-func parseHTTPResponse(data []byte, partial bool) *httpResponse {
+func parseHTTPResponse(data []byte) *httpResponse {
 	resp := &httpResponse{
 		headers: make(map[string]string),
 	}
@@ -292,6 +376,8 @@ func parseHTTPResponse(data []byte, partial bool) *httpResponse {
 				lowerKey := strings.ToLower(key)
 				if lowerKey == "transfer-encoding" && strings.Contains(strings.ToLower(value), "chunked") {
 					resp.isChunked = true
+				} else if lowerKey == "content-type" && strings.Contains(strings.ToLower(value), "text/event-stream") {
+					resp.isSSE = true
 				} else if lowerKey == "content-length" {
 					hasContentLength = true
 					fmt.Sscanf(value, "%d", &contentLength)
@@ -306,7 +392,7 @@ func parseHTTPResponse(data []byte, partial bool) *httpResponse {
 	if resp.isChunked {
 		// For chunked encoding, parse and check completeness
 		if bodyStart < len(data) {
-			if body, complete := parseChunkedBody(data[bodyStart:], partial); complete {
+			if body, complete := parseChunkedBody(data[bodyStart:]); complete {
 				resp.body = body
 				resp.isComplete = true
 			}
@@ -340,8 +426,7 @@ func parseHTTPResponse(data []byte, partial bool) *httpResponse {
 
 // parseChunkedBody attempts to parse chunked body data
 // Returns the parsed body and whether the chunked data is complete
-// If partial is true, it will return whatever chunks are available without requiring the terminating zero chunk
-func parseChunkedBody(data []byte, partial bool) (body []byte, isComplete bool) {
+func parseChunkedBody(data []byte) (body []byte, isComplete bool) {
 	var result bytes.Buffer
 	pos := 0
 
@@ -349,11 +434,7 @@ func parseChunkedBody(data []byte, partial bool) (body []byte, isComplete bool) 
 		// Find chunk size line
 		lineEnd := bytes.Index(data[pos:], []byte("\r\n"))
 		if lineEnd == -1 {
-			// If partial mode and we have some data already parsed, return what we have
-			if partial && result.Len() > 0 {
-				return result.Bytes(), true
-			}
-			return nil, false // Incomplete - no chunk size line
+			return result.Bytes(), false // Incomplete - no chunk size line
 		}
 
 		// Parse chunk size (in hex)
@@ -371,24 +452,120 @@ func parseChunkedBody(data []byte, partial bool) (body []byte, isComplete bool) 
 
 		// Check if we have enough data for this chunk
 		if pos+int(chunkSize)+2 > len(data) {
-			// If partial mode and we have some data already parsed, return what we have
-			if partial && result.Len() > 0 {
-				return result.Bytes(), true
-			}
-			return nil, false // Incomplete - not enough data for chunk
+			return result.Bytes(), false // Incomplete - not enough data for chunk
 		}
 
 		// Append chunk data to result
 		result.Write(data[pos : pos+int(chunkSize)])
 
-		// Move past chunk data and trailing CRLF
-		pos += int(chunkSize) + 2
+		// Move past chunk data
+		pos += int(chunkSize)
+
+		// Skip trailing CRLF if present
+		if pos+1 < len(data) && data[pos] == '\r' && data[pos+1] == '\n' {
+			pos += 2
+		}
 	}
 
-	// If we reach here and partial is true, return what we have
-	if partial && result.Len() > 0 {
-		return result.Bytes(), true
+	// Incomplete - no terminating chunk
+	// Still return the data we have so far
+	return result.Bytes(), false
+}
+
+// processHTTPSSEResponse processes SSE events from chunked data incrementally
+func (s *SessionManager) processHTTPSSEResponse(sess *session) {
+	if !sess.request.isComplete {
+		logrus.Warn("HTTP request is not complete when SSE chunks are processed. Expected inconsistent data.")
 	}
 
-	return nil, false // Incomplete - no terminating chunk
+	rawData := sess.responseBuf.Bytes()
+
+	// Parse the chunked body from the raw HTTP response data
+	// First, find where the headers end
+	headerEnd := bytes.Index(rawData, []byte("\r\n\r\n"))
+	if headerEnd == -1 {
+		return // Headers not complete yet
+	}
+
+	// Extract the body portion (after headers)
+	bodyStart := headerEnd + 4
+	if bodyStart >= len(rawData) {
+		return // No body data yet
+	}
+
+	bodyData := rawData[bodyStart:]
+
+	// Parse chunks and extract the actual data
+	// We ignore the error here,
+	// as we want to extract SSE events as soon as they arrive.
+	chunkData, _ := parseChunkedBody(bodyData)
+	if len(chunkData) == 0 {
+		return // No chunk data yet
+	}
+
+	// Parse all SSE events from the accumulated chunk data
+	allEvents := parseSSEEvents(chunkData)
+
+	// Only process events we haven't sent yet
+	if len(allEvents) > sess.sseEventsSent {
+		// Send only the new events
+		newEvents := allEvents[sess.sseEventsSent:]
+
+		for _, eventData := range newEvents {
+			// Create SSE event with HTTP context
+			s.emitSSEEvent(sess, eventData)
+
+			sess.sseEventsSent++
+		}
+	}
+}
+
+// parseSSEEvents receives raw response payload (after trimming the chunked parts)
+// and returns list of SSE data parts.
+// The data parts are identified with "data:" prefix.
+// Other fields (event:, id:, retry:, etc.) are ignored at the moment.
+func parseSSEEvents(data []byte) [][]byte {
+	var events [][]byte
+
+	// SSE events are separated by double newlines (\n\n)
+	// Each event consists of lines starting with "data:", "event:", "id:", etc.
+	// Currently, we only support the "data:" field.
+	// Can be easily extended to support other fields, and represented with dedicated event type.
+
+	dataPrefix := []byte("data:")
+	lines := bytes.Split(data, []byte("\n"))
+
+	var currentEventData [][]byte
+
+	for _, line := range lines {
+		// Trim any trailing \r (for CRLF line endings)
+		line = bytes.TrimSuffix(line, []byte("\r"))
+
+		// Empty line signals end of an event
+		if len(line) == 0 {
+			if len(currentEventData) > 0 {
+				// Join all data lines for this event with newlines
+				eventData := bytes.Join(currentEventData, []byte("\n"))
+				events = append(events, eventData)
+				currentEventData = nil
+			}
+			continue
+		}
+
+		// Check if this is a data line
+		if bytes.HasPrefix(line, dataPrefix) {
+			// Extract and trim the data content after "data:"
+			dataContent := bytes.TrimSpace(bytes.TrimPrefix(line, dataPrefix))
+			currentEventData = append(currentEventData, dataContent)
+		}
+		// For now, we ignore other SSE fields (event:, id:, retry:, etc.)
+	}
+
+	// Handle any remaining data that wasn't terminated by an empty line
+	if len(currentEventData) > 0 {
+		eventData := bytes.Join(currentEventData, []byte("\n"))
+		events = append(events, eventData)
+	}
+
+	return events
 }
