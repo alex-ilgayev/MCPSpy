@@ -26,7 +26,7 @@ The Model Context Protocol supports three transport protocols for communication:
 - **Streamable HTTP**: Direct HTTP request/response communication with server-sent events
 - **SSE (Server-Sent Events)**: HTTP-based streaming communication (_Deprecated_)
 
-**MCPSpy currently supports only Stdio transport monitoring**, with plans to extend support to SSE and HTTP transports in future releases.
+**MCPSpy supports monitoring of both Stdio and HTTP/HTTPS transports** (including Server-Sent Events), providing comprehensive coverage of MCP communication channels.
 
 ![demo](./assets/demo.gif)
 
@@ -171,11 +171,30 @@ sudo mcpspy -o output.jsonl
     "to_comm": "python"
   },
   "type": "request",
+  "id": 7,
   "method": "tools/call",
   "params": {
     "name": "get_weather",
     "arguments": { "city": "New York" }
-  }
+  },
+  "raw": "{...}"
+}
+```
+
+For HTTP/HTTPS transport:
+
+```json
+{
+  "timestamp": "2024-01-15T12:34:56.789Z",
+  "transport_type": "http",
+  "type": "request",
+  "id": 7,
+  "method": "tools/call",
+  "params": {
+    "name": "get_weather",
+    "arguments": { "city": "New York" }
+  },
+  "raw": "{...}"
 }
 ```
 
@@ -185,7 +204,8 @@ MCPSpy consists of several components:
 
 ### 1. eBPF Program (`bpf/`)
 
-- Hooks into `vfs_read` and `vfs_write` kernel functions
+- Hooks into `vfs_read` and `vfs_write` kernel functions for stdio transport
+- Hooks into TLS library functions (`SSL_read`, `SSL_write`) for HTTP/HTTPS transport
 - Filters potential MCP traffic by detecting JSON patterns
 - Sends events to userspace via ring buffer
 - Minimal performance impact with early filtering
@@ -196,14 +216,21 @@ MCPSpy consists of several components:
 - Loads pre-compiled eBPF objects into the kernel using cilium/ebpf library
 - Converts raw binary events from kernel space into structured Go data types
 
-### 3. MCP Protocol Parser (`pkg/mcp/`)
+### 3. HTTP Session Manager (`pkg/http/`)
+
+- Manages HTTP/HTTPS sessions and correlates request/response pairs
+- Handles TLS payload interception and parsing
+- Supports chunked transfer encoding and Server-Sent Events (SSE)
+- Reconstructs complete HTTP messages from fragmented TLS data
+
+### 4. MCP Protocol Parser (`pkg/mcp/`)
 
 - Validates JSON-RPC 2.0 message format
 - Parses MCP-specific methods and parameters
 - Correlates read operations and write operations into a single MCP message (relevant for stdio transport)
-- Currently supports stdio transport (streamable HTTP/SSE planned)
+- Supports both stdio and HTTP/HTTPS transports (including SSE)
 
-### 4. Output Handlers (`pkg/output/`)
+### 5. Output Handlers (`pkg/output/`)
 
 - Console display with colored, formatted output
 - JSONL output for programmatic analysis
@@ -223,27 +250,32 @@ make image
 
 ### Testing
 
-MCPSpy includes comprehensive end-to-end tests that simulate real MCP communication:
+MCPSpy includes comprehensive end-to-end tests that simulate real MCP communication across different transports:
 
 ```bash
 # (Optional) Set up test environment
 make test-e2e-setup
 
-# Run tests (requires root privileges)
+# Run all tests (requires root privileges)
 make test-e2e
+
+# Run individual transport tests
+make test-e2e-stdio   # Test stdio transport
+make test-e2e-https   # Test HTTP/HTTPS transport
 ```
 
 The test suite includes:
 
-- MCP server and client simulators
+- MCP server and client simulators for both stdio and HTTP transports
 - Message validation against expected outputs
 - Multiple message type coverage
+- SSL/TLS encrypted HTTP communication testing
 
 ## Limitations
 
 - **FS Events Buffer Size**: Limited to 16KB per message. This means MCP messages larger than 16KB will be missed / ignored.
 - **Platform**: Linux only (kernel 5.15+).
-- **Transport**: Currently supports stdio transport only. Support for streamable HTTP and SSE transports is planned.
+- **Transport**: Supports stdio and HTTP/HTTPS transports (including SSE).
 
 ## Contributing
 
