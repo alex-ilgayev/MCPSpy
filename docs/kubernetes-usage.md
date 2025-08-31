@@ -24,7 +24,7 @@ MCPSpy helps you:
 Deploy MCPSpy as a DaemonSet to monitor all nodes in your cluster:
 
 ```bash
-kubectl apply -f https://raw.githubusercontent.com/alex-ilgayev/mcpspy/v0.0.2/manifests/mcpspy.yaml
+kubectl apply -f https://raw.githubusercontent.com/alex-ilgayev/mcpspy/v0.0.3/deploy/kubernetes/mcpspy.yaml
 ```
 
 This creates:
@@ -32,62 +32,135 @@ This creates:
 - Required RBAC permissions
 - A DaemonSet that runs on all nodes
 
-## Real-World Example: Monitoring LangFlow in minikube
+## Real-World Example: Monitoring LangFlow in Kubernetes
 
 This example demonstrates how to deploy LangFlow with MCPSpy to monitor its MCP communications.
 
-### 1. Deploy LangFlow
+### 1. Deploy the Langflow development environment on Kubernetes
 
-TBA
+The [Langflow integrated development environment (IDE) Helm chart](https://github.com/langflow-ai/langflow-helm-charts/tree/main/charts/langflow-ide) is designed to provide a complete environment for developers to create, test, and debug their flows. It includes both the Langflow API and visual editor.
+
+#### Prerequisites
+- A [Kubernetes](https://kubernetes.io/docs/setup/) cluster
+- [kubectl](https://kubernetes.io/docs/tasks/tools/#kubectl)
+- [Helm](https://helm.sh/docs/intro/install/)
+
+#### Prepare a minikube Cluster
+
+This example uses [Minikube](https://minikube.sigs.k8s.io/docs/start/), but you can use any Kubernetes cluster.
+
+1. Start Minikube with sufficient resources:
+
+```bash
+minikube start --cpus=4 --memory=8192
+```
+
+#### Install the Langflow IDE Helm chart
+
+1. Add the repository to Helm and then update it:
+
+    ```bash
+    helm repo add langflow https://langflow-ai.github.io/langflow-helm-charts
+    helm repo update
+    ```
+
+2. Install Langflow with the default options in the langflow namespace:
+
+    ```bash
+    helm install langflow-ide langflow/langflow-ide -n langflow --create-namespace
+    ```
+
+3. Check the status of the pods:
+
+    ```bash
+    kubectl get pods -n langflow
+    ```
 
 ### 2. Deploy MCPSpy
 
 ```bash
-kubectl apply -f https://raw.githubusercontent.com/alex-ilgayev/mcpspy/v0.0.2/manifests/mcpspy.yaml
+kubectl apply -f https://raw.githubusercontent.com/alex-ilgayev/mcpspy/v0.0.3/deploy/kubernetes/mcpspy.yaml
 ```
 
-### 3. Configure LangFlow with an MCP Server
+### 3. Access the Langflow IDE
 
-Access the LangFlow UI and configure it to use an MCP-compatible LLM service:
+Enable local port forwarding to access Langflow from your local machine:
 
-1. Port-forward the LangFlow service:
+1. Make the Langflow API accessible from your local machine at port 7860:
+
    ```bash
-   kubectl -n ai-services port-forward svc/langflow 7860:7860
+   kubectl port-forward -n langflow svc/langflow-service-backend 7860:7860
    ```
 
-2. Open http://localhost:7860 in your browser
+2. Make the visual editor accessible from your local machine at port 8080:
 
-3. Create a new flow with an LLM component (e.g., OpenAI, Anthropic)
+    ```bash
+    kubectl port-forward -n langflow svc/langflow-service 8080:8080
+    ```
 
-4. Configure the LLM with your API key
+Now you can do the following:
 
-### 4. Observe MCP Traffic
+- Access the Langflow API at http://localhost:7860.
+- Access the Langflow visual editor at http://localhost:8080.
+
+### 4. Create a Flow that Uses MCP
+
+1. Open the Langflow visual editor at http://localhost:8080
+
+2. Create a new flow that uses an MCP Tools (MCP Server) and an Agent (LLM). For example:
+   - Add an MCP Server node (e.g., Time MCP)
+   - Add an LLM node (e.g., OpenAI GPT-5 or any other)
+
+   Here you can find an example of how to add Time MCP Server:
+   - [Time MCP Server](https://mcp.so/server/time/modelcontextprotocol)
+   - [Model Context Protocol servers](https://github.com/modelcontextprotocol/servers/tree/main/src/time)
+
+3. Run the flow by pressing the Playground button in the top right corner.
+
+4. Ask a question that will trigger the MCP interaction, such as "What time is it?"
+
+### 5. Observe MCP Traffic
 
 View the MCPSpy logs to see the MCP traffic:
 
 ```bash
 # Get the MCPSpy pod on the node where LangFlow is running
-LANGFLOW_NODE=$(kubectl -n ai-services get pod -l app=langflow -o jsonpath='{.items[0].spec.nodeName}')
-MCPSPY_POD=$(kubectl -n mcpspy get pod -l app.kubernetes.io/name=mcpspy -o name | grep $LANGFLOW_NODE | head -n 1)
+LANGFLOW_NODE=$(kubectl -n langflow get pod -l app=langflow-service -o jsonpath='{.items[0].spec.nodeName}')
+MCPSPY_POD=$(kubectl -n mcpspy get pods -o jsonpath="{.items[?(@.spec.nodeName=='$LANGFLOW_NODE')].metadata.name}")
+
+# View the MCPSpy output
+kubectl -n mcpspy exec -it $MCPSPY_POD -- cat /output/mcpspy.jsonl
 
 # View the MCPSpy logs
-kubectl -n mcpspy exec -it $MCPSPY_POD -- cat /output/mcpspy.jsonl
+kubectl -n mcpspy logs $MCPSPY_POD -f
 ```
-
-You should see MCP messages showing:
-- Tool registration requests
-- LLM completion requests
-- Response handling
 
 ## Troubleshooting
 
 ### bpftool
 
-TBA , bpftool POD to inspect if eBPF programs were loaded.
+Deploy bpftool POD to inspect if eBPF programs were loaded.
+
+```bash
+kubectl run -it --rm bpftool \
+    --image=gyutaeb/bpftool:v7.5.0 \
+    --restart=Never \
+    --privileged \
+    --command -- sh
+```
+
+Inside the pod, run:
+
+```bash
+bpftool prog show
+bpftool map show
+exit
+```
 
 ### No MCP Traffic Detected
 
 1. Verify MCPSpy is running with privileged access:
+
    ```bash
    kubectl -n mcpspy get pods
    ```

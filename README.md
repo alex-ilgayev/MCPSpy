@@ -49,7 +49,7 @@ The Model Context Protocol is becoming the standard for AI tool integration, but
 
 ### Download Pre-built Binary (Auto-detect OS + Arch)
 
-Download the latest release from the [releases page](https://github.com/alex-ilgayev/mcpspy/releases):
+Download the latest release from the [release page](https://github.com/alex-ilgayev/mcpspy/releases):
 
 ```bash
 # Set platform-aware binary name
@@ -136,8 +136,7 @@ MCPSpy can be deployed in Kubernetes clusters to monitor MCP traffic from AI/LLM
 
 ```bash
 # Deploy MCPSpy as a DaemonSet
-kubectl apply -f https://raw.githubusercontent.com/alex-ilgayev/mcpspy/v0.0.2/manifests/mcpspy.yaml
-
+kubectl apply -f https://raw.githubusercontent.com/alex-ilgayev/mcpspy/v0.0.2/deploy/kubernetes/mcpspy.yaml
 ```
 
 #### Real-World Use Cases in Kubernetes

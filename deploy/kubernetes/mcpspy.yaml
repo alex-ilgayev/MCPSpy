@@ -4,29 +4,36 @@ metadata:
   name: mcpspy
   labels:
     app.kubernetes.io/name: mcpspy
-
 ---
 apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: mcpspy
   namespace: mcpspy
-
+  labels:
+    app.kubernetes.io/name: mcpspy
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
   name: mcpspy
+  labels:
+    app.kubernetes.io/name: mcpspy
 rules:
-- apiGroups: [""]
-  resources: ["pods", "namespaces"]
+- apiGroups: [""]  # "" indicates the core API group
+  resources: ["pods", "namespaces", "nodes"]
   verbs: ["get", "list", "watch"]
-
+- apiGroups: ["apps"]
+  resources:
+    - replicasets
+  verbs: ["get", "list", "watch"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
   name: mcpspy
+  labels:
+    app.kubernetes.io/name: mcpspy
 subjects:
 - kind: ServiceAccount
   name: mcpspy
@@ -35,7 +42,6 @@ roleRef:
   kind: ClusterRole
   name: mcpspy
   apiGroup: rbac.authorization.k8s.io
-
 ---
 apiVersion: apps/v1
 kind: DaemonSet
@@ -57,7 +63,7 @@ spec:
       hostPID: true  # Required to monitor processes across the node
       containers:
       - name: mcpspy
-        image: ghcr.io/alex-ilgayev/mcpspy:v0.0.2
+        image: ghcr.io/alex-ilgayev/mcpspy:v0.0.3
         imagePullPolicy: Always
         securityContext:
           privileged: true  # Required for eBPF access
@@ -68,6 +74,18 @@ spec:
           requests:
             cpu: 100m
             memory: 128Mi
+        livenessProbe:
+          exec:
+            command: ["/bin/sh", "-c", "pgrep mcpspy"]
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          failureThreshold: 3
+        readinessProbe:
+          exec:
+            command: ["/bin/sh", "-c", "pgrep mcpspy"]
+          initialDelaySeconds: 5
+          periodSeconds: 5
+          failureThreshold: 3
         volumeMounts:
         - name: output
           mountPath: /output
@@ -78,3 +96,4 @@ spec:
       volumes:
       - name: output
         emptyDir: {}
+---
