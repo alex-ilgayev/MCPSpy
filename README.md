@@ -136,7 +136,7 @@ MCPSpy can be deployed in Kubernetes clusters to monitor MCP traffic from AI/LLM
 
 ```bash
 # Deploy MCPSpy as a DaemonSet
-kubectl apply -f https://raw.githubusercontent.com/alex-ilgayev/mcpspy/v0.0.2/deploy/kubernetes/mcpspy.yaml
+kubectl apply -f https://raw.githubusercontent.com/alex-ilgayev/mcpspy/v0.0.3/deploy/kubernetes/mcpspy.yaml
 ```
 
 #### Real-World Use Cases in Kubernetes
