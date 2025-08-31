@@ -980,7 +980,7 @@ func TestParseData_UnsupportedEventType(t *testing.T) {
 	}
 
 	// Test unsupported event type for http
-	_, err = parser.ParseDataHttp(data, event.EventType(99), 100, "test")
+	_, err = parser.ParseDataHttp(data, event.EventType(99), 100, "test", "example.com", true)
 	if err == nil {
 		t.Error("Expected error for unsupported event type")
 	}
@@ -1049,7 +1049,7 @@ func TestParseDataHttp_ValidMessages(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			msgs, err := parser.ParseDataHttp(tt.data, tt.eventType, 100, "http-process")
+			msgs, err := parser.ParseDataHttp(tt.data, tt.eventType, 100, "http-process", "example.com", true)
 			if err != nil {
 				t.Fatalf("ParseDataHttp failed: %v", err)
 			}
@@ -1068,6 +1068,24 @@ func TestParseDataHttp_ValidMessages(t *testing.T) {
 			// Check that stdio transport is nil for HTTP messages
 			if msg.StdioTransport != nil {
 				t.Error("Expected StdioTransport to be nil for HTTP transport")
+			}
+
+			// Check that HttpTransport is populated correctly
+			if msg.HttpTransport == nil {
+				t.Error("Expected HttpTransport to be populated for HTTP transport")
+			} else {
+				if msg.HttpTransport.PID != 100 {
+					t.Errorf("Expected HttpTransport.PID 100, got %d", msg.HttpTransport.PID)
+				}
+				if msg.HttpTransport.Comm != "http-process" {
+					t.Errorf("Expected HttpTransport.Comm 'http-process', got '%s'", msg.HttpTransport.Comm)
+				}
+				if msg.HttpTransport.Host != "example.com" {
+					t.Errorf("Expected HttpTransport.Host 'example.com', got '%s'", msg.HttpTransport.Host)
+				}
+				if msg.HttpTransport.IsRequest != true {
+					t.Errorf("Expected HttpTransport.IsRequest true, got %t", msg.HttpTransport.IsRequest)
+				}
 			}
 
 			if msg.Type != tt.expectedType {
@@ -1109,7 +1127,7 @@ func TestParseDataHttp_MultipleMessages(t *testing.T) {
 {"jsonrpc":"2.0","id":2,"method":"tools/list"}
 {"jsonrpc":"2.0","method":"notifications/progress","params":{"value":50}}`)
 
-	msgs, err := parser.ParseDataHttp(multipleData, event.EventTypeHttpRequest, 100, "http-process")
+	msgs, err := parser.ParseDataHttp(multipleData, event.EventTypeHttpRequest, 100, "http-process", "example.com", true)
 	if err != nil {
 		t.Fatalf("ParseDataHttp failed: %v", err)
 	}
@@ -1133,6 +1151,24 @@ func TestParseDataHttp_MultipleMessages(t *testing.T) {
 		// All should have HTTP transport type
 		if msgs[i].TransportType != TransportTypeHTTP {
 			t.Errorf("Message %d: expected transport type HTTP, got %s", i, msgs[i].TransportType)
+		}
+
+		// Check HttpTransport fields for each message
+		if msgs[i].HttpTransport == nil {
+			t.Errorf("Message %d: expected HttpTransport to be populated", i)
+		} else {
+			if msgs[i].HttpTransport.PID != 100 {
+				t.Errorf("Message %d: expected HttpTransport.PID 100, got %d", i, msgs[i].HttpTransport.PID)
+			}
+			if msgs[i].HttpTransport.Comm != "http-process" {
+				t.Errorf("Message %d: expected HttpTransport.Comm 'http-process', got '%s'", i, msgs[i].HttpTransport.Comm)
+			}
+			if msgs[i].HttpTransport.Host != "example.com" {
+				t.Errorf("Message %d: expected HttpTransport.Host 'example.com', got '%s'", i, msgs[i].HttpTransport.Host)
+			}
+			if msgs[i].HttpTransport.IsRequest != true {
+				t.Errorf("Message %d: expected HttpTransport.IsRequest true, got %t", i, msgs[i].HttpTransport.IsRequest)
+			}
 		}
 	}
 }
@@ -1186,7 +1222,7 @@ func TestParseDataHttp_InvalidMessages(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := parser.ParseDataHttp(tt.data, tt.eventType, 100, "http-process")
+			_, err := parser.ParseDataHttp(tt.data, tt.eventType, 100, "http-process", "example.com", true)
 			if err == nil {
 				t.Errorf("Expected error containing '%s', got nil", tt.expectError)
 				return
@@ -1227,7 +1263,7 @@ func TestParseDataHttp_EmptyData(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			msgs, err := parser.ParseDataHttp(tt.data, tt.eventType, 100, "http-process")
+			msgs, err := parser.ParseDataHttp(tt.data, tt.eventType, 100, "http-process", "example.com", true)
 			if err != nil {
 				t.Fatalf("ParseDataHttp failed: %v", err)
 			}
@@ -1288,7 +1324,7 @@ func TestParseDataHttp_AllSupportedMethods(t *testing.T) {
 		t.Run(tc.method+"_HTTP", func(t *testing.T) {
 			data := []byte(tc.data)
 
-			msgs, err := parser.ParseDataHttp(data, tc.eventType, 100, "http-process")
+			msgs, err := parser.ParseDataHttp(data, tc.eventType, 100, "http-process", "example.com", true)
 			if err != nil {
 				t.Fatalf("ParseDataHttp failed for method %s: %v", tc.method, err)
 			}
@@ -1317,6 +1353,121 @@ func TestParseDataHttp_AllSupportedMethods(t *testing.T) {
 			// Validate ID
 			if tc.expectedID != nil && msg.ID != tc.expectedID {
 				t.Errorf("Expected ID %v, got %v", tc.expectedID, msg.ID)
+			}
+
+			// Validate HttpTransport fields
+			if msg.HttpTransport == nil {
+				t.Error("Expected HttpTransport to be populated for HTTP transport")
+			} else {
+				if msg.HttpTransport.PID != 100 {
+					t.Errorf("Expected HttpTransport.PID 100, got %d", msg.HttpTransport.PID)
+				}
+				if msg.HttpTransport.Comm != "http-process" {
+					t.Errorf("Expected HttpTransport.Comm 'http-process', got '%s'", msg.HttpTransport.Comm)
+				}
+				if msg.HttpTransport.Host != "example.com" {
+					t.Errorf("Expected HttpTransport.Host 'example.com', got '%s'", msg.HttpTransport.Host)
+				}
+				if msg.HttpTransport.IsRequest != true {
+					t.Errorf("Expected HttpTransport.IsRequest true, got %t", msg.HttpTransport.IsRequest)
+				}
+			}
+		})
+	}
+}
+
+func TestParseDataHttp_HttpTransportFields(t *testing.T) {
+	parser := NewParser()
+
+	tests := []struct {
+		name      string
+		data      []byte
+		eventType event.EventType
+		pid       uint32
+		comm      string
+		host      string
+		isRequest bool
+	}{
+		{
+			name:      "HTTP Request with custom fields",
+			data:      []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"test"}}`),
+			eventType: event.EventTypeHttpRequest,
+			pid:       1234,
+			comm:      "custom-server",
+			host:      "api.example.org",
+			isRequest: true,
+		},
+		{
+			name:      "HTTP Response with different fields",
+			data:      []byte(`{"jsonrpc":"2.0","id":1,"result":{"status":"ok"}}`),
+			eventType: event.EventTypeHttpResponse,
+			pid:       5678,
+			comm:      "backend-service",
+			host:      "internal.api.com",
+			isRequest: false,
+		},
+		{
+			name:      "HTTP SSE with localhost",
+			data:      []byte(`{"jsonrpc":"2.0","method":"notifications/progress","params":{"value":75}}`),
+			eventType: event.EventTypeHttpSSE,
+			pid:       9999,
+			comm:      "mcp-client",
+			host:      "localhost:8080",
+			isRequest: true,
+		},
+		{
+			name:      "HTTP Request with empty host",
+			data:      []byte(`{"jsonrpc":"2.0","id":"test-id","method":"initialize","params":{}}`),
+			eventType: event.EventTypeHttpRequest,
+			pid:       100,
+			comm:      "test-process",
+			host:      "",
+			isRequest: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			msgs, err := parser.ParseDataHttp(tt.data, tt.eventType, tt.pid, tt.comm, tt.host, tt.isRequest)
+			if err != nil {
+				t.Fatalf("ParseDataHttp failed: %v", err)
+			}
+
+			if len(msgs) != 1 {
+				t.Fatalf("Expected 1 message, got %d", len(msgs))
+			}
+
+			msg := msgs[0]
+
+			// Check transport type
+			if msg.TransportType != TransportTypeHTTP {
+				t.Errorf("Expected transport type HTTP, got %s", msg.TransportType)
+			}
+
+			// Check that stdio transport is nil for HTTP messages
+			if msg.StdioTransport != nil {
+				t.Error("Expected StdioTransport to be nil for HTTP transport")
+			}
+
+			// Validate all HttpTransport fields
+			if msg.HttpTransport == nil {
+				t.Fatal("Expected HttpTransport to be populated for HTTP transport")
+			}
+
+			if msg.HttpTransport.PID != tt.pid {
+				t.Errorf("Expected HttpTransport.PID %d, got %d", tt.pid, msg.HttpTransport.PID)
+			}
+
+			if msg.HttpTransport.Comm != tt.comm {
+				t.Errorf("Expected HttpTransport.Comm '%s', got '%s'", tt.comm, msg.HttpTransport.Comm)
+			}
+
+			if msg.HttpTransport.Host != tt.host {
+				t.Errorf("Expected HttpTransport.Host '%s', got '%s'", tt.host, msg.HttpTransport.Host)
+			}
+
+			if msg.HttpTransport.IsRequest != tt.isRequest {
+				t.Errorf("Expected HttpTransport.IsRequest %t, got %t", tt.isRequest, msg.HttpTransport.IsRequest)
 			}
 		})
 	}

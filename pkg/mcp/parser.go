@@ -90,6 +90,13 @@ type StdioTransport struct {
 	ToComm   string `json:"to_comm"`
 }
 
+type HttpTransport struct {
+	PID       uint32 `json:"pid,omitempty"`
+	Comm      string `json:"comm,omitempty"`
+	Host      string `json:"host,omitempty"`
+	IsRequest bool   `json:"is_request,omitempty"`
+}
+
 // JSONRPCMessage represents a parsed JSON-RPC 2.0 message.
 type JSONRPCMessage struct {
 	Type   JSONRPCMessageType     `json:"type"`
@@ -112,6 +119,7 @@ type Message struct {
 	Timestamp       time.Time     `json:"timestamp"`
 	TransportType   TransportType `json:"transport_type"`
 	*StdioTransport `json:"stdio_transport,omitempty"`
+	*HttpTransport  `json:"http_transport,omitempty"`
 
 	JSONRPCMessage
 
@@ -240,7 +248,7 @@ func (p *Parser) ParseDataStdio(data []byte, eventType event.EventType, pid uint
 
 // ParseDataHttp attempts to parse MCP messages from HTTP payload data
 // This method is used for HTTP transport where MCP messages are sent via HTTP requests/responses
-func (p *Parser) ParseDataHttp(data []byte, eventType event.EventType, pid uint32, comm string) ([]*Message, error) {
+func (p *Parser) ParseDataHttp(data []byte, eventType event.EventType, pid uint32, comm string, host string, isRequest bool) ([]*Message, error) {
 	var messages []*Message
 
 	if eventType != event.EventTypeHttpRequest && eventType != event.EventTypeHttpResponse && eventType != event.EventTypeHttpSSE {
@@ -267,9 +275,15 @@ func (p *Parser) ParseDataHttp(data []byte, eventType event.EventType, pid uint3
 
 		// Create http transport info from correlated events
 		messages = append(messages, &Message{
-			Timestamp:      time.Now(),
-			Raw:            string(msgData),
-			TransportType:  TransportTypeHTTP,
+			Timestamp:     time.Now(),
+			Raw:           string(msgData),
+			TransportType: TransportTypeHTTP,
+			HttpTransport: &HttpTransport{
+				PID:       pid,
+				Comm:      comm,
+				Host:      host,
+				IsRequest: isRequest,
+			},
 			JSONRPCMessage: jsonRpcMsg,
 		})
 	}

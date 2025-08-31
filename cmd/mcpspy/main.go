@@ -163,7 +163,7 @@ func run(cmd *cobra.Command, args []string) error {
 				}).Trace("HTTP request event")
 
 				// Parse request payload for MCP messages
-				requestMessages, err := parser.ParseDataHttp(httpEvt.RequestPayload, httpEvt.EventType, httpEvt.PID, httpEvt.Comm())
+				requestMessages, err := parser.ParseDataHttp(httpEvt.RequestPayload, httpEvt.EventType, httpEvt.PID, httpEvt.Comm(), httpEvt.Host, true)
 				if err != nil {
 					logrus.WithError(err).Debug("Failed to parse HTTP request payload")
 				} else {
@@ -182,7 +182,7 @@ func run(cmd *cobra.Command, args []string) error {
 				}).Trace("HTTP response event")
 
 				// Parse response payload for MCP messages
-				responseMessages, err := parser.ParseDataHttp(httpEvt.ResponsePayload, httpEvt.EventType, httpEvt.PID, httpEvt.Comm())
+				responseMessages, err := parser.ParseDataHttp(httpEvt.ResponsePayload, httpEvt.EventType, httpEvt.PID, httpEvt.Comm(), httpEvt.Host, false)
 				if err != nil {
 					logrus.WithError(err).Debug("Failed to parse HTTP response payload")
 				} else {
@@ -199,7 +199,7 @@ func run(cmd *cobra.Command, args []string) error {
 				}).Trace("HTTP SSE event")
 
 				// Parse SSE data as MCP messages
-				messages, err := parser.ParseDataHttp(sseEvent.Data, sseEvent.EventType, sseEvent.PID, sseEvent.Comm())
+				messages, err := parser.ParseDataHttp(sseEvent.Data, sseEvent.EventType, sseEvent.PID, sseEvent.Comm(), sseEvent.Host, false)
 				if err != nil {
 					logrus.WithError(err).Debug("Failed to parse SSE data as MCP")
 				} else {

@@ -126,8 +126,26 @@ func (d *ConsoleDisplay) printCommFlow(msg *mcp.Message) {
 			commFlow = transportColor.Sprint("UNKN")
 		}
 	case mcp.TransportTypeHTTP:
-		commFlow = transportColor.Sprint("HTTP")
-		// TODO: Add HTTP transport info
+		if msg.HttpTransport != nil {
+			if msg.HttpTransport.IsRequest {
+				commFlow = fmt.Sprintf("%s %s[%s] → %s",
+					transportColor.Sprint("HTTP"),
+					commColor.Sprint(msg.HttpTransport.Comm),
+					pidColor.Sprint(msg.HttpTransport.PID),
+					commColor.Sprint(msg.HttpTransport.Host),
+				)
+			} else {
+				commFlow = fmt.Sprintf("%s %s → %s[%s]",
+					transportColor.Sprint("HTTP"),
+					commColor.Sprint(msg.HttpTransport.Host),
+					commColor.Sprint(msg.HttpTransport.Comm),
+					pidColor.Sprint(msg.HttpTransport.PID),
+				)
+			}
+		} else {
+			logrus.Warnf("unknown http transport: %v", msg.HttpTransport)
+			commFlow = transportColor.Sprint("UNKN")
+		}
 	default:
 		logrus.Warnf("unknown transport type: %v", msg.TransportType)
 		commFlow = transportColor.Sprint("UNKN")

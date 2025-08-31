@@ -168,6 +168,7 @@ class MCPSpyE2ETest:
             r"root\[\d+\]\['timestamp'\]",
             r"root\[\d+\]\['stdio_transport'\]\['from_pid'\]",
             r"root\[\d+\]\['stdio_transport'\]\['to_pid'\]",
+            r"root\[\d+\]\['http_transport'\]\['pid'\]",
         ]
 
         # Ignoring version fields.
