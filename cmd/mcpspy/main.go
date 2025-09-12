@@ -14,6 +14,7 @@ import (
 	mcpevents "github.com/alex-ilgayev/mcpspy/pkg/event"
 	"github.com/alex-ilgayev/mcpspy/pkg/http"
 	"github.com/alex-ilgayev/mcpspy/pkg/mcp"
+	"github.com/alex-ilgayev/mcpspy/pkg/namespace"
 	"github.com/alex-ilgayev/mcpspy/pkg/output"
 	"github.com/alex-ilgayev/mcpspy/pkg/version"
 
@@ -69,6 +70,13 @@ func run(cmd *cobra.Command, args []string) error {
 		go mcpspydebug.PrintTracePipe(logrus.StandardLogger())
 	}
 
+	// Fetch current mount namespace
+	mountNS, err := namespace.GetCurrentMountNamespace()
+	if err != nil {
+		return fmt.Errorf("failed to get current mount namespace: %w", err)
+	}
+	logrus.WithField("mount_ns", mountNS).Debug("Current mount namespace")
+
 	// Set up console display (always show console output)
 	consoleDisplay := output.NewConsoleDisplay(os.Stdout, showBuffers)
 	consoleDisplay.PrintHeader()
@@ -98,7 +106,11 @@ func run(cmd *cobra.Command, args []string) error {
 
 	// Process library events
 	// and creates uprobe hooks for dynamically loaded libraries
-	libManager := ebpf.NewLibraryManager(loader)
+	libManager, err := ebpf.NewLibraryManager(loader, mountNS)
+	if err != nil {
+		return fmt.Errorf("failed to create library manager: %w", err)
+	}
+	defer libManager.Close()
 
 	// Manage HTTP sessions (1.1/2/chunked encoding/SSE)
 	httpManager := http.NewSessionManager()

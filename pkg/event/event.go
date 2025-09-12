@@ -98,7 +98,6 @@ type LibraryEvent struct {
 	EventHeader
 	Inode     uint64
 	MntNSID   uint32
-	_         [4]uint8 // padding for alignment
 	PathBytes [512]uint8
 }
 
