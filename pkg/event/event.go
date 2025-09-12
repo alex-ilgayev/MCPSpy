@@ -97,12 +97,17 @@ func (e *FSDataEvent) Type() EventType { return e.EventType }
 type LibraryEvent struct {
 	EventHeader
 	Inode     uint64
+	MntNSID   uint32
+	_         [4]uint8 // padding for alignment
 	PathBytes [512]uint8
 }
 
 func (e *LibraryEvent) Type() EventType { return e.EventType }
 func (e *LibraryEvent) Path() string {
 	return encoder.BytesToStr(e.PathBytes[:])
+}
+func (e *LibraryEvent) MountNamespaceID() uint32 {
+	return e.MntNSID
 }
 
 // Even though it's similar to DataEvent,

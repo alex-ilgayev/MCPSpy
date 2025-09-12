@@ -141,6 +141,7 @@ int enumerate_loaded_modules(struct bpf_iter__task_vma *ctx) {
     event->header.event_type = EVENT_LIBRARY;
     event->header.pid = task->tgid;
     event->inode = file->f_inode->i_ino;
+    event->mnt_ns_id = get_mount_ns_id();
     bpf_probe_read_kernel_str(&event->header.comm, sizeof(event->header.comm),
                               task->comm);
     __builtin_memset(event->path, 0, PATH_MAX);
@@ -199,6 +200,7 @@ int BPF_PROG(trace_security_file_open, struct file *file) {
     event->header.event_type = EVENT_LIBRARY;
     event->header.pid = bpf_get_current_pid_tgid() >> 32;
     event->inode = file->f_inode->i_ino;
+    event->mnt_ns_id = get_mount_ns_id();
     bpf_get_current_comm(&event->header.comm, sizeof(event->header.comm));
 
     if (!is_path_relevant((const char *)event->path)) {

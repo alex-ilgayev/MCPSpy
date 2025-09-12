@@ -5,6 +5,7 @@
 #define __HELPERS_H
 
 #include "types.h"
+#include <bpf/bpf_core_read.h>
 
 // Check if filename matches our criteria for TLS uprobe hook.
 // Currently the options are:
@@ -70,6 +71,26 @@ static __always_inline bool is_directory(struct dentry *dentry) {
     }
 
     return (inode->i_mode & S_IFMT) == S_IFDIR;
+}
+
+// Get the mount namespace ID of the current task
+static __always_inline __u32 get_mount_ns_id(void) {
+    struct task_struct *task = (struct task_struct *)bpf_get_current_task();
+    if (!task) {
+        return 0;
+    }
+
+    struct nsproxy *nsproxy = BPF_CORE_READ(task, nsproxy);
+    if (!nsproxy) {
+        return 0;
+    }
+
+    struct mnt_namespace *mnt_ns = BPF_CORE_READ(nsproxy, mnt_ns);
+    if (!mnt_ns) {
+        return 0;
+    }
+
+    return BPF_CORE_READ(mnt_ns, ns.inum);
 }
 
 #endif // __HELPERS_H
