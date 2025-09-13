@@ -33,7 +33,8 @@ func TestLibraryManager_ProcessLibraryEvent(t *testing.T) {
 	tl := newTestLoader()
 
 	// Create library manager with the test loader
-	lm := NewLibraryManager(tl)
+	lm := NewLibraryManager(tl, 4026532221) // Use a test mount namespace
+	defer lm.Close()
 
 	// Test successful hook
 	t.Run("successful hook", func(t *testing.T) {
@@ -44,6 +45,7 @@ func TestLibraryManager_ProcessLibraryEvent(t *testing.T) {
 				CommBytes: [16]uint8{'t', 'e', 's', 't'},
 			},
 			Inode:     12345,
+			MntNSID:   4026532221, // Same namespace as library manager
 			PathBytes: makePathBytes("/usr/lib/libssl.so.1.1"),
 		}
 
@@ -79,6 +81,7 @@ func TestLibraryManager_ProcessLibraryEvent(t *testing.T) {
 				CommBytes: [16]uint8{'t', 'e', 's', 't'},
 			},
 			Inode:     67890,
+			MntNSID:   4026532221, // Same namespace as library manager
 			PathBytes: makePathBytes("/usr/lib/libssl.so.3"),
 		}
 
@@ -104,7 +107,8 @@ func TestLibraryManager_ProcessLibraryEvent(t *testing.T) {
 				PID:       5678,
 				CommBytes: [16]uint8{'t', 'e', 's', 't', '2'},
 			},
-			Inode:     12345, // Same inode as first test
+			Inode:     12345,      // Same inode as first test
+			MntNSID:   4026532221, // Same namespace as library manager
 			PathBytes: makePathBytes("/usr/lib/libssl.so.1.1"),
 		}
 
@@ -129,7 +133,8 @@ func TestLibraryManager_ProcessLibraryEvent(t *testing.T) {
 				PID:       9999,
 				CommBytes: [16]uint8{'t', 'e', 's', 't', '3'},
 			},
-			Inode:     67890, // Same inode as failed test
+			Inode:     67890,      // Same inode as failed test
+			MntNSID:   4026532221, // Same namespace as library manager
 			PathBytes: makePathBytes("/usr/lib/libssl.so.3"),
 		}
 
@@ -144,18 +149,46 @@ func TestLibraryManager_ProcessLibraryEvent(t *testing.T) {
 		}
 	})
 
+	// Test cross-namespace library (should not attempt to switch since we can't easily test namespace switching)
+	t.Run("cross namespace hook", func(t *testing.T) {
+		initialCalls := len(tl.attachCalls)
+
+		event := &event.LibraryEvent{
+			EventHeader: event.EventHeader{
+				EventType: event.EventTypeLibrary,
+				PID:       1111,
+				CommBytes: [16]uint8{'c', 'r', 'o', 's', 's'},
+			},
+			Inode:     99999,
+			MntNSID:   1234, // Different namespace from library manager
+			PathBytes: makePathBytes("/usr/lib/libssl.so.cross"),
+		}
+
+		// This will fail because we can't actually switch namespaces in a test
+		err := lm.ProcessLibraryEvent(event)
+		if err == nil {
+			t.Error("Expected error for cross-namespace switch in test environment")
+		}
+
+		// Should not have made additional attach calls (because namespace switching failed)
+		if len(tl.attachCalls) != initialCalls {
+			t.Error("Expected no additional attach calls for failed cross-namespace switch")
+		}
+	})
+
 	// Verify final stats
 	hooked, failed := lm.Stats()
 	if hooked != 1 {
 		t.Errorf("Expected 1 hooked library in final stats, got %d", hooked)
 	}
 	if failed != 1 {
-		t.Errorf("Expected 1 failed library in final stats, got %d", failed)
+		t.Errorf("Expected 1 failed libraries in final stats, got %d", failed)
 	}
 }
 
 func TestLibraryManager_GetHookedLibraries(t *testing.T) {
-	lm := NewLibraryManager(nil)
+	lm := NewLibraryManager(nil, 4026532221)
+	defer lm.Close()
 
 	// Add some test data directly
 	lm.hookedLibs[12345] = "/lib/libssl.so"
@@ -177,7 +210,8 @@ func TestLibraryManager_GetHookedLibraries(t *testing.T) {
 }
 
 func TestLibraryManager_GetFailedLibraries(t *testing.T) {
-	lm := NewLibraryManager(nil)
+	lm := NewLibraryManager(nil, 4026532221)
+	defer lm.Close()
 
 	// Add some test data directly
 	err1 := errors.New("permission denied")
@@ -201,7 +235,8 @@ func TestLibraryManager_GetFailedLibraries(t *testing.T) {
 }
 
 func TestLibraryManager_Reset(t *testing.T) {
-	lm := NewLibraryManager(nil)
+	lm := NewLibraryManager(nil, 4026532221)
+	defer lm.Close()
 
 	// Add some test data
 	lm.hookedLibs[12345] = "/lib/libssl.so"
@@ -228,6 +263,22 @@ func TestLibraryManager_Reset(t *testing.T) {
 
 	if len(lm.FailedLibraries()) != 0 {
 		t.Error("Expected empty failed libraries map after reset")
+	}
+}
+
+func TestLibraryManager_Close(t *testing.T) {
+	lm := NewLibraryManager(nil, 4026532221)
+
+	// Close should work without error
+	err := lm.Close()
+	if err != nil {
+		t.Errorf("Expected no error from Close(), got %v", err)
+	}
+
+	// Multiple closes should not cause issues
+	err = lm.Close()
+	if err != nil {
+		t.Errorf("Expected no error from second Close(), got %v", err)
 	}
 }
 
