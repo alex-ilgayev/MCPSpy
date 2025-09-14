@@ -17,20 +17,27 @@ type SSLProbeAttacher interface {
 // LibraryManager manages uprobe hooks for dynamically loaded libraries.
 // It prevents duplicate hooks and caches failed attempts.
 type LibraryManager struct {
-	attacher   SSLProbeAttacher
-	mountNS    uint32            // mount namespace ID
-	hookedLibs map[uint64]string // inode -> path (successfully hooked)
-	failedLibs map[uint64]error  // inode -> error (failed to hook)
-	mu         sync.Mutex
+	attacher     SSLProbeAttacher
+	mountNS      uint32            // mount namespace ID
+	retryOnError bool              // whether to retry failed libraries
+	hookedLibs   map[uint64]string // inode -> path (successfully hooked)
+	failedLibs   map[uint64]error  // inode -> error (failed to hook)
+	mu           sync.Mutex
 }
 
 // NewLibraryManager creates a new library manager
 func NewLibraryManager(attacher SSLProbeAttacher, mountNS uint32) *LibraryManager {
+	return NewLibraryManagerWithRetry(attacher, mountNS, true)
+}
+
+// NewLibraryManagerWithRetry creates a new library manager with configurable retry behavior
+func NewLibraryManagerWithRetry(attacher SSLProbeAttacher, mountNS uint32, retryOnError bool) *LibraryManager {
 	return &LibraryManager{
-		attacher:   attacher,
-		mountNS:    mountNS,
-		hookedLibs: make(map[uint64]string),
-		failedLibs: make(map[uint64]error),
+		attacher:     attacher,
+		mountNS:      mountNS,
+		retryOnError: retryOnError,
+		hookedLibs:   make(map[uint64]string),
+		failedLibs:   make(map[uint64]error),
 	}
 }
 
@@ -54,8 +61,8 @@ func (lm *LibraryManager) ProcessLibraryEvent(event *event.LibraryEvent) error {
 		return nil
 	}
 
-	// Check if previously failed
-	if err, ok := lm.failedLibs[inode]; ok {
+	// Check if previously failed and retryOnError is disabled
+	if err, ok := lm.failedLibs[inode]; ok && !lm.retryOnError {
 		logrus.WithFields(logrus.Fields{
 			"inode":         inode,
 			"path":          path,
@@ -86,6 +93,8 @@ func (lm *LibraryManager) ProcessLibraryEvent(event *event.LibraryEvent) error {
 		return fmt.Errorf("failed to attach SSL probes to %s (inode %d): %w", modifiedPath, inode, err)
 	}
 
+	// Successfully attached - remove from failed libs if it was there
+	delete(lm.failedLibs, inode)
 	lm.hookedLibs[inode] = path
 	logrus.WithFields(logrus.Fields{
 		"inode":         inode,

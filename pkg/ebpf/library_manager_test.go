@@ -123,8 +123,8 @@ func TestLibraryManager_ProcessLibraryEvent(t *testing.T) {
 		}
 	})
 
-	// Test previously failed - same inode
-	t.Run("previously failed", func(t *testing.T) {
+	// Test previously failed - same inode (retryOnError enabled by default)
+	t.Run("previously failed with retry enabled", func(t *testing.T) {
 		initialCalls := len(tl.attachCalls)
 
 		event := &event.LibraryEvent{
@@ -139,13 +139,13 @@ func TestLibraryManager_ProcessLibraryEvent(t *testing.T) {
 		}
 
 		err := lm.ProcessLibraryEvent(event)
-		if err != nil {
-			t.Errorf("Expected no error for cached failure, got %v", err)
+		if err == nil {
+			t.Error("Expected error for retry attempt, got nil")
 		}
 
-		// Check that no additional attach was called
-		if len(tl.attachCalls) != initialCalls {
-			t.Error("Expected no additional attach calls for cached failure")
+		// Check that attach was called again (retry behavior)
+		if len(tl.attachCalls) != initialCalls+1 {
+			t.Errorf("Expected 1 additional attach call for retry, got %d", len(tl.attachCalls)-initialCalls)
 		}
 	})
 
@@ -279,6 +279,114 @@ func TestLibraryManager_Close(t *testing.T) {
 	err = lm.Close()
 	if err != nil {
 		t.Errorf("Expected no error from second Close(), got %v", err)
+	}
+}
+
+// Test retry behavior with feature flag disabled
+func TestLibraryManager_RetryDisabled(t *testing.T) {
+	tl := newTestLoader()
+	lm := NewLibraryManagerWithRetry(tl, 4026532221, false) // disable retry
+	defer lm.Close()
+
+	// Set up failure for this path
+	tl.attachResults["/usr/lib/libssl.so.retry"] = errors.New("probe failed")
+
+	// First attempt should fail
+	event := &event.LibraryEvent{
+		EventHeader: event.EventHeader{
+			EventType: event.EventTypeLibrary,
+			PID:       1234,
+			CommBytes: [16]uint8{'r', 'e', 't', 'r', 'y'},
+		},
+		Inode:     99999,
+		MntNSID:   4026532221,
+		PathBytes: makePathBytes("/usr/lib/libssl.so.retry"),
+	}
+
+	err := lm.ProcessLibraryEvent(event)
+	if err == nil {
+		t.Error("Expected error on first attempt, got nil")
+	}
+
+	// Verify it was marked as failed
+	_, failed := lm.Stats()
+	if failed != 1 {
+		t.Errorf("Expected 1 failed library, got %d", failed)
+	}
+
+	// Second attempt should be skipped
+	initialCalls := len(tl.attachCalls)
+	err = lm.ProcessLibraryEvent(event)
+	if err != nil {
+		t.Errorf("Expected no error for cached failure (retry disabled), got %v", err)
+	}
+
+	// Check that no additional attach was called
+	if len(tl.attachCalls) != initialCalls {
+		t.Error("Expected no additional attach calls when retry is disabled")
+	}
+}
+
+// Test error state removal when load succeeds
+func TestLibraryManager_ErrorStateRemoval(t *testing.T) {
+	tl := newTestLoader()
+	lm := NewLibraryManager(tl, 4026532221) // retry enabled by default
+	defer lm.Close()
+
+	// Set up initial failure
+	tl.attachResults["/usr/lib/libssl.so.recover"] = errors.New("probe failed")
+
+	event := &event.LibraryEvent{
+		EventHeader: event.EventHeader{
+			EventType: event.EventTypeLibrary,
+			PID:       1234,
+			CommBytes: [16]uint8{'r', 'e', 'c', 'o', 'v', 'e', 'r'},
+		},
+		Inode:     88888,
+		MntNSID:   4026532221,
+		PathBytes: makePathBytes("/usr/lib/libssl.so.recover"),
+	}
+
+	// First attempt should fail
+	err := lm.ProcessLibraryEvent(event)
+	if err == nil {
+		t.Error("Expected error on first attempt, got nil")
+	}
+
+	// Verify it was marked as failed
+	_, failed := lm.Stats()
+	if failed != 1 {
+		t.Errorf("Expected 1 failed library, got %d", failed)
+	}
+
+	// Remove the failure condition
+	delete(tl.attachResults, "/usr/lib/libssl.so.recover")
+
+	// Second attempt should succeed
+	err = lm.ProcessLibraryEvent(event)
+	if err != nil {
+		t.Errorf("Expected success on retry, got %v", err)
+	}
+
+	// Verify it was moved from failed to hooked
+	hooked, failed := lm.Stats()
+	if hooked != 1 {
+		t.Errorf("Expected 1 hooked library, got %d", hooked)
+	}
+	if failed != 0 {
+		t.Errorf("Expected 0 failed libraries after success, got %d", failed)
+	}
+
+	// Third attempt should be skipped (already hooked)
+	initialCalls := len(tl.attachCalls)
+	err = lm.ProcessLibraryEvent(event)
+	if err != nil {
+		t.Errorf("Expected no error for already hooked library, got %v", err)
+	}
+
+	// Check that no additional attach was called
+	if len(tl.attachCalls) != initialCalls {
+		t.Error("Expected no additional attach calls for already hooked library")
 	}
 }
 
