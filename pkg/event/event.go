@@ -58,6 +58,12 @@ func (e EventType) String() string {
 		return "tls_recv"
 	case EventTypeTlsFree:
 		return "tls_free"
+	case EventTypeHttpRequest:
+		return "http_request"
+	case EventTypeHttpResponse:
+		return "http_response"
+	case EventTypeHttpSSE:
+		return "http_sse"
 	default:
 		return "unknown"
 	}

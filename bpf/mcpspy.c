@@ -47,6 +47,13 @@ int BPF_PROG(exit_vfs_read, struct file *file, const char *buf, size_t count,
         return 0;
     }
 
+    if (ret > MAX_BUF_SIZE) {
+        // Currently the strategy is to drop incomplete fs events.
+        // These events would fail in the JSON parsing anyways.
+        bpf_printk("info: dropping read event with count %d > %d", ret, MAX_BUF_SIZE);
+        return 0;
+    }
+
     struct data_event *event =
         bpf_ringbuf_reserve(&events, sizeof(struct data_event), 0);
     if (!event) {
@@ -75,6 +82,13 @@ int BPF_PROG(exit_vfs_write, struct file *file, const char *buf, size_t count,
     }
 
     if (!is_mcp_data(buf, ret)) {
+        return 0;
+    }
+    
+    if (ret > MAX_BUF_SIZE) {
+        // Currently the strategy is to drop incomplete fs events.
+        // These events would fail in the JSON parsing anyways.
+        bpf_printk("info: dropping write event with count %d > %d", ret, MAX_BUF_SIZE);
         return 0;
     }
 

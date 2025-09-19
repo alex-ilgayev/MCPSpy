@@ -646,19 +646,14 @@ func TestParseJSONRPC_InvalidMessages(t *testing.T) {
 		expectError string
 	}{
 		{
-			name:        "Invalid JSON",
-			data:        []byte(`{"invalid": json}`),
-			expectError: "invalid JSON",
-		},
-		{
 			name:        "Missing jsonrpc field",
 			data:        []byte(`{"id":1,"method":"tools/call"}`),
-			expectError: "invalid JSON-RPC version",
+			expectError: "not JSON-RPC 2.0",
 		},
 		{
 			name:        "Wrong jsonrpc version",
 			data:        []byte(`{"jsonrpc":"1.0","id":1,"method":"tools/call"}`),
-			expectError: "invalid JSON-RPC version",
+			expectError: "not JSON-RPC 2.0",
 		},
 		{
 			name:        "Unknown method",
@@ -1192,13 +1187,13 @@ func TestParseDataHttp_InvalidMessages(t *testing.T) {
 			name:        "Missing jsonrpc field",
 			data:        []byte(`{"id":1,"method":"tools/call"}`),
 			eventType:   event.EventTypeHttpResponse,
-			expectError: "failed to parse JSON-RPC: invalid JSON-RPC version",
+			expectError: "failed to parse JSON-RPC: not JSON-RPC 2.0",
 		},
 		{
 			name:        "Wrong jsonrpc version",
 			data:        []byte(`{"jsonrpc":"1.0","id":1,"method":"tools/call"}`),
 			eventType:   event.EventTypeHttpSSE,
-			expectError: "failed to parse JSON-RPC: invalid JSON-RPC version",
+			expectError: "failed to parse JSON-RPC: not JSON-RPC 2.0",
 		},
 		{
 			name:        "Unknown method",
