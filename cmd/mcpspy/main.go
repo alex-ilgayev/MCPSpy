@@ -202,9 +202,10 @@ func run(cmd *cobra.Command, args []string) error {
 				sseEvent := event.(*mcpevents.SSEEvent)
 
 				logrus.WithFields(logrus.Fields{
-					"method": sseEvent.Method,
-					"host":   sseEvent.Host,
-					"path":   sseEvent.Path,
+					"method":    sseEvent.Method,
+					"host":      sseEvent.Host,
+					"path":      sseEvent.Path,
+					"sse_event": sseEvent.SSEEventType,
 				}).Trace("HTTP SSE event")
 
 				// Parse SSE data as MCP messages

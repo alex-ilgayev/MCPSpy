@@ -1,6 +1,7 @@
 package http
 
 import (
+	"reflect"
 	"testing"
 	"time"
 
@@ -1180,7 +1181,7 @@ func TestSessionManager_SSEResponse(t *testing.T) {
 		t.Errorf("Expected SSE event data to be %q, got %q", expectedData, sseEvents[0])
 	}
 
-	// Verify HTTP context
+	// Verify HTTP context and event type
 	if len(sseContexts) != 1 {
 		t.Fatalf("Expected 1 SSE event context, got %d", len(sseContexts))
 	}
@@ -1193,6 +1194,10 @@ func TestSessionManager_SSEResponse(t *testing.T) {
 	}
 	if sseCtx.Host != "example.com" {
 		t.Errorf("Expected host example.com, got %s", sseCtx.Host)
+	}
+	// First event has no explicit event type, should default to "message"
+	if sseCtx.SSEEventType != "message" {
+		t.Errorf("Expected first SSE event type to be 'message', got %q", sseCtx.SSEEventType)
 	}
 
 	// Send second SSE event chunk with multiple events
@@ -1243,6 +1248,17 @@ func TestSessionManager_SSEResponse(t *testing.T) {
 	expectedData4 := "test"
 	if string(sseEvents[3]) != expectedData4 {
 		t.Errorf("Expected fourth SSE event data to be %q, got %q", expectedData4, sseEvents[3])
+	}
+
+	// Verify event types for all events
+	expectedEventTypes := []string{"message", "update", "message", "message"}
+	if len(sseContexts) != 4 {
+		t.Fatalf("Expected 4 SSE event contexts, got %d", len(sseContexts))
+	}
+	for i, expectedType := range expectedEventTypes {
+		if sseContexts[i].SSEEventType != expectedType {
+			t.Errorf("Expected SSE event %d type to be %q, got %q", i+1, expectedType, sseContexts[i].SSEEventType)
+		}
 	}
 
 	// No regular HTTP event should be emitted yet (response not complete)
@@ -1380,7 +1396,7 @@ func TestSessionManager_SSECompleteResponse(t *testing.T) {
 		if string(sseEvent.Data) != expectedData {
 			t.Errorf("Expected SSE data %q, got %q", expectedData, sseEvent.Data)
 		}
-		// Verify HTTP context
+		// Verify HTTP context and event type
 		if sseEvent.Method != "GET" {
 			t.Errorf("Expected method GET, got %s", sseEvent.Method)
 		}
@@ -1389,6 +1405,10 @@ func TestSessionManager_SSECompleteResponse(t *testing.T) {
 		}
 		if sseEvent.Path != "/events" {
 			t.Errorf("Expected path /events, got %s", sseEvent.Path)
+		}
+		// This event has no explicit event type, should default to "message"
+		if sseEvent.SSEEventType != "message" {
+			t.Errorf("Expected SSE event type to be 'message', got %q", sseEvent.SSEEventType)
 		}
 	case <-time.After(100 * time.Millisecond):
 		t.Fatal("No SSE event received through channel")
@@ -1473,6 +1493,10 @@ func TestSessionManager_SSENoCallback(t *testing.T) {
 		if sseEvent.Path != "/events" {
 			t.Errorf("Expected path /events in SSE event, got %s", sseEvent.Path)
 		}
+		// This event has no explicit event type, should default to "message"
+		if sseEvent.SSEEventType != "message" {
+			t.Errorf("Expected SSE event type to be 'message', got %q", sseEvent.SSEEventType)
+		}
 	case <-time.After(100 * time.Millisecond):
 		t.Fatal("Should receive SSE event through channel even without callback")
 	}
@@ -1493,5 +1517,216 @@ func TestSessionManager_SSENoCallback(t *testing.T) {
 		}
 	case <-time.After(100 * time.Millisecond):
 		t.Fatal("Expected HTTP response event for complete SSE response")
+	}
+}
+
+func TestParseSSEEvents(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected []string
+	}{
+		{
+			name: "single data event",
+			input: "data: hello world\n\n",
+			expected: []string{"data: hello world"},
+		},
+		{
+			name: "multiple data lines in one event",
+			input: "data: line 1\ndata: line 2\n\n",
+			expected: []string{"data: line 1\ndata: line 2"},
+		},
+		{
+			name: "event with id and data",
+			input: "id: 123\ndata: some data\n\n",
+			expected: []string{"id: 123\ndata: some data"},
+		},
+		{
+			name: "multiple events",
+			input: "data: event 1\n\ndata: event 2\n\n",
+			expected: []string{"data: event 1", "data: event 2"},
+		},
+		{
+			name: "event with all fields",
+			input: "event: message\nid: 456\nretry: 1000\ndata: complete event\n\n",
+			expected: []string{"event: message\nid: 456\nretry: 1000\ndata: complete event"},
+		},
+		{
+			name: "events with comments (ignored)",
+			input: ": this is a comment\ndata: actual data\n\n",
+			expected: []string{"data: actual data"},
+		},
+		{
+			name: "CRLF line endings",
+			input: "data: with crlf\r\n\r\n",
+			expected: []string{"data: with crlf"},
+		},
+		{
+			name: "mixed field types",
+			input: "event: test\ndata: first\nid: 789\ndata: second\n\nevent: another\ndata: third\n\n",
+			expected: []string{"event: test\ndata: first\nid: 789\ndata: second", "event: another\ndata: third"},
+		},
+		{
+			name: "empty input",
+			input: "",
+			expected: nil,
+		},
+		{
+			name: "only comments",
+			input: ": comment 1\n: comment 2\n\n",
+			expected: nil,
+		},
+		{
+			name: "lines without colons (ignored)",
+			input: "invalid line\ndata: valid data\nanother invalid\n\n",
+			expected: []string{"data: valid data"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := parseSSEEvents([]byte(tt.input))
+
+			// Convert [][]byte to []string for easier comparison
+			var resultStrings []string
+			for _, event := range result {
+				resultStrings = append(resultStrings, string(event))
+			}
+
+			if !reflect.DeepEqual(resultStrings, tt.expected) {
+				t.Errorf("parseSSEEvents() = %v, want %v", resultStrings, tt.expected)
+			}
+		})
+	}
+}
+
+func TestParseSSEEvents_WithoutTerminatingNewline(t *testing.T) {
+	// Test event without terminating double newline
+	input := "data: incomplete event"
+	result := parseSSEEvents([]byte(input))
+
+	expected := []string{"data: incomplete event"}
+	var resultStrings []string
+	for _, event := range result {
+		resultStrings = append(resultStrings, string(event))
+	}
+
+	if !reflect.DeepEqual(resultStrings, expected) {
+		t.Errorf("parseSSEEvents() = %v, want %v", resultStrings, expected)
+	}
+}
+
+func TestExtractSSEEventData(t *testing.T) {
+	tests := []struct {
+		name             string
+		input            string
+		expectedType     string
+		expectedData     string
+	}{
+		{
+			name:         "simple data event",
+			input:        "data: hello world",
+			expectedType: "message",
+			expectedData: "hello world",
+		},
+		{
+			name:         "event with explicit type",
+			input:        "event: update\ndata: content",
+			expectedType: "update",
+			expectedData: "content",
+		},
+		{
+			name:         "multiple data lines",
+			input:        "data: line 1\ndata: line 2",
+			expectedType: "message",
+			expectedData: "line 1\nline 2",
+		},
+		{
+			name:         "mixed fields with event type",
+			input:        "event: notification\ndata: content\nid: 123",
+			expectedType: "notification",
+			expectedData: "content",
+		},
+		{
+			name:         "multiple data fields in mixed event",
+			input:        "id: 456\ndata: first\nretry: 1000\ndata: second\nevent: custom",
+			expectedType: "custom",
+			expectedData: "first\nsecond",
+		},
+		{
+			name:         "no data field",
+			input:        "event: test\nid: 789",
+			expectedType: "test",
+			expectedData: "",
+		},
+		{
+			name:         "empty data field",
+			input:        "data:\nevent: empty",
+			expectedType: "empty",
+			expectedData: "",
+		},
+		{
+			name:         "data with whitespace",
+			input:        "data:   spaced content   \nevent:   status   ",
+			expectedType: "status",
+			expectedData: "spaced content",
+		},
+		{
+			name:         "CRLF line endings",
+			input:        "event: test\r\ndata: content\r\nid: 123\r\n",
+			expectedType: "test",
+			expectedData: "content",
+		},
+		{
+			name:         "event type first in mixed fields",
+			input:        "event: custom\ndata: payload\nid: 789\nretry: 3000",
+			expectedType: "custom",
+			expectedData: "payload",
+		},
+		{
+			name:         "event type last in mixed fields",
+			input:        "id: 999\ndata: info\nevent: status",
+			expectedType: "status",
+			expectedData: "info",
+		},
+		{
+			name:         "only data field - defaults to message",
+			input:        "data: hello world",
+			expectedType: "message",
+			expectedData: "hello world",
+		},
+		{
+			name:         "empty input - defaults to message",
+			input:        "",
+			expectedType: "message",
+			expectedData: "",
+		},
+		{
+			name:         "empty event type field",
+			input:        "event:\ndata: test data",
+			expectedType: "message",
+			expectedData: "test data",
+		},
+		{
+			name:         "no event type - defaults to message",
+			input:        "data: content\nid: 456",
+			expectedType: "message",
+			expectedData: "content",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			eventType, data := extractSSEEventData([]byte(tt.input))
+
+			if eventType != tt.expectedType {
+				t.Errorf("extractSSEEventData() eventType = %q, want %q", eventType, tt.expectedType)
+			}
+
+			dataStr := string(data)
+			if dataStr != tt.expectedData {
+				t.Errorf("extractSSEEventData() data = %q, want %q", dataStr, tt.expectedData)
+			}
+		})
 	}
 }

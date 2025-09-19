@@ -182,7 +182,9 @@ type SSEEvent struct {
 
 	SSLContext uint64 // SSL context pointer (session identifier)
 
-	// SSE data. Currently only 'data' is supported.
+	// SSE event type (e.g., "message", "update", etc.)
+	SSEEventType string
+	// SSE data
 	Data []byte
 }
 

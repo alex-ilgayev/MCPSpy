@@ -229,12 +229,12 @@ func (p *Parser) ParseDataStdio(data []byte, eventType event.EventType, pid uint
 			jsonRpcMsg, err := p.parseJSONRPC(jsonData)
 			if err != nil {
 				// No reason to keep iterating.
-				return []*Message{}, err
+				return nil, fmt.Errorf("failed to parse JSON-RPC: %w", err)
 			}
 
 			if ok, err := p.validateMCPMessage(jsonRpcMsg); !ok {
 				// No reason to keep iterating.
-				return []*Message{}, err
+				return nil, fmt.Errorf("invalid MCP message: %w", err)
 			}
 
 			// Create stdio transport info from correlated events

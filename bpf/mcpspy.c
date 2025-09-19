@@ -256,6 +256,12 @@ int BPF_URETPROBE(ssl_read_exit, int ret) {
         return 0;
     }
 
+    if (ret > MAX_BUF_SIZE) {
+        // We still want to deliver these messages for HTTP session integrity.
+        // But it means we'll may lose information.
+        bpf_printk("info: ssl_read_exit: buffer is too big: %d > %d", ret, MAX_BUF_SIZE);
+    }
+
     // Checking the session if was set to specific http version.
     // If not, we try to identify the version from the payload.
     __u64 ssl_ptr = params->ssl;
@@ -318,6 +324,12 @@ SEC("uprobe/SSL_write")
 int BPF_UPROBE(ssl_write_entry, void *ssl, const void *buf, int num) {
     if (num <= 0) {
         return 0;
+    }
+
+    if (num > MAX_BUF_SIZE) {
+        // We still want to deliver these messages for HTTP session integrity.
+        // But it means we'll may lose information.
+        bpf_printk("info: ssl_write_entry: buffer is too big: %d > %d", num, MAX_BUF_SIZE);
     }
 
     // Checking the session if was set to specific http version.
@@ -415,6 +427,12 @@ int BPF_URETPROBE(ssl_read_ex_exit, int ret) {
                        (const void *)params->readbytes);
     }
 
+    if (actual_read > MAX_BUF_SIZE) {
+        // We still want to deliver these messages for HTTP session integrity.
+        // But it means we'll may lose information.
+        bpf_printk("info: ssl_read_ex_exit: buffer is too big: %d > %d", actual_read, MAX_BUF_SIZE);
+    }
+
     // Checking the session if was set to specific http version.
     // If not, we try to identify the version from the payload.
     __u64 ssl_ptr = params->ssl;
@@ -475,6 +493,12 @@ int BPF_UPROBE(ssl_write_ex_entry, void *ssl, const void *buf, size_t num,
                size_t *written) {
     if (num <= 0) {
         return 0;
+    }
+
+    if (num > MAX_BUF_SIZE) {
+        // We still want to deliver these messages for HTTP session integrity.
+        // But it means we'll may lose information.
+        bpf_printk("info: ssl_write_ex_entry: buffer is too big: %d > %d", num, MAX_BUF_SIZE);
     }
 
     // Checking the session if was set to specific http version.

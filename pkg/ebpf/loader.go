@@ -138,7 +138,7 @@ func (l *Loader) Start(ctx context.Context) error {
 
 				// First, reading the first byte to get the event type
 				if len(record.RawSample) < 1 {
-					logrus.Warn("Received empty event. Can't be read the event type.")
+					logrus.Warn("Received empty event. Can't read the event type.")
 					continue
 				}
 
