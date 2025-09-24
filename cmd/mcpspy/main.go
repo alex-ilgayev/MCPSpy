@@ -14,6 +14,7 @@ import (
 	mcpevents "github.com/alex-ilgayev/mcpspy/pkg/event"
 	"github.com/alex-ilgayev/mcpspy/pkg/http"
 	"github.com/alex-ilgayev/mcpspy/pkg/mcp"
+	"github.com/alex-ilgayev/mcpspy/pkg/namespace"
 	"github.com/alex-ilgayev/mcpspy/pkg/output"
 	"github.com/alex-ilgayev/mcpspy/pkg/version"
 
@@ -69,6 +70,13 @@ func run(cmd *cobra.Command, args []string) error {
 		go mcpspydebug.PrintTracePipe(logrus.StandardLogger())
 	}
 
+	// Fetch current mount namespace
+	mountNS, err := namespace.GetCurrentMountNamespace()
+	if err != nil {
+		return fmt.Errorf("failed to get current mount namespace: %w", err)
+	}
+	logrus.WithField("mount_ns", mountNS).Debug("Current mount namespace")
+
 	// Set up console display (always show console output)
 	consoleDisplay := output.NewConsoleDisplay(os.Stdout, showBuffers)
 	consoleDisplay.PrintHeader()
@@ -98,7 +106,8 @@ func run(cmd *cobra.Command, args []string) error {
 
 	// Process library events
 	// and creates uprobe hooks for dynamically loaded libraries
-	libManager := ebpf.NewLibraryManager(loader)
+	libManager := ebpf.NewLibraryManager(loader, mountNS)
+	defer libManager.Close()
 
 	// Manage HTTP sessions (1.1/2/chunked encoding/SSE)
 	httpManager := http.NewSessionManager()
@@ -165,7 +174,7 @@ func run(cmd *cobra.Command, args []string) error {
 				// Parse request payload for MCP messages
 				requestMessages, err := parser.ParseDataHttp(httpEvt.RequestPayload, httpEvt.EventType, httpEvt.PID, httpEvt.Comm(), httpEvt.Host, true)
 				if err != nil {
-					logrus.WithError(err).Debug("Failed to parse HTTP request payload")
+					logrus.WithError(err).Debugf("Failed to process %s event", httpEvt.Type())
 				} else {
 					allMessages = append(allMessages, requestMessages...)
 				}
@@ -184,7 +193,7 @@ func run(cmd *cobra.Command, args []string) error {
 				// Parse response payload for MCP messages
 				responseMessages, err := parser.ParseDataHttp(httpEvt.ResponsePayload, httpEvt.EventType, httpEvt.PID, httpEvt.Comm(), httpEvt.Host, false)
 				if err != nil {
-					logrus.WithError(err).Debug("Failed to parse HTTP response payload")
+					logrus.WithError(err).Debugf("Failed to process %s event", httpEvt.Type())
 				} else {
 					allMessages = append(allMessages, responseMessages...)
 				}
@@ -193,15 +202,16 @@ func run(cmd *cobra.Command, args []string) error {
 				sseEvent := event.(*mcpevents.SSEEvent)
 
 				logrus.WithFields(logrus.Fields{
-					"method": sseEvent.Method,
-					"host":   sseEvent.Host,
-					"path":   sseEvent.Path,
+					"method":    sseEvent.Method,
+					"host":      sseEvent.Host,
+					"path":      sseEvent.Path,
+					"sse_event": sseEvent.SSEEventType,
 				}).Trace("HTTP SSE event")
 
 				// Parse SSE data as MCP messages
 				messages, err := parser.ParseDataHttp(sseEvent.Data, sseEvent.EventType, sseEvent.PID, sseEvent.Comm(), sseEvent.Host, false)
 				if err != nil {
-					logrus.WithError(err).Debug("Failed to parse SSE data as MCP")
+					logrus.WithError(err).Debugf("Failed to process %s event", sseEvent.Type())
 				} else {
 					allMessages = append(allMessages, messages...)
 				}
@@ -243,7 +253,7 @@ func run(cmd *cobra.Command, args []string) error {
 				if err != nil {
 					// Ignore this error, it's expected for read events
 					if err.Error() != "no write event found for the parsed read event" {
-						logrus.WithError(err).Debug("Failed to parse data")
+						logrus.WithError(err).Debugf("Failed to process %s event", e.Type())
 					}
 					continue
 				}
@@ -265,14 +275,15 @@ func run(cmd *cobra.Command, args []string) error {
 			case *mcpevents.LibraryEvent:
 				// Handle library events
 				logrus.WithFields(logrus.Fields{
-					"pid":   e.PID,
-					"comm":  e.Comm(),
-					"path":  e.Path(),
-					"inode": e.Inode,
+					"pid":     e.PID,
+					"comm":    e.Comm(),
+					"path":    e.Path(),
+					"inode":   e.Inode,
+					"mountNS": e.MntNSID,
 				}).Trace("Library loaded")
 
 				if err := libManager.ProcessLibraryEvent(e); err != nil {
-					logrus.WithError(err).WithField("path", e.Path()).Warn("Failed to process library event")
+					logrus.WithError(err).WithField("path", e.Path()).Warnf("Failed to process %s event", e.Type())
 				}
 			case *mcpevents.TlsPayloadEvent:
 				// Handle TLS payloads
@@ -286,7 +297,7 @@ func run(cmd *cobra.Command, args []string) error {
 				}).Trace("TLS payload event")
 				// Raw TLS event, we need to aggregate it into HTTP sessions
 				if err := httpManager.ProcessTlsEvent(e); err != nil {
-					logrus.WithError(err).Warn("Failed to process TLS event")
+					logrus.WithError(err).Warnf("Failed to process %s event", e.Type())
 				}
 			case *mcpevents.TlsFreeEvent:
 				// Handle TLS free event
@@ -297,7 +308,7 @@ func run(cmd *cobra.Command, args []string) error {
 				}).Trace("TLS free event")
 
 				if err := httpManager.ProcessTlsFreeEvent(e); err != nil {
-					logrus.WithError(err).Warn("Failed to process TLS free event")
+					logrus.WithError(err).Warnf("Failed to process %s event", e.Type())
 				}
 			default:
 				logrus.WithField("type", event.Type()).Warn("Unknown event type")

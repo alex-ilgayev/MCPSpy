@@ -4,7 +4,9 @@ import (
 	"bufio"
 	"bytes"
 	"crypto/sha1"
+	"encoding/json"
 	"fmt"
+	"io"
 	"time"
 
 	"github.com/alex-ilgayev/mcpspy/pkg/event"
@@ -197,18 +199,26 @@ func (p *Parser) ParseDataStdio(data []byte, eventType event.EventType, pid uint
 		return []*Message{}, fmt.Errorf("unknown event type in stdio parsing: %d", eventType)
 	}
 
-	// Split the data into individual JSON messages
-	scanner := bufio.NewScanner(bytes.NewReader(data))
-	for scanner.Scan() {
-		msgData := scanner.Bytes()
-		if len(bytes.TrimSpace(msgData)) == 0 {
+	// Use JSON decoder to handle multi-line JSON properly
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	for {
+		var jsonData json.RawMessage
+		if err := decoder.Decode(&jsonData); err != nil {
+			if err == io.EOF {
+				break
+			}
+
+			return []*Message{}, fmt.Errorf("failed to decode JSON: %w", err)
+		}
+
+		if len(bytes.TrimSpace(jsonData)) == 0 {
 			continue
 		}
 
 		if eventType == event.EventTypeFSWrite {
-			p.cacheWriteEvent(msgData, pid, comm)
+			p.cacheWriteEvent(jsonData, pid, comm)
 		} else {
-			hash := p.calculateHash(msgData)
+			hash := p.calculateHash(jsonData)
 			writeEvent, ok := p.writeCache.Get(hash)
 			if !ok {
 				// No reason to keep iterating.
@@ -216,21 +226,21 @@ func (p *Parser) ParseDataStdio(data []byte, eventType event.EventType, pid uint
 			}
 
 			// Parse the message
-			jsonRpcMsg, err := p.parseJSONRPC(msgData)
+			jsonRpcMsg, err := p.parseJSONRPC(jsonData)
 			if err != nil {
 				// No reason to keep iterating.
-				return []*Message{}, err
+				return nil, fmt.Errorf("failed to parse JSON-RPC: %w", err)
 			}
 
 			if ok, err := p.validateMCPMessage(jsonRpcMsg); !ok {
 				// No reason to keep iterating.
-				return []*Message{}, err
+				return nil, fmt.Errorf("invalid MCP message: %w", err)
 			}
 
 			// Create stdio transport info from correlated events
 			messages = append(messages, &Message{
 				Timestamp:     time.Now(),
-				Raw:           string(msgData),
+				Raw:           string(jsonData),
 				TransportType: TransportTypeStdio,
 				StdioTransport: &StdioTransport{
 					FromPID:  writeEvent.PID,
@@ -302,7 +312,7 @@ func (p *Parser) parseJSONRPC(data []byte) (JSONRPCMessage, error) {
 
 	// Check for jsonrpc field
 	if result.Get("jsonrpc").String() != "2.0" {
-		return JSONRPCMessage{}, fmt.Errorf("invalid JSON-RPC version")
+		return JSONRPCMessage{}, fmt.Errorf("not JSON-RPC 2.0")
 	}
 
 	msg := JSONRPCMessage{}

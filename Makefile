@@ -217,6 +217,32 @@ test-e2e: test-e2e-stdio test-e2e-https ## Run end-to-end tests for all transpor
 	@echo ""
 	@echo "=== All transport tests completed ====="
 
+# Update expected output files for stdio transport
+.PHONY: test-e2e-update-stdio
+test-e2e-update-stdio: build test-e2e-setup ## Update expected output files for stdio transport
+	@echo "Updating expected output for stdio transport..."
+	@echo "Note: MCPSpy requires root privileges for eBPF operations"
+	sudo -E tests/venv/bin/python tests/e2e_test.py \
+		--mcpspy $(BUILD_DIR)/$(BINARY_NAME)-$(PLATFORM) \
+		--transport stdio \
+		--update-expected
+
+# Update expected output files for HTTP transport
+.PHONY: test-e2e-update-https
+test-e2e-update-https: build test-e2e-setup ## Update expected output files for HTTP transport
+	@echo "Updating expected output for HTTP transport..."
+	@echo "Note: MCPSpy requires root privileges for eBPF operations"
+	sudo -E tests/venv/bin/python tests/e2e_test.py \
+		--mcpspy $(BUILD_DIR)/$(BINARY_NAME)-$(PLATFORM) \
+		--transport http \
+		--update-expected
+
+# Update expected output files for all transports
+.PHONY: test-e2e-update
+test-e2e-update: test-e2e-update-stdio test-e2e-update-https ## Update expected output files for all transports
+	@echo ""
+	@echo "=== All expected output files updated ====="
+
 .PHONY: test-smoke
 test-smoke: ## Run smoke test (basic startup/shutdown test)
 	@echo "Running smoke test..."

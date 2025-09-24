@@ -58,6 +58,12 @@ func (e EventType) String() string {
 		return "tls_recv"
 	case EventTypeTlsFree:
 		return "tls_free"
+	case EventTypeHttpRequest:
+		return "http_request"
+	case EventTypeHttpResponse:
+		return "http_response"
+	case EventTypeHttpSSE:
+		return "http_sse"
 	default:
 		return "unknown"
 	}
@@ -97,12 +103,16 @@ func (e *FSDataEvent) Type() EventType { return e.EventType }
 type LibraryEvent struct {
 	EventHeader
 	Inode     uint64
+	MntNSID   uint32
 	PathBytes [512]uint8
 }
 
 func (e *LibraryEvent) Type() EventType { return e.EventType }
 func (e *LibraryEvent) Path() string {
 	return encoder.BytesToStr(e.PathBytes[:])
+}
+func (e *LibraryEvent) MountNamespaceID() uint32 {
+	return e.MntNSID
 }
 
 // Even though it's similar to DataEvent,
@@ -172,7 +182,9 @@ type SSEEvent struct {
 
 	SSLContext uint64 // SSL context pointer (session identifier)
 
-	// SSE data. Currently only 'data' is supported.
+	// SSE event type (e.g., "message", "update", etc.)
+	SSEEventType string
+	// SSE data
 	Data []byte
 }
 

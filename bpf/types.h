@@ -64,7 +64,8 @@ struct data_event {
 struct library_event {
     struct event_header header;
 
-    __u64 inode; // Inode number of the library file
+    __u64 inode;     // Inode number of the library file
+    __u32 mnt_ns_id; // Mount namespace ID
     __u8 path[PATH_MAX];
 };
 
@@ -80,7 +81,7 @@ struct tls_payload_event {
 
 struct tls_free_event {
     struct event_header header;
-    
+
     __u64 ssl_ctx; // SSL context pointer (session identifier)
 };
 

@@ -5,11 +5,13 @@
 #define __HELPERS_H
 
 #include "types.h"
+#include <bpf/bpf_core_read.h>
 
 // Check if filename matches our criteria for TLS uprobe hook.
 // Currently the options are:
 // - "node"
-// - "libssl"
+// - "libssl.so*" (shared libraries)
+// - "libssl3.so*" (OpenSSL 3.x shared libraries)
 static __always_inline bool is_filename_relevant(const char *filename) {
     // Check if filename is "node"
     if (filename[0] == 'n' && filename[1] == 'o' && filename[2] == 'd' &&
@@ -17,9 +19,19 @@ static __always_inline bool is_filename_relevant(const char *filename) {
         return true;
     }
 
-    // Check if filename starts with "libssl"
+    // Check if filename is "libssl.so*"
     if (filename[0] == 'l' && filename[1] == 'i' && filename[2] == 'b' &&
-        filename[3] == 's' && filename[4] == 's' && filename[5] == 'l') {
+        filename[3] == 's' && filename[4] == 's' && filename[5] == 'l' &&
+        filename[6] == '.' && filename[7] == 's' && filename[8] == 'o' &&
+        (filename[9] == '\0' || filename[9] == '.')) {
+        return true;
+    }
+
+    // Check if filename is "libssl3.so*"
+    if (filename[0] == 'l' && filename[1] == 'i' && filename[2] == 'b' &&
+        filename[3] == 's' && filename[4] == 's' && filename[5] == 'l' &&
+        filename[6] == '3' && filename[7] == '.' && filename[8] == 's' &&
+        filename[9] == 'o' && (filename[10] == '\0' || filename[10] == '.')) {
         return true;
     }
 
@@ -70,6 +82,26 @@ static __always_inline bool is_directory(struct dentry *dentry) {
     }
 
     return (inode->i_mode & S_IFMT) == S_IFDIR;
+}
+
+// Get the mount namespace ID of the current task
+static __always_inline __u32 get_mount_ns_id(void) {
+    struct task_struct *task = (struct task_struct *)bpf_get_current_task();
+    if (!task) {
+        return 0;
+    }
+
+    struct nsproxy *nsproxy = BPF_CORE_READ(task, nsproxy);
+    if (!nsproxy) {
+        return 0;
+    }
+
+    struct mnt_namespace *mnt_ns = BPF_CORE_READ(nsproxy, mnt_ns);
+    if (!mnt_ns) {
+        return 0;
+    }
+
+    return BPF_CORE_READ(mnt_ns, ns.inum);
 }
 
 #endif // __HELPERS_H

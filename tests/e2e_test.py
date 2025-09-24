@@ -33,9 +33,11 @@ class MCPSpyE2ETest:
         self,
         mcpspy_path: str = "../mcpspy",
         transport: str = "stdio",
+        update_expected: bool = False,
     ):
         self.mcpspy_path = mcpspy_path
         self.transport = transport
+        self.update_expected = update_expected
         self.mcpspy_process: Optional[subprocess.Popen] = None
         self.output_file: Optional[str] = None
 
@@ -152,9 +154,17 @@ class MCPSpyE2ETest:
         if not expected_file.exists():
             # Fall back to generic expected output
             expected_file = Path(__file__).parent / "expected_output.jsonl"
-            if not expected_file.exists():
-                print(f"Expected output file not found: {expected_file}")
-                return False
+
+        # If update_expected flag is set, write captured messages to expected file
+        if self.update_expected:
+            self._write_jsonl_file(expected_file, captured_messages)
+            print(f"Updated expected output file: {expected_file}")
+            return True
+
+        # Validation mode (default behavior)
+        if not expected_file.exists():
+            print(f"Expected output file not found: {expected_file}")
+            return False
 
         expected_patterns = self._read_jsonl_file(expected_file)
         if not expected_patterns:
@@ -213,6 +223,15 @@ class MCPSpyE2ETest:
             print(f"JSONL file not found: {file_path}")
         return messages
 
+    def _write_jsonl_file(self, file_path: Path, messages: List[Dict[str, Any]]) -> None:
+        """Write messages to a JSONL file."""
+        try:
+            with open(file_path, "w") as f:
+                for message in messages:
+                    f.write(json.dumps(message) + "\n")
+        except IOError as e:
+            print(f"Failed to write JSONL file {file_path}: {e}")
+
     def _cleanup(self) -> None:
         """Clean up temporary files and processes."""
         if self.mcpspy_process:
@@ -242,6 +261,11 @@ def main():
         default="stdio",
         help="Transport layer to test (default: stdio)",
     )
+    parser.add_argument(
+        "--update-expected",
+        action="store_true",
+        help="Update expected output files with captured messages instead of validating",
+    )
 
     args = parser.parse_args()
 
@@ -256,7 +280,7 @@ def main():
         print("Run with: sudo python tests/e2e_test.py")
         sys.exit(1)
 
-    test = MCPSpyE2ETest(args.mcpspy, args.transport)
+    test = MCPSpyE2ETest(args.mcpspy, args.transport, args.update_expected)
     success = test.run_test()
 
     if success:

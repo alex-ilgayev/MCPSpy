@@ -47,6 +47,13 @@ int BPF_PROG(exit_vfs_read, struct file *file, const char *buf, size_t count,
         return 0;
     }
 
+    if (ret > MAX_BUF_SIZE) {
+        // Currently the strategy is to drop incomplete fs events.
+        // These events would fail in the JSON parsing anyways.
+        bpf_printk("info: dropping read event with count %d > %d", ret, MAX_BUF_SIZE);
+        return 0;
+    }
+
     struct data_event *event =
         bpf_ringbuf_reserve(&events, sizeof(struct data_event), 0);
     if (!event) {
@@ -75,6 +82,13 @@ int BPF_PROG(exit_vfs_write, struct file *file, const char *buf, size_t count,
     }
 
     if (!is_mcp_data(buf, ret)) {
+        return 0;
+    }
+    
+    if (ret > MAX_BUF_SIZE) {
+        // Currently the strategy is to drop incomplete fs events.
+        // These events would fail in the JSON parsing anyways.
+        bpf_printk("info: dropping write event with count %d > %d", ret, MAX_BUF_SIZE);
         return 0;
     }
 
@@ -141,6 +155,7 @@ int enumerate_loaded_modules(struct bpf_iter__task_vma *ctx) {
     event->header.event_type = EVENT_LIBRARY;
     event->header.pid = task->tgid;
     event->inode = file->f_inode->i_ino;
+    event->mnt_ns_id = get_mount_ns_id();
     bpf_probe_read_kernel_str(&event->header.comm, sizeof(event->header.comm),
                               task->comm);
     __builtin_memset(event->path, 0, PATH_MAX);
@@ -199,6 +214,7 @@ int BPF_PROG(trace_security_file_open, struct file *file) {
     event->header.event_type = EVENT_LIBRARY;
     event->header.pid = bpf_get_current_pid_tgid() >> 32;
     event->inode = file->f_inode->i_ino;
+    event->mnt_ns_id = get_mount_ns_id();
     bpf_get_current_comm(&event->header.comm, sizeof(event->header.comm));
 
     if (!is_path_relevant((const char *)event->path)) {
@@ -238,6 +254,12 @@ int BPF_URETPROBE(ssl_read_exit, int ret) {
     // We only care about successful reads.
     if (ret <= 0) {
         return 0;
+    }
+
+    if (ret > MAX_BUF_SIZE) {
+        // We still want to deliver these messages for HTTP session integrity.
+        // But it means we'll may lose information.
+        bpf_printk("info: ssl_read_exit: buffer is too big: %d > %d", ret, MAX_BUF_SIZE);
     }
 
     // Checking the session if was set to specific http version.
@@ -302,6 +324,12 @@ SEC("uprobe/SSL_write")
 int BPF_UPROBE(ssl_write_entry, void *ssl, const void *buf, int num) {
     if (num <= 0) {
         return 0;
+    }
+
+    if (num > MAX_BUF_SIZE) {
+        // We still want to deliver these messages for HTTP session integrity.
+        // But it means we'll may lose information.
+        bpf_printk("info: ssl_write_entry: buffer is too big: %d > %d", num, MAX_BUF_SIZE);
     }
 
     // Checking the session if was set to specific http version.
@@ -399,6 +427,12 @@ int BPF_URETPROBE(ssl_read_ex_exit, int ret) {
                        (const void *)params->readbytes);
     }
 
+    if (actual_read > MAX_BUF_SIZE) {
+        // We still want to deliver these messages for HTTP session integrity.
+        // But it means we'll may lose information.
+        bpf_printk("info: ssl_read_ex_exit: buffer is too big: %d > %d", actual_read, MAX_BUF_SIZE);
+    }
+
     // Checking the session if was set to specific http version.
     // If not, we try to identify the version from the payload.
     __u64 ssl_ptr = params->ssl;
@@ -459,6 +493,12 @@ int BPF_UPROBE(ssl_write_ex_entry, void *ssl, const void *buf, size_t num,
                size_t *written) {
     if (num <= 0) {
         return 0;
+    }
+
+    if (num > MAX_BUF_SIZE) {
+        // We still want to deliver these messages for HTTP session integrity.
+        // But it means we'll may lose information.
+        bpf_printk("info: ssl_write_ex_entry: buffer is too big: %d > %d", num, MAX_BUF_SIZE);
     }
 
     // Checking the session if was set to specific http version.

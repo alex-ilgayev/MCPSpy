@@ -170,7 +170,7 @@ func (s *SessionManager) emitHttpRequestEvent(sess *session) {
 
 func (s *SessionManager) emitHttpResponseEvent(sess *session) {
 	if !sess.request.isComplete {
-		logrus.Warn("HTTP request is not complete when HTTP response event is emitted. Expected inconsistent data.")
+		logrus.Debug("HTTP request is not complete when HTTP response event is emitted. Expect missing data.")
 	}
 
 	// Build response event - includes request info for context
@@ -207,7 +207,7 @@ func (s *SessionManager) emitHttpResponseEvent(sess *session) {
 	}
 }
 
-func (s *SessionManager) emitSSEEvent(sess *session, data []byte) {
+func (s *SessionManager) emitSSEEvent(sess *session, eventType string, data []byte) {
 	// Build SSE event - include request and response context
 	event := event.SSEEvent{
 		EventHeader: event.EventHeader{
@@ -229,7 +229,8 @@ func (s *SessionManager) emitSSEEvent(sess *session, data []byte) {
 			RequestHeaders: sess.request.headers,
 			RequestPayload: sess.request.body,
 		},
-		Data: data,
+		SSEEventType: eventType,
+		Data:         data,
 	}
 
 	select {
@@ -475,7 +476,7 @@ func parseChunkedBody(data []byte) (body []byte, isComplete bool) {
 // processHTTPSSEResponse processes SSE events from chunked data incrementally
 func (s *SessionManager) processHTTPSSEResponse(sess *session) {
 	if !sess.request.isComplete {
-		logrus.Warn("HTTP request is not complete when SSE chunks are processed. Expected inconsistent data.")
+		logrus.Debug("HTTP request is not complete when SSE chunks are processed. Expect missing data.")
 	}
 
 	rawData := sess.responseBuf.Bytes()
@@ -512,8 +513,12 @@ func (s *SessionManager) processHTTPSSEResponse(sess *session) {
 		newEvents := allEvents[sess.sseEventsSent:]
 
 		for _, eventData := range newEvents {
-			// Create SSE event with HTTP context
-			s.emitSSEEvent(sess, eventData)
+			// Extract event type and data content for the SSE event
+			eventType, dataContent := extractSSEEventData(eventData)
+			if dataContent != nil {
+				// Create SSE event with HTTP context
+				s.emitSSEEvent(sess, eventType, dataContent)
+			}
 
 			sess.sseEventsSent++
 		}
@@ -521,21 +526,16 @@ func (s *SessionManager) processHTTPSSEResponse(sess *session) {
 }
 
 // parseSSEEvents receives raw response payload (after trimming the chunked parts)
-// and returns list of SSE data parts.
-// The data parts are identified with "data:" prefix.
-// Other fields (event:, id:, retry:, etc.) are ignored at the moment.
+// and returns list of SSE events as raw data.
+// Each event contains all fields (data:, event:, id:, retry:, etc.) concatenated.
 func parseSSEEvents(data []byte) [][]byte {
 	var events [][]byte
 
 	// SSE events are separated by double newlines (\n\n)
 	// Each event consists of lines starting with "data:", "event:", "id:", etc.
-	// Currently, we only support the "data:" field.
-	// Can be easily extended to support other fields, and represented with dedicated event type.
 
-	dataPrefix := []byte("data:")
 	lines := bytes.Split(data, []byte("\n"))
-
-	var currentEventData [][]byte
+	var currentEventLines [][]byte
 
 	for _, line := range lines {
 		// Trim any trailing \r (for CRLF line endings)
@@ -543,29 +543,58 @@ func parseSSEEvents(data []byte) [][]byte {
 
 		// Empty line signals end of an event
 		if len(line) == 0 {
-			if len(currentEventData) > 0 {
-				// Join all data lines for this event with newlines
-				eventData := bytes.Join(currentEventData, []byte("\n"))
+			if len(currentEventLines) > 0 {
+				// Join all lines for this event with newlines
+				eventData := bytes.Join(currentEventLines, []byte("\n"))
 				events = append(events, eventData)
-				currentEventData = nil
+				currentEventLines = nil
 			}
 			continue
 		}
 
-		// Check if this is a data line
-		if bytes.HasPrefix(line, dataPrefix) {
-			// Extract and trim the data content after "data:"
-			dataContent := bytes.TrimSpace(bytes.TrimPrefix(line, dataPrefix))
-			currentEventData = append(currentEventData, dataContent)
+		// Check if this is a valid SSE field line (contains a colon but not a comment)
+		if bytes.Contains(line, []byte(":")) && !bytes.HasPrefix(line, []byte(":")) {
+			currentEventLines = append(currentEventLines, line)
 		}
-		// For now, we ignore other SSE fields (event:, id:, retry:, etc.)
+		// Lines without colon or comments (starting with :) are ignored
 	}
 
 	// Handle any remaining data that wasn't terminated by an empty line
-	if len(currentEventData) > 0 {
-		eventData := bytes.Join(currentEventData, []byte("\n"))
+	if len(currentEventLines) > 0 {
+		eventData := bytes.Join(currentEventLines, []byte("\n"))
 		events = append(events, eventData)
 	}
 
 	return events
+}
+
+// extractSSEEventData extracts both the event type and data content from a complete SSE event.
+// Returns the event type (defaulting to "message" if not specified) and the data content.
+func extractSSEEventData(event []byte) (eventType string, data []byte) {
+	lines := bytes.Split(event, []byte("\n"))
+	var dataLines [][]byte
+
+	dataPrefix := []byte("data:")
+	eventPrefix := []byte("event:")
+	eventType = "message" // Default per SSE spec
+
+	for _, line := range lines {
+		line = bytes.TrimSuffix(line, []byte("\r"))
+
+		if bytes.HasPrefix(line, dataPrefix) {
+			dataContent := bytes.TrimSpace(bytes.TrimPrefix(line, dataPrefix))
+			dataLines = append(dataLines, dataContent)
+		} else if bytes.HasPrefix(line, eventPrefix) {
+			extractedType := bytes.TrimSpace(bytes.TrimPrefix(line, eventPrefix))
+			if len(extractedType) > 0 {
+				eventType = string(extractedType)
+			}
+		}
+	}
+
+	if len(dataLines) == 0 {
+		return eventType, nil
+	}
+
+	return eventType, bytes.Join(dataLines, []byte("\n"))
 }
