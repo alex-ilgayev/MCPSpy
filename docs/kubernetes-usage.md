@@ -24,12 +24,12 @@ MCPSpy helps you:
 Deploy MCPSpy as a DaemonSet to monitor all nodes in your cluster:
 
 ```bash
-kubectl apply -f https://raw.githubusercontent.com/alex-ilgayev/mcpspy/v0.0.3/deploy/kubernetes/mcpspy.yaml
+kubectl apply -f https://raw.githubusercontent.com/alex-ilgayev/mcpspy/main/deploy/kubernetes/mcpspy.yaml
 ```
 
 This creates:
 - A dedicated `mcpspy` namespace
-- Required RBAC permissions
+- Dedicated ServiceAccount and will set automountServiceAccountToken: false to avoid issuing a token
 - A DaemonSet that runs on all nodes
 
 ## Real-World Example: Monitoring LangFlow in Kubernetes
@@ -79,7 +79,7 @@ minikube start --cpus=4 --memory=8192
 ### 2. Deploy MCPSpy
 
 ```bash
-kubectl apply -f https://raw.githubusercontent.com/alex-ilgayev/mcpspy/v0.0.3/deploy/kubernetes/mcpspy.yaml
+kubectl apply -f https://raw.githubusercontent.com/alex-ilgayev/mcpspy/main/deploy/kubernetes/mcpspy.yaml
 ```
 
 ### 3. Access the Langflow IDE
