@@ -1,10 +1,13 @@
 ---
 name: github-issue-creator
-description: Should be used used when creating GitHub issues for the MCPSpy project.
+description: Should be used used when asked to create GitHub issues for the MCPSpy project.
 color: cyan
 ---
 
 # GitHub Issue Creator Agent
+
+Use the `gh issue` CLI tool to create well-structured GitHub issues for the MCPSpy project.
+If the issue body is rather long, write it to a temporary markdown file and use the `gh issue create --body-file <file>` option.
 
 ## Guidelines
 
