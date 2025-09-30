@@ -1,6 +1,7 @@
 package mcp
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -1463,6 +1464,366 @@ func TestParseDataHttp_HttpTransportFields(t *testing.T) {
 
 			if msg.HttpTransport.IsRequest != tt.isRequest {
 				t.Errorf("Expected HttpTransport.IsRequest %t, got %t", tt.isRequest, msg.HttpTransport.IsRequest)
+			}
+		})
+	}
+}
+
+func TestRequestIDCaching_Stdio(t *testing.T) {
+	parser := NewParser()
+
+	// Test request and response with matching ID
+	t.Run("Request and response with matching ID", func(t *testing.T) {
+		// Send a request first
+		requestData := []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"test"}}`)
+		_, _ = parser.ParseDataStdio(requestData, event.EventTypeFSWrite, 100, "writer")
+		msgs, err := parser.ParseDataStdio(requestData, event.EventTypeFSRead, 200, "reader")
+		if err != nil {
+			t.Fatalf("Failed to parse request: %v", err)
+		}
+		if len(msgs) != 1 {
+			t.Fatalf("Expected 1 request message, got %d", len(msgs))
+		}
+
+		// Send a response with matching ID
+		responseData := []byte(`{"jsonrpc":"2.0","id":1,"result":{"status":"ok"}}`)
+		_, _ = parser.ParseDataStdio(responseData, event.EventTypeFSWrite, 200, "reader")
+		msgs, err = parser.ParseDataStdio(responseData, event.EventTypeFSRead, 100, "writer")
+		if err != nil {
+			t.Fatalf("Failed to parse response: %v", err)
+		}
+		if len(msgs) != 1 {
+			t.Fatalf("Expected 1 response message, got %d", len(msgs))
+		}
+	})
+
+	// Test response without matching request ID
+	t.Run("Response without matching request ID", func(t *testing.T) {
+		newParser := NewParser()
+		responseData := []byte(`{"jsonrpc":"2.0","id":999,"result":{"status":"ok"}}`)
+		_, _ = newParser.ParseDataStdio(responseData, event.EventTypeFSWrite, 200, "reader")
+		msgs, err := newParser.ParseDataStdio(responseData, event.EventTypeFSRead, 100, "writer")
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		// The response should be dropped
+		if len(msgs) != 0 {
+			t.Errorf("Expected 0 messages (response dropped), got %d", len(msgs))
+		}
+	})
+
+	// Test request with string ID and response with matching string ID
+	t.Run("Request and response with matching string ID", func(t *testing.T) {
+		newParser := NewParser()
+		requestData := []byte(`{"jsonrpc":"2.0","id":"test-123","method":"initialize","params":{}}`)
+		_, _ = newParser.ParseDataStdio(requestData, event.EventTypeFSWrite, 100, "writer")
+		msgs, err := newParser.ParseDataStdio(requestData, event.EventTypeFSRead, 200, "reader")
+		if err != nil {
+			t.Fatalf("Failed to parse request: %v", err)
+		}
+		if len(msgs) != 1 {
+			t.Fatalf("Expected 1 request message, got %d", len(msgs))
+		}
+
+		responseData := []byte(`{"jsonrpc":"2.0","id":"test-123","result":{"status":"ok"}}`)
+		_, _ = newParser.ParseDataStdio(responseData, event.EventTypeFSWrite, 200, "reader")
+		msgs, err = newParser.ParseDataStdio(responseData, event.EventTypeFSRead, 100, "writer")
+		if err != nil {
+			t.Fatalf("Failed to parse response: %v", err)
+		}
+		if len(msgs) != 1 {
+			t.Fatalf("Expected 1 response message, got %d", len(msgs))
+		}
+	})
+
+	// Test that notifications are not affected by request ID caching
+	t.Run("Notifications are not affected", func(t *testing.T) {
+		newParser := NewParser()
+		notificationData := []byte(`{"jsonrpc":"2.0","method":"notifications/progress","params":{"value":50}}`)
+		_, _ = newParser.ParseDataStdio(notificationData, event.EventTypeFSWrite, 100, "writer")
+		msgs, err := newParser.ParseDataStdio(notificationData, event.EventTypeFSRead, 200, "reader")
+		if err != nil {
+			t.Fatalf("Failed to parse notification: %v", err)
+		}
+		if len(msgs) != 1 {
+			t.Fatalf("Expected 1 notification message, got %d", len(msgs))
+		}
+	})
+
+	// Test multiple requests and responses
+	t.Run("Multiple requests and responses", func(t *testing.T) {
+		newParser := NewParser()
+		// Send requests with IDs 1, 2, 3
+		for i := 1; i <= 3; i++ {
+			requestData := []byte(fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"tools/list"}`, i))
+			_, _ = newParser.ParseDataStdio(requestData, event.EventTypeFSWrite, 100, "writer")
+			_, _ = newParser.ParseDataStdio(requestData, event.EventTypeFSRead, 200, "reader")
+		}
+
+		// Send response with ID 2 (should succeed)
+		responseData := []byte(`{"jsonrpc":"2.0","id":2,"result":{"tools":[]}}`)
+		_, _ = newParser.ParseDataStdio(responseData, event.EventTypeFSWrite, 200, "reader")
+		msgs, err := newParser.ParseDataStdio(responseData, event.EventTypeFSRead, 100, "writer")
+		if err != nil {
+			t.Fatalf("Failed to parse response: %v", err)
+		}
+		if len(msgs) != 1 {
+			t.Errorf("Expected 1 response message (ID 2), got %d", len(msgs))
+		}
+
+		// Send response with ID 999 (should be dropped)
+		responseData = []byte(`{"jsonrpc":"2.0","id":999,"result":{"tools":[]}}`)
+		_, _ = newParser.ParseDataStdio(responseData, event.EventTypeFSWrite, 200, "reader")
+		msgs, err = newParser.ParseDataStdio(responseData, event.EventTypeFSRead, 100, "writer")
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		if len(msgs) != 0 {
+			t.Errorf("Expected 0 messages (response dropped), got %d", len(msgs))
+		}
+	})
+}
+
+func TestRequestIDCaching_Http(t *testing.T) {
+	parser := NewParser()
+
+	// Test request and response with matching ID
+	t.Run("Request and response with matching ID", func(t *testing.T) {
+		// Send a request first
+		requestData := []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"test"}}`)
+		msgs, err := parser.ParseDataHttp(requestData, event.EventTypeHttpRequest, 100, "http-client", "example.com", true)
+		if err != nil {
+			t.Fatalf("Failed to parse request: %v", err)
+		}
+		if len(msgs) != 1 {
+			t.Fatalf("Expected 1 request message, got %d", len(msgs))
+		}
+
+		// Send a response with matching ID
+		responseData := []byte(`{"jsonrpc":"2.0","id":1,"result":{"status":"ok"}}`)
+		msgs, err = parser.ParseDataHttp(responseData, event.EventTypeHttpResponse, 200, "http-server", "example.com", false)
+		if err != nil {
+			t.Fatalf("Failed to parse response: %v", err)
+		}
+		if len(msgs) != 1 {
+			t.Fatalf("Expected 1 response message, got %d", len(msgs))
+		}
+	})
+
+	// Test response without matching request ID
+	t.Run("Response without matching request ID", func(t *testing.T) {
+		newParser := NewParser()
+		responseData := []byte(`{"jsonrpc":"2.0","id":999,"result":{"status":"ok"}}`)
+		msgs, err := newParser.ParseDataHttp(responseData, event.EventTypeHttpResponse, 200, "http-server", "example.com", false)
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		// The response should be dropped
+		if len(msgs) != 0 {
+			t.Errorf("Expected 0 messages (response dropped), got %d", len(msgs))
+		}
+	})
+
+	// Test request with string ID and response with matching string ID
+	t.Run("Request and response with matching string ID", func(t *testing.T) {
+		newParser := NewParser()
+		requestData := []byte(`{"jsonrpc":"2.0","id":"http-test-456","method":"initialize","params":{}}`)
+		msgs, err := newParser.ParseDataHttp(requestData, event.EventTypeHttpRequest, 100, "http-client", "example.com", true)
+		if err != nil {
+			t.Fatalf("Failed to parse request: %v", err)
+		}
+		if len(msgs) != 1 {
+			t.Fatalf("Expected 1 request message, got %d", len(msgs))
+		}
+
+		responseData := []byte(`{"jsonrpc":"2.0","id":"http-test-456","result":{"status":"ok"}}`)
+		msgs, err = newParser.ParseDataHttp(responseData, event.EventTypeHttpResponse, 200, "http-server", "example.com", false)
+		if err != nil {
+			t.Fatalf("Failed to parse response: %v", err)
+		}
+		if len(msgs) != 1 {
+			t.Fatalf("Expected 1 response message, got %d", len(msgs))
+		}
+	})
+
+	// Test that notifications are not affected by request ID caching
+	t.Run("Notifications are not affected", func(t *testing.T) {
+		newParser := NewParser()
+		notificationData := []byte(`{"jsonrpc":"2.0","method":"notifications/progress","params":{"value":50}}`)
+		msgs, err := newParser.ParseDataHttp(notificationData, event.EventTypeHttpSSE, 100, "http-client", "example.com", false)
+		if err != nil {
+			t.Fatalf("Failed to parse notification: %v", err)
+		}
+		if len(msgs) != 1 {
+			t.Fatalf("Expected 1 notification message, got %d", len(msgs))
+		}
+	})
+
+	// Test multiple requests and responses
+	t.Run("Multiple requests and responses", func(t *testing.T) {
+		newParser := NewParser()
+		// Send requests with IDs 1, 2, 3
+		for i := 1; i <= 3; i++ {
+			requestData := []byte(fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"tools/list"}`, i))
+			_, _ = newParser.ParseDataHttp(requestData, event.EventTypeHttpRequest, 100, "http-client", "example.com", true)
+		}
+
+		// Send response with ID 2 (should succeed)
+		responseData := []byte(`{"jsonrpc":"2.0","id":2,"result":{"tools":[]}}`)
+		msgs, err := newParser.ParseDataHttp(responseData, event.EventTypeHttpResponse, 200, "http-server", "example.com", false)
+		if err != nil {
+			t.Fatalf("Failed to parse response: %v", err)
+		}
+		if len(msgs) != 1 {
+			t.Errorf("Expected 1 response message (ID 2), got %d", len(msgs))
+		}
+
+		// Send response with ID 999 (should be dropped)
+		responseData = []byte(`{"jsonrpc":"2.0","id":999,"result":{"tools":[]}}`)
+		msgs, err = newParser.ParseDataHttp(responseData, event.EventTypeHttpResponse, 200, "http-server", "example.com", false)
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		if len(msgs) != 0 {
+			t.Errorf("Expected 0 messages (response dropped), got %d", len(msgs))
+		}
+	})
+}
+
+func TestRequestIDCaching_MixedIDTypes(t *testing.T) {
+	parser := NewParser()
+
+	// Test that string and int IDs don't collide
+	t.Run("String and int IDs don't collide", func(t *testing.T) {
+		// Send request with numeric ID 1
+		requestData := []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`)
+		_, _ = parser.ParseDataStdio(requestData, event.EventTypeFSWrite, 100, "writer")
+		_, _ = parser.ParseDataStdio(requestData, event.EventTypeFSRead, 200, "reader")
+
+		// Try response with string ID "1" (should be dropped - different type)
+		responseData := []byte(`{"jsonrpc":"2.0","id":"1","result":{"tools":[]}}`)
+		_, _ = parser.ParseDataStdio(responseData, event.EventTypeFSWrite, 200, "reader")
+		msgs, err := parser.ParseDataStdio(responseData, event.EventTypeFSRead, 100, "writer")
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		if len(msgs) != 0 {
+			t.Errorf("Expected 0 messages (string '1' != int 1), got %d", len(msgs))
+		}
+
+		// Send response with numeric ID 1 (should succeed)
+		responseData = []byte(`{"jsonrpc":"2.0","id":1,"result":{"tools":[]}}`)
+		_, _ = parser.ParseDataStdio(responseData, event.EventTypeFSWrite, 200, "reader")
+		msgs, err = parser.ParseDataStdio(responseData, event.EventTypeFSRead, 100, "writer")
+		if err != nil {
+			t.Fatalf("Failed to parse response: %v", err)
+		}
+		if len(msgs) != 1 {
+			t.Errorf("Expected 1 response message, got %d", len(msgs))
+		}
+	})
+}
+
+func TestIDToCacheKey(t *testing.T) {
+	parser := NewParser()
+
+	tests := []struct {
+		name     string
+		id       interface{}
+		expected string
+	}{
+		{
+			name:     "int64 ID",
+			id:       int64(123),
+			expected: "i:123",
+		},
+		{
+			name:     "int ID (treated as string)",
+			id:       int(456),
+			expected: "s:456",
+		},
+		{
+			name:     "string ID",
+			id:       "test-789",
+			expected: "s:test-789",
+		},
+		{
+			name:     "negative int64 ID",
+			id:       int64(-1),
+			expected: "i:-1",
+		},
+		{
+			name:     "empty string ID",
+			id:       "",
+			expected: "s:",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := parser.idToCacheKey(tt.id)
+			if result != tt.expected {
+				t.Errorf("Expected cache key '%s', got '%s'", tt.expected, result)
+			}
+		})
+	}
+}
+
+func TestValidateResponseID(t *testing.T) {
+	parser := NewParser()
+
+	// Cache some request IDs
+	parser.cacheRequestID(int64(1))
+	parser.cacheRequestID("test-123")
+	parser.cacheRequestID(int64(42))
+
+	tests := []struct {
+		name     string
+		id       interface{}
+		expected bool
+	}{
+		{
+			name:     "Valid int64 ID",
+			id:       int64(1),
+			expected: true,
+		},
+		{
+			name:     "Valid string ID",
+			id:       "test-123",
+			expected: true,
+		},
+		{
+			name:     "Valid int64 ID (42)",
+			id:       int64(42),
+			expected: true,
+		},
+		{
+			name:     "Invalid ID (not cached)",
+			id:       int64(999),
+			expected: false,
+		},
+		{
+			name:     "Invalid string ID (not cached)",
+			id:       "not-found",
+			expected: false,
+		},
+		{
+			name:     "Nil ID",
+			id:       nil,
+			expected: false,
+		},
+		{
+			name:     "String vs int mismatch",
+			id:       "1",
+			expected: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := parser.validateResponseID(tt.id)
+			if result != tt.expected {
+				t.Errorf("Expected validation result %v, got %v", tt.expected, result)
 			}
 		})
 	}

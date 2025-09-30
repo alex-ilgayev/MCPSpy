@@ -11,12 +11,15 @@ import (
 
 	"github.com/alex-ilgayev/mcpspy/pkg/event"
 	"github.com/hashicorp/golang-lru/v2/expirable"
+	"github.com/sirupsen/logrus"
 	"github.com/tidwall/gjson"
 )
 
 var (
-	writeCacheSize = 4096
-	writeCacheTTL  = 2 * time.Second
+	writeCacheSize     = 4096
+	writeCacheTTL      = 2 * time.Second
+	requestIDCacheSize = 4096
+	requestIDCacheTTL  = 5 * time.Second
 )
 
 // Protocol resources:
@@ -172,12 +175,18 @@ type Parser struct {
 	// Using an LRU which has expiration.
 	// Thread-safe.
 	writeCache *expirable.LRU[string, WriteEvent]
+
+	// Cache for correlating requests and responses by ID.
+	// Stores request IDs to validate that responses correspond to actual requests.
+	// Thread-safe.
+	requestIDCache *expirable.LRU[string, struct{}]
 }
 
 // NewParser creates a new MCP parser
 func NewParser() *Parser {
 	return &Parser{
-		writeCache: expirable.NewLRU[string, WriteEvent](writeCacheSize, nil, writeCacheTTL),
+		writeCache:     expirable.NewLRU[string, WriteEvent](writeCacheSize, nil, writeCacheTTL),
+		requestIDCache: expirable.NewLRU[string, struct{}](requestIDCacheSize, nil, requestIDCacheTTL),
 	}
 }
 
@@ -237,6 +246,18 @@ func (p *Parser) ParseDataStdio(data []byte, eventType event.EventType, pid uint
 				return nil, fmt.Errorf("invalid MCP message: %w", err)
 			}
 
+			// Handle request/response correlation
+			if !p.handleRequestResponseCorrelation(jsonRpcMsg) {
+				// Drop responses without matching request IDs
+				logrus.WithFields(logrus.Fields{
+					"pid":    pid,
+					"comm":   comm,
+					"method": jsonRpcMsg.Method,
+					"id":     jsonRpcMsg.ID,
+				}).Debug("Dropping response without matching request ID")
+				continue
+			}
+
 			// Create stdio transport info from correlated events
 			messages = append(messages, &Message{
 				Timestamp:     time.Now(),
@@ -281,6 +302,19 @@ func (p *Parser) ParseDataHttp(data []byte, eventType event.EventType, pid uint3
 
 		if ok, err := p.validateMCPMessage(jsonRpcMsg); !ok {
 			return nil, fmt.Errorf("invalid MCP message: %w", err)
+		}
+
+		// Handle request/response correlation
+		if !p.handleRequestResponseCorrelation(jsonRpcMsg) {
+			// Drop responses without matching request IDs
+			logrus.WithFields(logrus.Fields{
+				"pid":    pid,
+				"comm":   comm,
+				"host":   host,
+				"method": jsonRpcMsg.Method,
+				"id":     jsonRpcMsg.ID,
+			}).Debug("Dropping response without matching request ID")
+			continue
 		}
 
 		// Create http transport info from correlated events
@@ -410,6 +444,53 @@ func (p *Parser) cacheWriteEvent(data []byte, pid uint32, comm string) {
 		PID:  pid,
 		Comm: comm,
 	})
+}
+
+// idToCacheKey converts a request/response ID to a cache key string
+// According to parseID, ID can only be int64 or string
+func (p *Parser) idToCacheKey(id interface{}) string {
+	switch v := id.(type) {
+	case int64:
+		return fmt.Sprintf("i:%d", v)
+	default:
+		// String (or any other type treated as string)
+		return fmt.Sprintf("s:%v", v)
+	}
+}
+
+// cacheRequestID stores a request ID for future response correlation
+func (p *Parser) cacheRequestID(id interface{}) {
+	if id == nil {
+		return
+	}
+	key := p.idToCacheKey(id)
+	p.requestIDCache.Add(key, struct{}{})
+}
+
+// validateResponseID checks if a response ID has a corresponding cached request
+func (p *Parser) validateResponseID(id interface{}) bool {
+	if id == nil {
+		return false
+	}
+	key := p.idToCacheKey(id)
+	_, exists := p.requestIDCache.Get(key)
+	return exists
+}
+
+// handleRequestResponseCorrelation handles caching request IDs and validating response IDs.
+// Returns true if the message should be kept, false if it should be dropped.
+func (p *Parser) handleRequestResponseCorrelation(msg JSONRPCMessage) bool {
+	switch msg.Type {
+	case JSONRPCMessageTypeRequest:
+		// Cache request ID for future response validation
+		p.cacheRequestID(msg.ID)
+		return true
+	case JSONRPCMessageTypeResponse:
+		// Validate that this response corresponds to a known request
+		return p.validateResponseID(msg.ID)
+	}
+	// Notifications don't have IDs, always keep them
+	return true
 }
 
 // parseID parses the ID field which can be string or number
