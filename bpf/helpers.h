@@ -10,8 +10,8 @@
 // Check if filename matches our criteria for TLS uprobe hook.
 // Currently the options are:
 // - "node"
-// - "libssl.so*" (shared libraries)
-// - "libssl3.so*" (OpenSSL 3.x shared libraries)
+// - "libssl.so*" (OpenSSL shared libraries - covers both 1.x and 3.x)
+// Note: libssl3.so is NSS (Network Security Services), not OpenSSL, so we exclude it
 static __always_inline bool is_filename_relevant(const char *filename) {
     // Check if filename is "node"
     if (filename[0] == 'n' && filename[1] == 'o' && filename[2] == 'd' &&
@@ -19,19 +19,12 @@ static __always_inline bool is_filename_relevant(const char *filename) {
         return true;
     }
 
-    // Check if filename is "libssl.so*"
+    // Check if filename is "libssl.so*" (OpenSSL libraries)
+    // This matches libssl.so, libssl.so.1, libssl.so.3, etc.
     if (filename[0] == 'l' && filename[1] == 'i' && filename[2] == 'b' &&
         filename[3] == 's' && filename[4] == 's' && filename[5] == 'l' &&
         filename[6] == '.' && filename[7] == 's' && filename[8] == 'o' &&
         (filename[9] == '\0' || filename[9] == '.')) {
-        return true;
-    }
-
-    // Check if filename is "libssl3.so*"
-    if (filename[0] == 'l' && filename[1] == 'i' && filename[2] == 'b' &&
-        filename[3] == 's' && filename[4] == 's' && filename[5] == 'l' &&
-        filename[6] == '3' && filename[7] == '.' && filename[8] == 's' &&
-        filename[9] == 'o' && (filename[10] == '\0' || filename[10] == '.')) {
         return true;
     }
 
