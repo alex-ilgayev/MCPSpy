@@ -3,37 +3,12 @@
 
 #include "args.h"
 #include "helpers.h"
+#include "json.h"
 #include "tls.h"
 #include "types.h"
 #include "vmlinux.h"
 #include <bpf/bpf_core_read.h>
 #include <bpf/bpf_helpers.h>
-
-// Checking if the buffer starts with '{', while ignoring whitespace.
-static __always_inline bool is_mcp_data(const char *buf, __u32 size) {
-    if (size < 8) {
-        return false;
-    }
-
-    char check[8];
-    if (bpf_probe_read(check, sizeof(check), buf) != 0) {
-        return false;
-    }
-
-// Check the first 8 bytes for the first non-whitespace character being '{'
-#pragma unroll
-    for (int i = 0; i < 8; i++) {
-        char c = check[i];
-        if (c == ' ' || c == '\t' || c == '\n' || c == '\r') {
-            continue;
-        }
-        if (c == '{') {
-            return true;
-        }
-        break;
-    }
-    return false;
-}
 
 SEC("fexit/vfs_read")
 int BPF_PROG(exit_vfs_read, struct file *file, const char *buf, size_t count,
@@ -43,32 +18,81 @@ int BPF_PROG(exit_vfs_read, struct file *file, const char *buf, size_t count,
         return 0;
     }
 
-    if (!is_mcp_data(buf, ret)) {
+    // Create stream key
+    struct stream_key key = {
+        .pid = bpf_get_current_pid_tgid() >> 32,
+        .file_ptr = (__u64)file,
+    };
+
+    // Lookup existing aggregation state
+    struct json_aggregation_state *state =
+        bpf_map_lookup_elem(&json_streams, &key);
+
+    if (!state) {
+        // New stream - validate it starts with valid JSON
+        if (!is_json_data(buf, ret)) {
+            return 0;
+        }
+
+        // Use scratch space to avoid stack overflow (indexed by CPU ID)
+        // Array is pre-allocated and zero-initialized by kernel
+        __u32 cpu_id = bpf_get_smp_processor_id();
+        struct json_aggregation_state *new_state =
+            bpf_map_lookup_elem(&json_scratch, &cpu_id);
+        if (!new_state) {
+            bpf_printk("error: failed to get scratch space for cpu %d", cpu_id);
+            return 0;
+        }
+
+        // Initialize metadata
+        new_state->accumulated_size = 0;
+        new_state->open_brackets = 0;
+        new_state->close_brackets = 0;
+        new_state->found_opening = true;
+        new_state->operation = EVENT_READ;
+        new_state->last_update_ns = bpf_ktime_get_ns();
+
+        // Copy initial buffer
+        if (append_to_aggregation(new_state, buf, ret) != 0) {
+            bpf_printk("error: failed to append initial buffer to new state");
+            return 0;
+        }
+
+        // Count brackets in initial buffer
+        update_bracket_counts(new_state, buf, ret);
+
+        // Check if complete in single buffer
+        if (is_json_complete(new_state)) {
+            // Submit immediately
+            submit_json_event(&key, new_state);
+            return 0;
+        }
+
+        // Store state for continuation
+        bpf_map_update_elem(&json_streams, &key, new_state, BPF_ANY);
         return 0;
     }
 
-    if (ret > MAX_BUF_SIZE) {
-        // Currently the strategy is to drop incomplete fs events.
-        // These events would fail in the JSON parsing anyways.
-        bpf_printk("info: dropping read event with count %d > %d", ret, MAX_BUF_SIZE);
+    // Existing stream - append new buffer
+    if (append_to_aggregation(state, buf, ret) != 0) {
+        bpf_printk("warn: buffer overflow (>64KB), dropping stream pid=%d",
+                   key.pid);
+        bpf_map_delete_elem(&json_streams, &key);
         return 0;
     }
 
-    struct data_event *event =
-        bpf_ringbuf_reserve(&events, sizeof(struct data_event), 0);
-    if (!event) {
-        bpf_printk("error: failed to reserve ring buffer for read event");
-        return 0;
+    // Update bracket counts
+    update_bracket_counts(state, buf, ret);
+    state->last_update_ns = bpf_ktime_get_ns();
+
+    // Update the map with new state
+    bpf_map_update_elem(&json_streams, &key, state, BPF_EXIST);
+
+    // Check if complete
+    if (is_json_complete(state)) {
+        submit_json_event(&key, state);
+        bpf_map_delete_elem(&json_streams, &key);
     }
-
-    event->header.event_type = EVENT_READ;
-    event->header.pid = bpf_get_current_pid_tgid() >> 32;
-    bpf_get_current_comm(&event->header.comm, sizeof(event->header.comm));
-    event->size = ret;
-    event->buf_size = ret < MAX_BUF_SIZE ? ret : MAX_BUF_SIZE;
-    bpf_probe_read(event->buf, event->buf_size, buf);
-
-    bpf_ringbuf_submit(event, 0);
 
     return 0;
 }
@@ -81,32 +105,78 @@ int BPF_PROG(exit_vfs_write, struct file *file, const char *buf, size_t count,
         return 0;
     }
 
-    if (!is_mcp_data(buf, ret)) {
-        return 0;
-    }
-    
-    if (ret > MAX_BUF_SIZE) {
-        // Currently the strategy is to drop incomplete fs events.
-        // These events would fail in the JSON parsing anyways.
-        bpf_printk("info: dropping write event with count %d > %d", ret, MAX_BUF_SIZE);
-        return 0;
-    }
+    // // Create stream key
+    // struct stream_key key = {
+    //     .pid = bpf_get_current_pid_tgid() >> 32,
+    //     .file_ptr = (__u64)file,
+    // };
 
-    struct data_event *event =
-        bpf_ringbuf_reserve(&events, sizeof(struct data_event), 0);
-    if (!event) {
-        bpf_printk("error: failed to reserve ring buffer for write event");
-        return 0;
-    }
+    // // Lookup existing aggregation state
+    // struct json_aggregation_state *state = bpf_map_lookup_elem(&json_streams,
+    // &key);
 
-    event->header.event_type = EVENT_WRITE;
-    event->header.pid = bpf_get_current_pid_tgid() >> 32;
-    bpf_get_current_comm(&event->header.comm, sizeof(event->header.comm));
-    event->size = ret;
-    event->buf_size = ret < MAX_BUF_SIZE ? ret : MAX_BUF_SIZE;
-    bpf_probe_read(event->buf, event->buf_size, buf);
+    // if (!state) {
+    //     // New stream - validate it starts with valid JSON
+    //     if (!is_json_data(buf, ret)) {
+    //         return 0;
+    //     }
 
-    bpf_ringbuf_submit(event, 0);
+    //     // Use scratch space to avoid stack overflow (indexed by CPU ID)
+    //     // Array is pre-allocated and zero-initialized by kernel
+    //     __u32 cpu_id = bpf_get_smp_processor_id();
+    //     struct json_aggregation_state *new_state =
+    //     bpf_map_lookup_elem(&json_scratch, &cpu_id); if (!new_state) {
+    //         bpf_printk("error: failed to get scratch space for cpu %d",
+    //         cpu_id); return 0;
+    //     }
+
+    //     // Initialize metadata
+    //     new_state->accumulated_size = 0;
+    //     new_state->open_brackets = 0;
+    //     new_state->close_brackets = 0;
+    //     new_state->found_opening = true;
+    //     new_state->operation = EVENT_WRITE;
+    //     new_state->last_update_ns = bpf_ktime_get_ns();
+
+    //     // Copy initial buffer
+    //     if (append_to_aggregation(new_state, buf, ret) != 0) {
+    //         bpf_printk("error: failed to append initial buffer to new
+    //         state"); return 0;
+    //     }
+
+    //     // Count brackets in initial buffer
+    //     update_bracket_counts(new_state, buf, ret);
+
+    //     // Check if complete in single buffer
+    //     if (is_json_complete(new_state)) {
+    //         // Submit immediately
+    //         submit_json_event(&key, new_state);
+    //         return 0;
+    //     }
+
+    //     // Store state for continuation
+    //     bpf_map_update_elem(&json_streams, &key, new_state, BPF_ANY);
+    //     return 0;
+    // }
+
+    // // Existing stream - append new buffer
+    // if (append_to_aggregation(state, buf, ret) != 0) {
+    //     bpf_printk("warn: buffer overflow (>64KB), dropping stream pid=%d",
+    //     key.pid); bpf_map_delete_elem(&json_streams, &key); return 0;
+    // }
+
+    // // Update bracket counts
+    // update_bracket_counts(state, buf, ret);
+    // state->last_update_ns = bpf_ktime_get_ns();
+
+    // // Update the map with new state
+    // bpf_map_update_elem(&json_streams, &key, state, BPF_EXIST);
+
+    // // Check if complete
+    // if (is_json_complete(state)) {
+    //     submit_json_event(&key, state);
+    //     bpf_map_delete_elem(&json_streams, &key);
+    // }
 
     return 0;
 }
@@ -259,7 +329,8 @@ int BPF_URETPROBE(ssl_read_exit, int ret) {
     if (ret > MAX_BUF_SIZE) {
         // We still want to deliver these messages for HTTP session integrity.
         // But it means we'll may lose information.
-        bpf_printk("info: ssl_read_exit: buffer is too big: %d > %d", ret, MAX_BUF_SIZE);
+        bpf_printk("info: ssl_read_exit: buffer is too big: %d > %d", ret,
+                   MAX_BUF_SIZE);
     }
 
     // Checking the session if was set to specific http version.
@@ -329,7 +400,8 @@ int BPF_UPROBE(ssl_write_entry, void *ssl, const void *buf, int num) {
     if (num > MAX_BUF_SIZE) {
         // We still want to deliver these messages for HTTP session integrity.
         // But it means we'll may lose information.
-        bpf_printk("info: ssl_write_entry: buffer is too big: %d > %d", num, MAX_BUF_SIZE);
+        bpf_printk("info: ssl_write_entry: buffer is too big: %d > %d", num,
+                   MAX_BUF_SIZE);
     }
 
     // Checking the session if was set to specific http version.
@@ -430,7 +502,8 @@ int BPF_URETPROBE(ssl_read_ex_exit, int ret) {
     if (actual_read > MAX_BUF_SIZE) {
         // We still want to deliver these messages for HTTP session integrity.
         // But it means we'll may lose information.
-        bpf_printk("info: ssl_read_ex_exit: buffer is too big: %d > %d", actual_read, MAX_BUF_SIZE);
+        bpf_printk("info: ssl_read_ex_exit: buffer is too big: %d > %d",
+                   actual_read, MAX_BUF_SIZE);
     }
 
     // Checking the session if was set to specific http version.
@@ -498,7 +571,8 @@ int BPF_UPROBE(ssl_write_ex_entry, void *ssl, const void *buf, size_t num,
     if (num > MAX_BUF_SIZE) {
         // We still want to deliver these messages for HTTP session integrity.
         // But it means we'll may lose information.
-        bpf_printk("info: ssl_write_ex_entry: buffer is too big: %d > %d", num, MAX_BUF_SIZE);
+        bpf_printk("info: ssl_write_ex_entry: buffer is too big: %d > %d", num,
+                   MAX_BUF_SIZE);
     }
 
     // Checking the session if was set to specific http version.

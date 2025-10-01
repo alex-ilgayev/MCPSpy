@@ -44,7 +44,7 @@ The Model Context Protocol is becoming the standard for AI tool integration, but
 
 ### Prerequisites
 
-- Linux kernel version 5.15 or later
+- Linux kernel version 5.17 or later
 - Root privileges (required for eBPF)
 
 ### Download Pre-built Binary (Auto-detect OS + Arch)
@@ -303,7 +303,7 @@ The test suite includes:
 
 - **FS Events Buffer Size**: Limited to 16KB per message. This means MCP messages with **buffer size** greater than 16KB will be missed / ignored.
 - **FS Events Constructed of Multiple Messages**: MCPSpy currently does not support reconstructing MCP messages that are split across multiple `read` or `write` syscalls. This means that if an MCP message is larger than the buffer size used in a single syscall, it may be missed or ignored.
-- **Platform**: Linux only (kernel 5.15+).
+- **Platform**: Linux only (kernel 5.17+).
 
 ## Contributing
 

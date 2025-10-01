@@ -7,7 +7,8 @@
 #include "vmlinux.h"
 #include <bpf/bpf_tracing.h>
 
-#define MAX_BUF_SIZE 16 * 1024
+#define MAX_BUF_SIZE 64 * 1024
+#define MAX_AGGREGATED_SIZE MAX_BUF_SIZE
 #define TASK_COMM_LEN 16
 
 // limit.h indicates 4096 is the max path,
@@ -84,5 +85,44 @@ struct tls_free_event {
 
     __u64 ssl_ctx; // SSL context pointer (session identifier)
 };
+
+// Stream identification for JSON aggregation
+struct stream_key {
+    __u32 pid;
+    __u64 file_ptr; // File pointer for uniqueness
+};
+
+// JSON aggregation state (combines metadata + buffer)
+struct json_aggregation_state {
+    // Metadata
+    __u32 accumulated_size; // Current bytes in buffer
+    __u32 open_brackets;    // Running count of '{'
+    __u32 close_brackets;   // Running count of '}'
+    bool found_opening;     // Found initial '{'
+    __u8 operation;         // EVENT_READ or EVENT_WRITE
+    __u64 last_update_ns;   // Timestamp for cleanup
+
+    // Buffer data
+    __u8 data[MAX_AGGREGATED_SIZE];
+};
+
+// Map for tracking JSON streams across multiple vfs operations
+struct {
+    __uint(type, BPF_MAP_TYPE_LRU_HASH);
+    __uint(max_entries, 256); // 256 * 64KB = 16MB max
+    __type(key, struct stream_key);
+    __type(value, struct json_aggregation_state);
+} json_streams SEC(".maps");
+
+// Temporary scratch space for creating new aggregation states
+// (avoids stack overflow when initializing 64KB structures)
+// Using regular array indexed by CPU ID (eBPF programs can't be preempted, so
+// no race)
+struct {
+    __uint(type, BPF_MAP_TYPE_ARRAY);
+    __uint(max_entries, 128); // Support up to 128 CPUs
+    __type(key, __u32);       // CPU ID
+    __type(value, struct json_aggregation_state);
+} json_scratch SEC(".maps");
 
 #endif // __TYPES_H

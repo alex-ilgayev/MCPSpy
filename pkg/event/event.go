@@ -93,7 +93,7 @@ type FSDataEvent struct {
 
 	Size    uint32           // Actual data size
 	BufSize uint32           // Size of data in buf (may be truncated)
-	Buf     [16 * 1024]uint8 // Data buffer
+	Buf     [64 * 1024]uint8 // Data buffer (increased from 16KB to 64KB for aggregation)
 }
 
 func (e *FSDataEvent) Type() EventType { return e.EventType }
@@ -125,7 +125,7 @@ type TlsPayloadEvent struct {
 	Size        uint32           // Actual data size
 	BufSize     uint32           // Size of data in buf (may be truncated)
 	HttpVersion HttpVersion      // Identified HTTP version
-	Buf         [16 * 1024]uint8 // Data buffer
+	Buf         [64 * 1024]uint8 // Data buffer (increased from 16KB to 64KB for aggregation)
 }
 
 func (e *TlsPayloadEvent) Type() EventType { return e.EventType }
