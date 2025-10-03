@@ -1828,3 +1828,82 @@ func TestValidateResponseID(t *testing.T) {
 		})
 	}
 }
+
+// TestDuplicateDetection tests that duplicate messages (same hash) are dropped
+func TestDuplicateDetection(t *testing.T) {
+	parser := NewParser()
+
+	data := []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`)
+
+	// First occurrence: A(100) writes to B(200)
+	_, err := parser.ParseDataStdio(data, event.EventTypeFSWrite, 100, "proc-a")
+	if err != nil {
+		t.Fatalf("Failed to cache write event: %v", err)
+	}
+
+	msgs, err := parser.ParseDataStdio(data, event.EventTypeFSRead, 200, "proc-b")
+	if err != nil {
+		t.Fatalf("Failed to parse read event: %v", err)
+	}
+
+	if len(msgs) != 1 {
+		t.Fatalf("Expected 1 message from first occurrence, got %d", len(msgs))
+	}
+
+	// Second occurrence (same data): B(200) writes to C(300) - should be dropped as duplicate
+	_, err = parser.ParseDataStdio(data, event.EventTypeFSWrite, 200, "proc-b")
+	if err != nil {
+		t.Fatalf("Failed to cache second write event: %v", err)
+	}
+
+	msgs, err = parser.ParseDataStdio(data, event.EventTypeFSRead, 300, "proc-c")
+	if err != nil {
+		t.Fatalf("Failed to parse second read event: %v", err)
+	}
+
+	// Should return empty since it's a duplicate
+	if len(msgs) != 0 {
+		t.Fatalf("Expected 0 messages (duplicate), got %d", len(msgs))
+	}
+
+	// Third occurrence (same data): C(300) writes to D(400) - should also be dropped
+	_, err = parser.ParseDataStdio(data, event.EventTypeFSWrite, 300, "proc-c")
+	if err != nil {
+		t.Fatalf("Failed to cache third write event: %v", err)
+	}
+
+	msgs, err = parser.ParseDataStdio(data, event.EventTypeFSRead, 400, "proc-d")
+	if err != nil {
+		t.Fatalf("Failed to parse third read event: %v", err)
+	}
+
+	// Should return empty since it's a duplicate
+	if len(msgs) != 0 {
+		t.Fatalf("Expected 0 messages (duplicate), got %d", len(msgs))
+	}
+}
+
+// TestDuplicateDetection_DifferentData tests that different messages are not treated as duplicates
+func TestDuplicateDetection_DifferentData(t *testing.T) {
+	parser := NewParser()
+
+	data1 := []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`)
+	data2 := []byte(`{"jsonrpc":"2.0","id":2,"method":"resources/list"}`)
+
+	// First message: A(100) -> B(200)
+	_, _ = parser.ParseDataStdio(data1, event.EventTypeFSWrite, 100, "proc-a")
+	msgs, _ := parser.ParseDataStdio(data1, event.EventTypeFSRead, 200, "proc-b")
+
+	if len(msgs) != 1 {
+		t.Fatalf("Expected 1 message, got %d", len(msgs))
+	}
+
+	// Second message with different data: C(300) -> D(400)
+	_, _ = parser.ParseDataStdio(data2, event.EventTypeFSWrite, 300, "proc-c")
+	msgs, _ = parser.ParseDataStdio(data2, event.EventTypeFSRead, 400, "proc-d")
+
+	// Should NOT be treated as duplicate (different data)
+	if len(msgs) != 1 {
+		t.Fatalf("Expected 1 message (not duplicate), got %d", len(msgs))
+	}
+}
