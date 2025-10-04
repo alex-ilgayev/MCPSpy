@@ -23,6 +23,14 @@ func New(eventBus bus.EventBus) (*EventLogger, error) {
 		el.Close()
 		return nil, err
 	}
+	if err := el.eventBus.Subscribe(event.EventTypeFSAggregatedRead, el.logEvent); err != nil {
+		el.Close()
+		return nil, err
+	}
+	if err := el.eventBus.Subscribe(event.EventTypeFSAggregatedWrite, el.logEvent); err != nil {
+		el.Close()
+		return nil, err
+	}
 	if err := el.eventBus.Subscribe(event.EventTypeLibrary, el.logEvent); err != nil {
 		el.Close()
 		return nil, err
@@ -61,6 +69,25 @@ func New(eventBus bus.EventBus) (*EventLogger, error) {
 
 func (el *EventLogger) logEvent(e event.Event) {
 	switch evt := e.(type) {
+	case *event.FSDataEvent:
+		logrus.WithFields(logrus.Fields{
+			"type":     evt.Type(),
+			"pid":      evt.PID,
+			"comm":     evt.Comm(),
+			"size":     evt.Size,
+			"buf_size": evt.BufSize,
+			"file_ptr": evt.FilePtr,
+		}).Trace("Raw FS event")
+
+	case *event.FSAggregatedEvent:
+		logrus.WithFields(logrus.Fields{
+			"type":     evt.Type(),
+			"pid":      evt.PID,
+			"comm":     evt.Comm(),
+			"size":     len(evt.Payload),
+			"file_ptr": evt.FilePtr,
+		}).Trace("Aggregated FS event")
+
 	case *event.LibraryEvent:
 		logrus.WithFields(logrus.Fields{
 			"pid":     evt.PID,
@@ -124,6 +151,8 @@ func (el *EventLogger) logEvent(e event.Event) {
 func (el *EventLogger) Close() {
 	el.eventBus.Unsubscribe(event.EventTypeFSRead, el.logEvent)
 	el.eventBus.Unsubscribe(event.EventTypeFSWrite, el.logEvent)
+	el.eventBus.Unsubscribe(event.EventTypeFSAggregatedRead, el.logEvent)
+	el.eventBus.Unsubscribe(event.EventTypeFSAggregatedWrite, el.logEvent)
 	el.eventBus.Unsubscribe(event.EventTypeLibrary, el.logEvent)
 	el.eventBus.Unsubscribe(event.EventTypeTlsPayloadSend, el.logEvent)
 	el.eventBus.Unsubscribe(event.EventTypeTlsPayloadRecv, el.logEvent)

@@ -25,6 +25,10 @@ const (
 	EventTypeHttpSSE EventType = 102
 	// Detected a parsed MCP message
 	EventTypeMCPMessage EventType = 103
+	// Complete JSON message aggregated from raw FS read events
+	EventTypeFSAggregatedRead EventType = 104
+	// Complete JSON message aggregated from raw FS write events
+	EventTypeFSAggregatedWrite EventType = 105
 )
 
 type HttpVersion uint8
@@ -66,6 +70,10 @@ func (e EventType) String() string {
 		return "http_response"
 	case EventTypeHttpSSE:
 		return "http_sse"
+	case EventTypeFSAggregatedRead:
+		return "fs_aggregated_read"
+	case EventTypeFSAggregatedWrite:
+		return "fs_aggregated_write"
 	default:
 		return "unknown"
 	}
@@ -88,9 +96,8 @@ func (h *EventHeader) Comm() string {
 	return encoder.BytesToStr(h.CommBytes[:])
 }
 
-// FSDataEvent represents the r/w payload which
-// contains the mcp message.
-type FSDataEvent struct {
+// FSEventBase contains common fields for all filesystem events
+type FSEventBase struct {
 	EventHeader
 
 	Inode    uint32    // Inode number for correlation
@@ -98,6 +105,21 @@ type FSDataEvent struct {
 	FromComm [16]uint8 // Sender comm
 	ToPID    uint32    // Receiver (reader) PID
 	ToComm   [16]uint8 // Receiver comm
+	_        [4]uint8  // Explicit padding for 8-byte alignment of FilePtr
+	FilePtr  uint64    // File pointer (struct file*) for session tracking
+}
+
+func (e *FSEventBase) FromCommStr() string {
+	return encoder.BytesToStr(e.FromComm[:])
+}
+
+func (e *FSEventBase) ToCommStr() string {
+	return encoder.BytesToStr(e.ToComm[:])
+}
+
+// FSDataEvent represents raw r/w payload events from eBPF
+type FSDataEvent struct {
+	FSEventBase
 
 	Size    uint32           // Actual data size
 	BufSize uint32           // Size of data in buf (may be truncated)
@@ -105,14 +127,49 @@ type FSDataEvent struct {
 }
 
 func (e *FSDataEvent) Type() EventType { return e.EventType }
-func (e *FSDataEvent) FromCommStr() string {
-	return encoder.BytesToStr(e.FromComm[:])
-}
-func (e *FSDataEvent) ToCommStr() string {
-	return encoder.BytesToStr(e.ToComm[:])
-}
 func (e *FSDataEvent) Buffer() []byte {
 	return e.Buf[:e.BufSize]
+}
+
+// FSAggregatedEvent represents a complete JSON message aggregated from
+// multiple raw FS events in userspace
+type FSAggregatedEvent struct {
+	FSEventBase
+
+	Payload []byte // Complete JSON message
+}
+
+func (e *FSAggregatedEvent) Type() EventType { return e.EventType }
+
+// NewFSAggregatedEvent creates a new FSAggregatedEvent for usermode-aggregated JSON
+func NewFSAggregatedEvent(
+	eventType EventType,
+	pid uint32,
+	comm [16]uint8,
+	inode uint32,
+	fromPID uint32,
+	fromComm [16]uint8,
+	toPID uint32,
+	toComm [16]uint8,
+	filePtr uint64,
+	payload []byte,
+) *FSAggregatedEvent {
+	return &FSAggregatedEvent{
+		FSEventBase: FSEventBase{
+			EventHeader: EventHeader{
+				EventType: eventType,
+				PID:       pid,
+				CommBytes: comm,
+			},
+			Inode:    inode,
+			FromPID:  fromPID,
+			FromComm: fromComm,
+			ToPID:    toPID,
+			ToComm:   toComm,
+			FilePtr:  filePtr,
+		},
+		Payload: payload,
+	}
 }
 
 // LibraryEvent represents a new loaded library in memory.

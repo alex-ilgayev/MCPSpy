@@ -72,8 +72,8 @@ var allowedMCPMethods = map[string]string{
 
 // Parser handles parsing of MCP messages
 // Subscribes to the following events:
-// - EventTypeFSRead
-// - EventTypeFSWrite
+// - EventTypeFSAggregatedRead
+// - EventTypeFSAggregatedWrite
 // - EventTypeHttpRequest
 // - EventTypeHttpResponse
 // - EventTypeHttpSSE
@@ -103,10 +103,10 @@ func NewParser(eventBus bus.EventBus) (*Parser, error) {
 		eventBus:       eventBus,
 	}
 
-	if err := p.eventBus.Subscribe(event.EventTypeFSRead, p.ParseDataStdio); err != nil {
+	if err := p.eventBus.Subscribe(event.EventTypeFSAggregatedRead, p.ParseDataStdio); err != nil {
 		return nil, err
 	}
-	if err := p.eventBus.Subscribe(event.EventTypeFSWrite, p.ParseDataStdio); err != nil {
+	if err := p.eventBus.Subscribe(event.EventTypeFSAggregatedWrite, p.ParseDataStdio); err != nil {
 		p.Close()
 		return nil, err
 	}
@@ -126,24 +126,23 @@ func NewParser(eventBus bus.EventBus) (*Parser, error) {
 	return p, nil
 }
 
-// ParseDataStdio attempts to parse MCP messages from Stdio raw data.
+// ParseDataStdio attempts to parse MCP messages from aggregated Stdio data.
 // The parsing flow is split into several parts:
 // 1. Duplicate detection (drop duplicates, first one wins)
 // 2. JSON-RPC parsing
 // 3. MCP validation
 // 4. Request/response correlation (by JSON-RPC ID)
 //
-// Note: Write/read correlation is done in kernel-mode via inode tracking.
-// So the events passed here should have from/to PID/comm set correctly.
-// With that said, the event type (write/read) is not used in parsing.
+// Note: Write/read correlation is done in kernel-mode via inode tracking
+// and JSON aggregation is done in userspace by the FS session manager.
+// The events passed here are complete JSON messages ready for parsing.
 func (p *Parser) ParseDataStdio(e event.Event) {
-	// func (p *Parser) ParseDataStdio(data []byte, eventType event.EventType, fromPID uint32, fromComm string, toPID uint32, toComm string) ([]*event.MCPEvent, error) {
-	stdioEvent, ok := e.(*event.FSDataEvent)
+	stdioEvent, ok := e.(*event.FSAggregatedEvent)
 	if !ok {
 		return
 	}
 
-	buf := stdioEvent.Buffer()
+	buf := stdioEvent.Payload
 	if len(buf) == 0 {
 		return
 	}
@@ -450,8 +449,8 @@ func (p *Parser) isDuplicate(hash string) bool {
 }
 
 func (p *Parser) Close() {
-	p.eventBus.Unsubscribe(event.EventTypeFSRead, p.ParseDataStdio)
-	p.eventBus.Unsubscribe(event.EventTypeFSWrite, p.ParseDataStdio)
+	p.eventBus.Unsubscribe(event.EventTypeFSAggregatedRead, p.ParseDataStdio)
+	p.eventBus.Unsubscribe(event.EventTypeFSAggregatedWrite, p.ParseDataStdio)
 	p.eventBus.Unsubscribe(event.EventTypeHttpRequest, p.ParseDataHttp)
 	p.eventBus.Unsubscribe(event.EventTypeHttpResponse, p.ParseDataHttp)
 	p.eventBus.Unsubscribe(event.EventTypeHttpSSE, p.ParseDataHttp)

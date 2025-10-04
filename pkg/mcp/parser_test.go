@@ -9,22 +9,37 @@ import (
 	"github.com/alex-ilgayev/mcpspy/pkg/event"
 )
 
-// Helper function to create FSDataEvent for stdio tests
-func createFSDataEvent(data []byte, eventType event.EventType, fromPID uint32, fromComm string, toPID uint32, toComm string) *event.FSDataEvent {
-	e := &event.FSDataEvent{
-		EventHeader: event.EventHeader{
-			EventType: eventType,
-			PID:       fromPID,
-		},
-		FromPID: fromPID,
-		ToPID:   toPID,
-		BufSize: uint32(len(data)),
+// Helper function to create FSAggregatedEvent for stdio tests
+// The parser now expects aggregated events, not raw FS events
+func createFSAggregatedEvent(data []byte, eventType event.EventType, fromPID uint32, fromComm string, toPID uint32, toComm string) *event.FSAggregatedEvent {
+	var comm [16]uint8
+	var fromCommBytes [16]uint8
+	var toCommBytes [16]uint8
+
+	copy(comm[:], []byte(fromComm))
+	copy(fromCommBytes[:], []byte(fromComm))
+	copy(toCommBytes[:], []byte(toComm))
+
+	// Map raw event types to aggregated event types
+	aggregatedType := eventType
+	if eventType == event.EventTypeFSRead {
+		aggregatedType = event.EventTypeFSAggregatedRead
+	} else if eventType == event.EventTypeFSWrite {
+		aggregatedType = event.EventTypeFSAggregatedWrite
 	}
-	copy(e.CommBytes[:], []byte(fromComm))
-	copy(e.FromComm[:], []byte(fromComm))
-	copy(e.ToComm[:], []byte(toComm))
-	copy(e.Buf[:], data)
-	return e
+
+	return event.NewFSAggregatedEvent(
+		aggregatedType,
+		fromPID,
+		comm,
+		0, // inode (not needed for tests)
+		fromPID,
+		fromCommBytes,
+		toPID,
+		toCommBytes,
+		0, // filePtr (not needed for tests)
+		data,
+	)
 }
 
 // Helper function to create HttpRequestEvent for HTTP tests
@@ -147,7 +162,7 @@ func TestParseJSONRPC_ValidMessages(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			// Create FS event with complete kernel correlation
-			fsEvent := createFSDataEvent(tt.data, event.EventTypeFSRead, 100, "writer", 200, "reader")
+			fsEvent := createFSAggregatedEvent(tt.data, event.EventTypeFSRead, 100, "writer", 200, "reader")
 
 			// Process the event (publishes to bus)
 			parser.ParseDataStdio(fsEvent)
@@ -644,7 +659,7 @@ func TestParseJSONRPC_AllSupportedMethods(t *testing.T) {
 			data := []byte(tc.data)
 
 			// Create FS event with complete kernel correlation
-			fsEvent := createFSDataEvent(data, event.EventTypeFSRead, 100, "writer", 200, "reader")
+			fsEvent := createFSAggregatedEvent(data, event.EventTypeFSRead, 100, "writer", 200, "reader")
 
 			// Process the event (publishes to bus)
 			parser.ParseDataStdio(fsEvent)
@@ -776,7 +791,7 @@ func TestParseJSONRPC_InvalidMessages(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			// Create FS event with complete kernel correlation
-			fsEvent := createFSDataEvent(tt.data, event.EventTypeFSRead, 100, "writer", 200, "reader")
+			fsEvent := createFSAggregatedEvent(tt.data, event.EventTypeFSRead, 100, "writer", 200, "reader")
 
 			// Process the event (should not publish due to error)
 			parser.ParseDataStdio(fsEvent)
@@ -806,7 +821,7 @@ func TestParseData_KernelCorrelation(t *testing.T) {
 	// Test normal flow with complete kernel correlation
 	t.Run("Complete kernel correlation", func(t *testing.T) {
 		// Kernel provides complete correlation
-		fsEvent := createFSDataEvent(data, event.EventTypeFSRead, 100, "writer", 200, "reader")
+		fsEvent := createFSAggregatedEvent(data, event.EventTypeFSRead, 100, "writer", 200, "reader")
 		parser.ParseDataStdio(fsEvent)
 
 		select {
@@ -849,7 +864,7 @@ func TestParseData_KernelCorrelation(t *testing.T) {
 		data2 := []byte(`{"jsonrpc":"2.0","id":2,"method":"tools/list"}`)
 
 		// Kernel couldn't find writer (fromPID=0), but parser still processes it
-		fsEvent := createFSDataEvent(data2, event.EventTypeFSRead, 0, "", 200, "reader")
+		fsEvent := createFSAggregatedEvent(data2, event.EventTypeFSRead, 0, "", 200, "reader")
 		newParser.ParseDataStdio(fsEvent)
 
 		select {
@@ -880,7 +895,7 @@ func TestParseData_KernelCorrelation(t *testing.T) {
 		data2 := []byte(`{"jsonrpc":"2.0","id":3,"method":"tools/list"}`)
 
 		// Kernel couldn't find reader (toPID=0), but parser still processes it
-		fsEvent := createFSDataEvent(data2, event.EventTypeFSRead, 100, "writer", 0, "")
+		fsEvent := createFSAggregatedEvent(data2, event.EventTypeFSRead, 100, "writer", 0, "")
 		newParser.ParseDataStdio(fsEvent)
 
 		select {
@@ -914,7 +929,7 @@ func TestParseData_MultipleMessages(t *testing.T) {
 {"jsonrpc":"2.0","method":"notifications/progress","params":{"value":50}}`)
 
 	// Parse with complete kernel correlation
-	fsEvent := createFSDataEvent(multipleData, event.EventTypeFSRead, 100, "writer", 200, "reader")
+	fsEvent := createFSAggregatedEvent(multipleData, event.EventTypeFSRead, 100, "writer", 200, "reader")
 	parser.ParseDataStdio(fsEvent)
 
 	// Verify message types
@@ -1777,7 +1792,7 @@ func TestRequestIDCaching_Stdio(t *testing.T) {
 	t.Run("Request and response with matching ID", func(t *testing.T) {
 		// Send a request: writer(100) -> reader(200)
 		requestData := []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"test"}}`)
-		fsEvent := createFSDataEvent(requestData, event.EventTypeFSRead, 100, "writer", 200, "reader")
+		fsEvent := createFSAggregatedEvent(requestData, event.EventTypeFSRead, 100, "writer", 200, "reader")
 		parser.ParseDataStdio(fsEvent)
 
 		// Read request from bus
@@ -1792,7 +1807,7 @@ func TestRequestIDCaching_Stdio(t *testing.T) {
 
 		// Send a response: reader(200) -> writer(100)
 		responseData := []byte(`{"jsonrpc":"2.0","id":1,"result":{"status":"ok"}}`)
-		fsEvent = createFSDataEvent(responseData, event.EventTypeFSRead, 200, "reader", 100, "writer")
+		fsEvent = createFSAggregatedEvent(responseData, event.EventTypeFSRead, 200, "reader", 100, "writer")
 		parser.ParseDataStdio(fsEvent)
 
 		// Read response from bus
@@ -1817,7 +1832,7 @@ func TestRequestIDCaching_Stdio(t *testing.T) {
 		defer newMockBus.Close()
 
 		responseData := []byte(`{"jsonrpc":"2.0","id":999,"result":{"status":"ok"}}`)
-		fsEvent := createFSDataEvent(responseData, event.EventTypeFSRead, 200, "reader", 100, "writer")
+		fsEvent := createFSAggregatedEvent(responseData, event.EventTypeFSRead, 200, "reader", 100, "writer")
 		newParser.ParseDataStdio(fsEvent)
 
 		// Should NOT publish event due to correlation error
@@ -1840,7 +1855,7 @@ func TestRequestIDCaching_Stdio(t *testing.T) {
 		defer newMockBus.Close()
 
 		requestData := []byte(`{"jsonrpc":"2.0","id":"test-123","method":"initialize","params":{}}`)
-		fsEvent := createFSDataEvent(requestData, event.EventTypeFSRead, 100, "writer", 200, "reader")
+		fsEvent := createFSAggregatedEvent(requestData, event.EventTypeFSRead, 100, "writer", 200, "reader")
 		newParser.ParseDataStdio(fsEvent)
 
 		// Read request from bus
@@ -1854,7 +1869,7 @@ func TestRequestIDCaching_Stdio(t *testing.T) {
 		}
 
 		responseData := []byte(`{"jsonrpc":"2.0","id":"test-123","result":{"status":"ok"}}`)
-		fsEvent = createFSDataEvent(responseData, event.EventTypeFSRead, 200, "reader", 100, "writer")
+		fsEvent = createFSAggregatedEvent(responseData, event.EventTypeFSRead, 200, "reader", 100, "writer")
 		newParser.ParseDataStdio(fsEvent)
 
 		// Read response from bus
@@ -1879,7 +1894,7 @@ func TestRequestIDCaching_Stdio(t *testing.T) {
 		defer newMockBus.Close()
 
 		notificationData := []byte(`{"jsonrpc":"2.0","method":"notifications/progress","params":{"value":50}}`)
-		fsEvent := createFSDataEvent(notificationData, event.EventTypeFSRead, 100, "writer", 200, "reader")
+		fsEvent := createFSAggregatedEvent(notificationData, event.EventTypeFSRead, 100, "writer", 200, "reader")
 		newParser.ParseDataStdio(fsEvent)
 
 		// Read notification from bus
@@ -1906,7 +1921,7 @@ func TestRequestIDCaching_Stdio(t *testing.T) {
 		// Send requests with IDs 1, 2, 3
 		for i := 1; i <= 3; i++ {
 			requestData := []byte(fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"tools/list"}`, i))
-			fsEvent := createFSDataEvent(requestData, event.EventTypeFSRead, 100, "writer", 200, "reader")
+			fsEvent := createFSAggregatedEvent(requestData, event.EventTypeFSRead, 100, "writer", 200, "reader")
 			newParser.ParseDataStdio(fsEvent)
 
 			// Read request from bus
@@ -1922,7 +1937,7 @@ func TestRequestIDCaching_Stdio(t *testing.T) {
 
 		// Send response with ID 2 (should succeed)
 		responseData := []byte(`{"jsonrpc":"2.0","id":2,"result":{"tools":[]}}`)
-		fsEvent := createFSDataEvent(responseData, event.EventTypeFSRead, 200, "reader", 100, "writer")
+		fsEvent := createFSAggregatedEvent(responseData, event.EventTypeFSRead, 200, "reader", 100, "writer")
 		newParser.ParseDataStdio(fsEvent)
 
 		// Read response from bus
@@ -1937,7 +1952,7 @@ func TestRequestIDCaching_Stdio(t *testing.T) {
 
 		// Send response with ID 999 (should NOT publish due to correlation error)
 		responseData = []byte(`{"jsonrpc":"2.0","id":999,"result":{"tools":[]}}`)
-		fsEvent = createFSDataEvent(responseData, event.EventTypeFSRead, 200, "reader", 100, "writer")
+		fsEvent = createFSAggregatedEvent(responseData, event.EventTypeFSRead, 200, "reader", 100, "writer")
 		newParser.ParseDataStdio(fsEvent)
 
 		// Should NOT publish event
@@ -2149,7 +2164,7 @@ func TestRequestIDCaching_MixedIDTypes(t *testing.T) {
 	t.Run("String and int IDs don't collide", func(t *testing.T) {
 		// Send request with numeric ID 1
 		requestData := []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`)
-		fsEvent := createFSDataEvent(requestData, event.EventTypeFSRead, 100, "writer", 200, "reader")
+		fsEvent := createFSAggregatedEvent(requestData, event.EventTypeFSRead, 100, "writer", 200, "reader")
 		parser.ParseDataStdio(fsEvent)
 
 		// Read request from bus
@@ -2164,7 +2179,7 @@ func TestRequestIDCaching_MixedIDTypes(t *testing.T) {
 
 		// Try response with string ID "1" (should NOT publish - different type)
 		responseData := []byte(`{"jsonrpc":"2.0","id":"1","result":{"tools":[]}}`)
-		fsEvent = createFSDataEvent(responseData, event.EventTypeFSRead, 200, "reader", 100, "writer")
+		fsEvent = createFSAggregatedEvent(responseData, event.EventTypeFSRead, 200, "reader", 100, "writer")
 		parser.ParseDataStdio(fsEvent)
 
 		// Should NOT publish event due to correlation error
@@ -2177,7 +2192,7 @@ func TestRequestIDCaching_MixedIDTypes(t *testing.T) {
 
 		// Send response with numeric ID 1 (should succeed)
 		responseData = []byte(`{"jsonrpc":"2.0","id":1,"result":{"tools":[]}}`)
-		fsEvent = createFSDataEvent(responseData, event.EventTypeFSRead, 200, "reader", 100, "writer")
+		fsEvent = createFSAggregatedEvent(responseData, event.EventTypeFSRead, 200, "reader", 100, "writer")
 		parser.ParseDataStdio(fsEvent)
 
 		// Read response from bus
@@ -2316,7 +2331,7 @@ func TestDuplicateDetection(t *testing.T) {
 	data := []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`)
 
 	// First occurrence: A(100) -> B(200)
-	fsEvent := createFSDataEvent(data, event.EventTypeFSRead, 100, "proc-a", 200, "proc-b")
+	fsEvent := createFSAggregatedEvent(data, event.EventTypeFSRead, 100, "proc-a", 200, "proc-b")
 	parser.ParseDataStdio(fsEvent)
 
 	// Read first message from bus
@@ -2330,7 +2345,7 @@ func TestDuplicateDetection(t *testing.T) {
 	}
 
 	// Second occurrence (same data): B(200) -> C(300) - should be dropped as duplicate
-	fsEvent = createFSDataEvent(data, event.EventTypeFSRead, 200, "proc-b", 300, "proc-c")
+	fsEvent = createFSAggregatedEvent(data, event.EventTypeFSRead, 200, "proc-b", 300, "proc-c")
 	parser.ParseDataStdio(fsEvent)
 
 	// Should NOT publish event (duplicate)
@@ -2342,7 +2357,7 @@ func TestDuplicateDetection(t *testing.T) {
 	}
 
 	// Third occurrence (same data): C(300) -> D(400) - should also be dropped
-	fsEvent = createFSDataEvent(data, event.EventTypeFSRead, 300, "proc-c", 400, "proc-d")
+	fsEvent = createFSAggregatedEvent(data, event.EventTypeFSRead, 300, "proc-c", 400, "proc-d")
 	parser.ParseDataStdio(fsEvent)
 
 	// Should NOT publish event (duplicate)
@@ -2368,7 +2383,7 @@ func TestDuplicateDetection_DifferentData(t *testing.T) {
 	data2 := []byte(`{"jsonrpc":"2.0","id":2,"method":"resources/list"}`)
 
 	// First message: A(100) -> B(200)
-	fsEvent := createFSDataEvent(data1, event.EventTypeFSRead, 100, "proc-a", 200, "proc-b")
+	fsEvent := createFSAggregatedEvent(data1, event.EventTypeFSRead, 100, "proc-a", 200, "proc-b")
 	parser.ParseDataStdio(fsEvent)
 
 	// Read first message from bus
@@ -2382,7 +2397,7 @@ func TestDuplicateDetection_DifferentData(t *testing.T) {
 	}
 
 	// Second message with different data: C(300) -> D(400)
-	fsEvent = createFSDataEvent(data2, event.EventTypeFSRead, 300, "proc-c", 400, "proc-d")
+	fsEvent = createFSAggregatedEvent(data2, event.EventTypeFSRead, 300, "proc-c", 400, "proc-d")
 	parser.ParseDataStdio(fsEvent)
 
 	// Should NOT be treated as duplicate (different data)

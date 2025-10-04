@@ -86,7 +86,8 @@ struct data_event {
     __u8 from_comm[TASK_COMM_LEN]; // Sender comm
     __u32 to_pid;                  // Receiver (reader) PID
     __u8 to_comm[TASK_COMM_LEN];   // Receiver comm
-
+    __u8 _pad[4];                  // Explicit padding for 8-byte alignment of file_ptr
+    __u64 file_ptr; // File pointer (struct file*) for session tracking
     __u32 size;     // Actual data size
     __u32 buf_size; // Size of data in buf (may be truncated)
     __u8 buf[MAX_BUF_SIZE];

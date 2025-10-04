@@ -12,6 +12,8 @@ import (
 
 	"github.com/alex-ilgayev/mcpspy/pkg/bus"
 	"github.com/alex-ilgayev/mcpspy/pkg/ebpf"
+	"github.com/alex-ilgayev/mcpspy/pkg/eventlogger"
+	"github.com/alex-ilgayev/mcpspy/pkg/fs"
 	"github.com/alex-ilgayev/mcpspy/pkg/http"
 	"github.com/alex-ilgayev/mcpspy/pkg/mcp"
 	"github.com/alex-ilgayev/mcpspy/pkg/namespace"
@@ -126,6 +128,13 @@ func run(cmd *cobra.Command, args []string) error {
 		}()
 	}
 
+	// Set up event logger (for debugging purposes)
+	eventLogger, err := eventlogger.New(eventBus)
+	if err != nil {
+		return fmt.Errorf("failed to create event logger: %w", err)
+	}
+	defer eventLogger.Close()
+
 	// Create and load eBPF program
 	loader, err := ebpf.New(uint32(os.Getpid()), eventBus)
 	if err != nil {
@@ -148,9 +157,17 @@ func run(cmd *cobra.Command, args []string) error {
 	}
 	defer httpManager.Close()
 
+	// Manage filesystem (stdio) sessions for JSON aggregation
+	fsManager, err := fs.NewSessionManager(eventBus)
+	if err != nil {
+		return fmt.Errorf("failed to create FS session manager: %w", err)
+	}
+	defer fsManager.Close()
+
 	if !tui {
 		consoleDisplay.PrintInfo("Loading eBPF programs...")
 	}
+
 	if err := loader.Load(); err != nil {
 		return fmt.Errorf("failed to load eBPF programs: %w", err)
 	}
