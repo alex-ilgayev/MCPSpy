@@ -91,12 +91,26 @@ func (h *EventHeader) Comm() string {
 type FSDataEvent struct {
 	EventHeader
 
+	Inode    uint32    // Inode number for correlation
+	FromPID  uint32    // Sender (writer) PID
+	FromComm [16]uint8 // Sender comm
+	ToPID    uint32    // Receiver (reader) PID
+	ToComm   [16]uint8 // Receiver comm
+
 	Size    uint32           // Actual data size
 	BufSize uint32           // Size of data in buf (may be truncated)
 	Buf     [16 * 1024]uint8 // Data buffer
 }
 
 func (e *FSDataEvent) Type() EventType { return e.EventType }
+
+func (e *FSDataEvent) FromCommStr() string {
+	return encoder.BytesToStr(e.FromComm[:])
+}
+
+func (e *FSDataEvent) ToCommStr() string {
+	return encoder.BytesToStr(e.ToComm[:])
+}
 
 // LibraryEvent represents a new loaded library in memory.
 // used for uprobe hooking for tls inspection

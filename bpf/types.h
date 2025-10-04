@@ -18,6 +18,7 @@
 // File mode constants
 #define S_IFMT 00170000 // File type mask
 #define S_IFDIR 0040000 // Directory
+#define S_IFIFO 0010000 // Pipe (FIFO)
 
 // Taken from mm.h
 #define VM_EXEC 0x00000004
@@ -45,6 +46,21 @@ struct {
     __uint(max_entries, 4 * 1024 * 1024); // 4MB buffer
 } events SEC(".maps");
 
+// Inode to process correlation tracking
+struct inode_process_info {
+    __u32 reader_pid;
+    __u8 reader_comm[TASK_COMM_LEN];
+    __u32 writer_pid;
+    __u8 writer_comm[TASK_COMM_LEN];
+};
+
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(max_entries, 1024);
+    __type(key, __u32); // inode number
+    __type(value, struct inode_process_info);
+} inode_process_map SEC(".maps");
+
 // Common header for all events
 // Parsed first to get the event type.
 struct event_header {
@@ -55,6 +71,12 @@ struct event_header {
 
 struct data_event {
     struct event_header header;
+
+    __u32 inode;                   // Inode number for correlation
+    __u32 from_pid;                // Sender (writer) PID
+    __u8 from_comm[TASK_COMM_LEN]; // Sender comm
+    __u32 to_pid;                  // Receiver (reader) PID
+    __u8 to_comm[TASK_COMM_LEN];   // Receiver comm
 
     __u32 size;     // Actual data size
     __u32 buf_size; // Size of data in buf (may be truncated)

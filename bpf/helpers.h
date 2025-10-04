@@ -11,7 +11,8 @@
 // Currently the options are:
 // - "node"
 // - "libssl.so*" (OpenSSL shared libraries - covers both 1.x and 3.x)
-// Note: libssl3.so is NSS (Network Security Services), not OpenSSL, so we exclude it
+// Note: libssl3.so is NSS (Network Security Services), not OpenSSL, so we
+// exclude it
 static __always_inline bool is_filename_relevant(const char *filename) {
     // Check if filename is "node"
     if (filename[0] == 'n' && filename[1] == 'o' && filename[2] == 'd' &&
@@ -75,6 +76,17 @@ static __always_inline bool is_directory(struct dentry *dentry) {
     }
 
     return (inode->i_mode & S_IFMT) == S_IFDIR;
+}
+
+// Check if file's inode is a pipe (FIFO).
+// This is used to filter stdio-based MCP communication which uses pipes.
+static __always_inline bool is_pipe(struct file *file) {
+    if (!file) {
+        return false;
+    }
+
+    __u16 i_mode = BPF_CORE_READ(file, f_inode, i_mode);
+    return (i_mode & S_IFMT) == S_IFIFO;
 }
 
 // Get the mount namespace ID of the current task

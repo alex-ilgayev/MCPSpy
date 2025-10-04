@@ -71,7 +71,7 @@ func (l *Loader) Load() error {
 		AttachType: ebpf.AttachTraceFExit,
 	})
 	if err != nil {
-		return fmt.Errorf("failed to attach %s tracepoint: %w", l.objs.ExitVfsRead.String(), err)
+		return fmt.Errorf("failed to attach %s fexit: %w", l.objs.ExitVfsRead.String(), err)
 	}
 	l.links = append(l.links, readEnterLink)
 
@@ -81,7 +81,7 @@ func (l *Loader) Load() error {
 		AttachType: ebpf.AttachTraceFExit,
 	})
 	if err != nil {
-		return fmt.Errorf("failed to attach %s tracepoint: %w", l.objs.ExitVfsWrite.String(), err)
+		return fmt.Errorf("failed to attach %s fexit: %w", l.objs.ExitVfsWrite.String(), err)
 	}
 	l.links = append(l.links, readExitLink)
 
@@ -91,9 +91,19 @@ func (l *Loader) Load() error {
 		AttachType: ebpf.AttachTraceFEntry,
 	})
 	if err != nil {
-		return fmt.Errorf("failed to attach %s tracepoint: %w", l.objs.TraceSecurityFileOpen.String(), err)
+		return fmt.Errorf("failed to attach %s fentry: %w", l.objs.TraceSecurityFileOpen.String(), err)
 	}
 	l.links = append(l.links, securityFileOpenLink)
+
+	// Attaching trace_destroy_inode with Fentry for inode cleanup
+	destroyInodeLink, err := link.AttachTracing(link.TracingOptions{
+		Program:    l.objs.TraceDestroyInode,
+		AttachType: ebpf.AttachTraceFEntry,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to attach %s fentry: %w", l.objs.TraceDestroyInode.String(), err)
+	}
+	l.links = append(l.links, destroyInodeLink)
 
 	// Open the ring buffer reader
 	reader, err := ringbuf.NewReader(l.objs.Events)

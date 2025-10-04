@@ -16,8 +16,6 @@ import (
 )
 
 var (
-	writeCacheSize     = 4096
-	writeCacheTTL      = 2 * time.Second
 	requestIDCacheSize = 4096
 	requestIDCacheTTL  = 5 * time.Second
 	seenHashCacheSize  = 4096
@@ -163,21 +161,8 @@ func (msg *Message) ExtractResourceURI() string {
 	return ""
 }
 
-// WriteEvent represents a cached write event
-// We do not store the buffer, because it should be the same as the subsequent read event.
-// The hash function is constant and hardcoded.
-type WriteEvent struct {
-	PID  uint32
-	Comm string
-}
-
 // Parser handles parsing of MCP messages
 type Parser struct {
-	// Cache for correlating write and read events.
-	// Using an LRU which has expiration.
-	// Thread-safe.
-	writeCache *expirable.LRU[string, WriteEvent]
-
 	// Cache for correlating requests and responses by ID.
 	// Stores request IDs to validate that responses correspond to actual requests.
 	// Thread-safe.
@@ -193,7 +178,6 @@ type Parser struct {
 // NewParser creates a new MCP parser
 func NewParser() *Parser {
 	return &Parser{
-		writeCache:     expirable.NewLRU[string, WriteEvent](writeCacheSize, nil, writeCacheTTL),
 		requestIDCache: expirable.NewLRU[string, struct{}](requestIDCacheSize, nil, requestIDCacheTTL),
 		seenHashCache:  expirable.NewLRU[string, struct{}](seenHashCacheSize, nil, seenHashCacheTTL),
 	}
@@ -201,12 +185,15 @@ func NewParser() *Parser {
 
 // ParseDataStdio attempts to parse MCP messages from Stdio raw data.
 // The parsing flow is split into several parts:
-// 1. Write/read correlation (by hash)
-// 2. Duplicate detection (drop duplicates, first one wins)
-// 3. JSON-RPC parsing
-// 4. MCP validation
-// 5. Request/response correlation (by JSON-RPC ID)
-func (p *Parser) ParseDataStdio(data []byte, eventType event.EventType, pid uint32, comm string) ([]*Message, error) {
+// 1. Duplicate detection (drop duplicates, first one wins)
+// 2. JSON-RPC parsing
+// 3. MCP validation
+// 4. Request/response correlation (by JSON-RPC ID)
+//
+// Note: Write/read correlation is done in kernel-mode via inode tracking.
+// So the events passed here should have from/to PID/comm set correctly.
+// With that said, the event type (write/read) is not used in parsing.
+func (p *Parser) ParseDataStdio(data []byte, eventType event.EventType, fromPID uint32, fromComm string, toPID uint32, toComm string) ([]*Message, error) {
 	if eventType != event.EventTypeFSWrite && eventType != event.EventTypeFSRead {
 		return []*Message{}, fmt.Errorf("unknown event type in stdio parsing: %d", eventType)
 	}
@@ -228,38 +215,39 @@ func (p *Parser) ParseDataStdio(data []byte, eventType event.EventType, pid uint
 			continue
 		}
 
-		// Part 1: Write/read correlation
-		if eventType == event.EventTypeFSWrite {
-			p.cacheWriteEvent(jsonData, pid, comm)
-			continue
-		}
-
-		// Read event - correlate with write
-		writeEvent, hash, err := p.correlateReadWithWrite(jsonData)
-		if err != nil {
-			return []*Message{}, err
-		}
-
-		// Part 2: Duplicate detection
+		// Part 1: Duplicate detection
+		hash := p.calculateHash(jsonData)
 		if p.isDuplicate(hash) {
 			continue // Skip duplicates, first one wins
 		}
 
-		// Part 3 & 4: Parse JSON-RPC and validate MCP
-		msg, err := p.parseAndValidateMessage(jsonData, writeEvent, pid, comm)
+		// Part 2 & 3: Parse JSON-RPC and validate MCP
+		jsonRpcMsg, err := p.parseJSONRPC(jsonData)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("failed to parse JSON-RPC: %w", err)
 		}
 
-		// Handle request/response correlation
-		if !p.handleRequestResponseCorrelation(msg.JSONRPCMessage) {
-			logrus.WithFields(logrus.Fields{
-				"pid":    pid,
-				"comm":   comm,
-				"method": msg.Method,
-				"id":     msg.ID,
-			}).Debug("Dropping response without matching request ID")
-			continue
+		if ok, err := p.validateMCPMessage(jsonRpcMsg); !ok {
+			return nil, fmt.Errorf("invalid MCP message: %w", err)
+		}
+
+		// Part 4: Handle request/response correlation
+		if !p.handleRequestResponseCorrelation(jsonRpcMsg) {
+			return nil, fmt.Errorf("failed to correlate json-rpc request/response")
+		}
+
+		// Create message with kernel-provided correlation
+		msg := &Message{
+			Timestamp:     time.Now(),
+			Raw:           string(jsonData),
+			TransportType: TransportTypeStdio,
+			StdioTransport: &StdioTransport{
+				FromPID:  fromPID,
+				FromComm: fromComm,
+				ToPID:    toPID,
+				ToComm:   toComm,
+			},
+			JSONRPCMessage: jsonRpcMsg,
 		}
 
 		messages = append(messages, msg)
@@ -421,20 +409,10 @@ func (p *Parser) validateMCPMessage(msg JSONRPCMessage) (bool, error) {
 	return false, fmt.Errorf("unknown JSON-RPC message type: %s", msg.Type)
 }
 
-// calculateHash creates a hash of the buffer content for matching
+// calculateHash creates a hash of the buffer content for duplicate detection
 func (p *Parser) calculateHash(buf []byte) string {
 	hash := sha1.Sum(buf)
 	return fmt.Sprintf("%x", hash)
-}
-
-// cacheWriteEvent calcaulates the hash and
-// caches a write event for further correlation with read event.
-func (p *Parser) cacheWriteEvent(data []byte, pid uint32, comm string) {
-	hashStr := p.calculateHash(data)
-	p.writeCache.Add(hashStr, WriteEvent{
-		PID:  pid,
-		Comm: comm,
-	})
 }
 
 // idToCacheKey converts a request/response ID to a cache key string
@@ -484,17 +462,6 @@ func (p *Parser) handleRequestResponseCorrelation(msg JSONRPCMessage) bool {
 	return true
 }
 
-// correlateReadWithWrite finds the matching write event for a read event.
-// Returns the write event, hash, and error.
-func (p *Parser) correlateReadWithWrite(jsonData []byte) (WriteEvent, string, error) {
-	hash := p.calculateHash(jsonData)
-	writeEvent, ok := p.writeCache.Get(hash)
-	if !ok {
-		return WriteEvent{}, "", fmt.Errorf("no write event found for the parsed read event")
-	}
-	return writeEvent, hash, nil
-}
-
 // isDuplicate checks if we've seen this hash before and marks it as seen.
 // Returns true if it's a duplicate (already seen).
 func (p *Parser) isDuplicate(hash string) bool {
@@ -505,37 +472,6 @@ func (p *Parser) isDuplicate(hash string) bool {
 	// Mark as seen
 	p.seenHashCache.Add(hash, struct{}{})
 	return false
-}
-
-// parseAndValidateMessage parses JSON-RPC and validates MCP message.
-// Returns the complete Message ready to emit.
-func (p *Parser) parseAndValidateMessage(jsonData []byte, writeEvent WriteEvent, readPID uint32, readComm string) (*Message, error) {
-	// Parse JSON-RPC
-	jsonRpcMsg, err := p.parseJSONRPC(jsonData)
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse JSON-RPC: %w", err)
-	}
-
-	// Validate MCP
-	if ok, err := p.validateMCPMessage(jsonRpcMsg); !ok {
-		return nil, fmt.Errorf("invalid MCP message: %w", err)
-	}
-
-	// Create message
-	msg := &Message{
-		Timestamp:     time.Now(),
-		Raw:           string(jsonData),
-		TransportType: TransportTypeStdio,
-		StdioTransport: &StdioTransport{
-			FromPID:  writeEvent.PID,
-			FromComm: writeEvent.Comm,
-			ToPID:    readPID,
-			ToComm:   readComm,
-		},
-		JSONRPCMessage: jsonRpcMsg,
-	}
-
-	return msg, nil
 }
 
 // parseID parses the ID field which can be string or number

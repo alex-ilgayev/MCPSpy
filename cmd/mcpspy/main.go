@@ -249,12 +249,9 @@ func run(cmd *cobra.Command, args []string) error {
 				}
 
 				// Parse raw eBPF event data into MCP messages
-				messages, err := parser.ParseDataStdio(buf, e.EventType, e.PID, e.Comm())
+				messages, err := parser.ParseDataStdio(buf, e.EventType, e.FromPID, e.FromCommStr(), e.ToPID, e.ToCommStr())
 				if err != nil {
-					// Ignore this error, it's expected for read events
-					if err.Error() != "no write event found for the parsed read event" {
-						logrus.WithError(err).Debugf("Failed to process %s event", e.Type())
-					}
+					logrus.WithError(err).Debugf("Failed to process %s event", e.Type())
 					continue
 				}
 

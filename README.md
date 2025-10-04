@@ -303,6 +303,7 @@ The test suite includes:
 
 - **FS Events Buffer Size**: Limited to 16KB per message. This means MCP messages with **buffer size** greater than 16KB will be missed / ignored.
 - **FS Events Constructed of Multiple Messages**: MCPSpy currently does not support reconstructing MCP messages that are split across multiple `read` or `write` syscalls. This means that if an MCP message is larger than the buffer size used in a single syscall, it may be missed or ignored.
+- **Inode Collision for Stdio Transport**: Inode numbers are only unique within a filesystem. If monitoring processes across multiple filesystems or mount namespaces, inode collisions are theoretically possible but rare in practice for pipe-based stdio communication.
 - **Platform**: Linux only (kernel 5.15+).
 
 ## Contributing

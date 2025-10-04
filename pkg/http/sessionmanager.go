@@ -84,7 +84,9 @@ func (s *SessionManager) ProcessTlsEvent(e *event.TlsPayloadEvent) error {
 			pid:         e.PID,
 			comm:        e.CommBytes,
 			sslContext:  e.SSLContext,
+			request:     &httpRequest{},
 			requestBuf:  &bytes.Buffer{},
+			response:    &httpResponse{},
 			responseBuf: &bytes.Buffer{},
 		}
 		s.sessions[e.SSLContext] = sess

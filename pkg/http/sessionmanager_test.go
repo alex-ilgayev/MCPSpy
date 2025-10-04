@@ -1527,58 +1527,58 @@ func TestParseSSEEvents(t *testing.T) {
 		expected []string
 	}{
 		{
-			name: "single data event",
-			input: "data: hello world\n\n",
+			name:     "single data event",
+			input:    "data: hello world\n\n",
 			expected: []string{"data: hello world"},
 		},
 		{
-			name: "multiple data lines in one event",
-			input: "data: line 1\ndata: line 2\n\n",
+			name:     "multiple data lines in one event",
+			input:    "data: line 1\ndata: line 2\n\n",
 			expected: []string{"data: line 1\ndata: line 2"},
 		},
 		{
-			name: "event with id and data",
-			input: "id: 123\ndata: some data\n\n",
+			name:     "event with id and data",
+			input:    "id: 123\ndata: some data\n\n",
 			expected: []string{"id: 123\ndata: some data"},
 		},
 		{
-			name: "multiple events",
-			input: "data: event 1\n\ndata: event 2\n\n",
+			name:     "multiple events",
+			input:    "data: event 1\n\ndata: event 2\n\n",
 			expected: []string{"data: event 1", "data: event 2"},
 		},
 		{
-			name: "event with all fields",
-			input: "event: message\nid: 456\nretry: 1000\ndata: complete event\n\n",
+			name:     "event with all fields",
+			input:    "event: message\nid: 456\nretry: 1000\ndata: complete event\n\n",
 			expected: []string{"event: message\nid: 456\nretry: 1000\ndata: complete event"},
 		},
 		{
-			name: "events with comments (ignored)",
-			input: ": this is a comment\ndata: actual data\n\n",
+			name:     "events with comments (ignored)",
+			input:    ": this is a comment\ndata: actual data\n\n",
 			expected: []string{"data: actual data"},
 		},
 		{
-			name: "CRLF line endings",
-			input: "data: with crlf\r\n\r\n",
+			name:     "CRLF line endings",
+			input:    "data: with crlf\r\n\r\n",
 			expected: []string{"data: with crlf"},
 		},
 		{
-			name: "mixed field types",
-			input: "event: test\ndata: first\nid: 789\ndata: second\n\nevent: another\ndata: third\n\n",
+			name:     "mixed field types",
+			input:    "event: test\ndata: first\nid: 789\ndata: second\n\nevent: another\ndata: third\n\n",
 			expected: []string{"event: test\ndata: first\nid: 789\ndata: second", "event: another\ndata: third"},
 		},
 		{
-			name: "empty input",
-			input: "",
+			name:     "empty input",
+			input:    "",
 			expected: nil,
 		},
 		{
-			name: "only comments",
-			input: ": comment 1\n: comment 2\n\n",
+			name:     "only comments",
+			input:    ": comment 1\n: comment 2\n\n",
 			expected: nil,
 		},
 		{
-			name: "lines without colons (ignored)",
-			input: "invalid line\ndata: valid data\nanother invalid\n\n",
+			name:     "lines without colons (ignored)",
+			input:    "invalid line\ndata: valid data\nanother invalid\n\n",
 			expected: []string{"data: valid data"},
 		},
 	}
@@ -1618,10 +1618,10 @@ func TestParseSSEEvents_WithoutTerminatingNewline(t *testing.T) {
 
 func TestExtractSSEEventData(t *testing.T) {
 	tests := []struct {
-		name             string
-		input            string
-		expectedType     string
-		expectedData     string
+		name         string
+		input        string
+		expectedType string
+		expectedData string
 	}{
 		{
 			name:         "simple data event",

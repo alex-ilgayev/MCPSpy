@@ -43,6 +43,12 @@ int BPF_PROG(exit_vfs_read, struct file *file, const char *buf, size_t count,
         return 0;
     }
 
+    // Check if inode is a pipe - we only track stdio (pipe) communication
+    // This is cheaper than buffer inspection, so check it first
+    if (!is_pipe(file)) {
+        return 0;
+    }
+
     if (!is_mcp_data(buf, ret)) {
         return 0;
     }
@@ -50,20 +56,82 @@ int BPF_PROG(exit_vfs_read, struct file *file, const char *buf, size_t count,
     if (ret > MAX_BUF_SIZE) {
         // Currently the strategy is to drop incomplete fs events.
         // These events would fail in the JSON parsing anyways.
-        bpf_printk("info: dropping read event with count %d > %d", ret, MAX_BUF_SIZE);
+        bpf_printk(
+            "info: exit_vfs_read: dropping read event with count %d > %d", ret,
+            MAX_BUF_SIZE);
         return 0;
+    }
+
+    __u32 pid = bpf_get_current_pid_tgid() >> 32;
+
+    // Lookup or create cache entry
+    // Note: Inode numbers are only unique within a filesystem. If monitoring
+    // processes across multiple filesystems or mount namespaces, inode
+    // collisions are possible but rare in practice for pipe-based stdio.
+    __u32 inode = BPF_CORE_READ(file, f_inode, i_ino);
+    struct inode_process_info *info =
+        bpf_map_lookup_elem(&inode_process_map, &inode);
+    if (!info) {
+        struct inode_process_info new_info = {0};
+        new_info.reader_pid = bpf_get_current_pid_tgid() >> 32;
+        bpf_get_current_comm(new_info.reader_comm,
+                             sizeof(new_info.reader_comm));
+        if (bpf_map_update_elem(&inode_process_map, &inode, &new_info,
+                                BPF_ANY)) {
+            bpf_printk("error: exit_vfs_read: failed to create inode_process "
+                       "map entry");
+            return 0;
+        }
+
+        // We can't report the event yet, as we don't have the writer info.
+        return 0;
+    } else {
+        // Check if reader slot is already filled with another pid
+        if (info->reader_pid != 0 && info->reader_pid != pid) {
+            // Even though this shouldn't happen for pipes, this can happen for
+            // other cases. In case of pipes this is unordinary, so we remove it
+            // from the cache.
+            bpf_map_delete_elem(&inode_process_map, &inode);
+            return 0;
+        }
+
+        // Empty reader slot, fill it
+        if (info->reader_pid == 0) {
+            info->reader_pid = pid;
+            bpf_get_current_comm(info->reader_comm, sizeof(info->reader_comm));
+            if (bpf_map_update_elem(&inode_process_map, &inode, info,
+                                    BPF_ANY)) {
+                bpf_printk(
+                    "error: exit_vfs_read: failed to update inode_process "
+                    "map entry");
+                return 0;
+            }
+        }
+
+        // Check if we have a writer
+        if (info->writer_pid == 0) {
+            // We can't report the event yet, as we don't have the writer info.
+            return 0;
+        }
     }
 
     struct data_event *event =
         bpf_ringbuf_reserve(&events, sizeof(struct data_event), 0);
     if (!event) {
-        bpf_printk("error: failed to reserve ring buffer for read event");
+        bpf_printk("error: exit_vfs_read: failed to reserve ring buffer for "
+                   "read event");
         return 0;
     }
 
     event->header.event_type = EVENT_READ;
-    event->header.pid = bpf_get_current_pid_tgid() >> 32;
+    event->header.pid = pid;
     bpf_get_current_comm(&event->header.comm, sizeof(event->header.comm));
+    event->inode = inode;
+    event->from_pid = info->writer_pid;
+    __builtin_memcpy(event->from_comm, info->writer_comm, TASK_COMM_LEN);
+    event->to_pid = info->reader_pid;
+    __builtin_memcpy(event->to_comm, info->reader_comm, TASK_COMM_LEN);
+
     event->size = ret;
     event->buf_size = ret < MAX_BUF_SIZE ? ret : MAX_BUF_SIZE;
     bpf_probe_read(event->buf, event->buf_size, buf);
@@ -81,27 +149,95 @@ int BPF_PROG(exit_vfs_write, struct file *file, const char *buf, size_t count,
         return 0;
     }
 
+    // Check if inode is a pipe - we only track stdio (pipe) communication
+    // This is cheaper than buffer inspection, so check it first
+    if (!is_pipe(file)) {
+        return 0;
+    }
+
     if (!is_mcp_data(buf, ret)) {
         return 0;
     }
-    
+
     if (ret > MAX_BUF_SIZE) {
         // Currently the strategy is to drop incomplete fs events.
         // These events would fail in the JSON parsing anyways.
-        bpf_printk("info: dropping write event with count %d > %d", ret, MAX_BUF_SIZE);
+        bpf_printk(
+            "info: exit_vfs_write: dropping write event with count %d > %d",
+            ret, MAX_BUF_SIZE);
         return 0;
+    }
+
+    __u32 pid = bpf_get_current_pid_tgid() >> 32;
+
+    // Lookup or create cache entry
+    // Note: Inode numbers are only unique within a filesystem. If monitoring
+    // processes across multiple filesystems or mount namespaces, inode
+    // collisions are possible but rare in practice for pipe-based stdio.
+    __u32 inode = BPF_CORE_READ(file, f_inode, i_ino);
+    struct inode_process_info *info =
+        bpf_map_lookup_elem(&inode_process_map, &inode);
+    if (!info) {
+        struct inode_process_info new_info = {0};
+        new_info.writer_pid = bpf_get_current_pid_tgid() >> 32;
+        bpf_get_current_comm(new_info.writer_comm,
+                             sizeof(new_info.writer_comm));
+        if (bpf_map_update_elem(&inode_process_map, &inode, &new_info,
+                                BPF_ANY)) {
+            bpf_printk("error: exit_vfs_write: failed to create inode_process "
+                       "map entry");
+            return 0;
+        }
+
+        // We can't report the event yet, as we don't have the reader info.
+        return 0;
+    } else {
+        // Check if writer slot is already filled with another pid
+        if (info->writer_pid != 0 && info->writer_pid != pid) {
+            // Even though this shouldn't happen for pipes, this can happen for
+            // other cases. In case of pipes this is unordinary, so we remove it
+            // from the cache.
+            bpf_map_delete_elem(&inode_process_map, &inode);
+            return 0;
+        }
+
+        // Empty writer slot, fill it
+        if (info->writer_pid == 0) {
+            info->writer_pid = pid;
+            bpf_get_current_comm(info->writer_comm, sizeof(info->writer_comm));
+            if (bpf_map_update_elem(&inode_process_map, &inode, info,
+                                    BPF_ANY)) {
+                bpf_printk(
+                    "error: exit_vfs_write: failed to update inode_process "
+                    "map entry");
+                return 0;
+            }
+        }
+
+        // Check if we have a reader
+        if (info->reader_pid == 0) {
+            // We can't report the event yet, as we don't have the reader info.
+            return 0;
+        }
     }
 
     struct data_event *event =
         bpf_ringbuf_reserve(&events, sizeof(struct data_event), 0);
     if (!event) {
-        bpf_printk("error: failed to reserve ring buffer for write event");
+        bpf_printk("error: exit_vfs_write: failed to reserve ring buffer for "
+                   "write event");
         return 0;
     }
 
     event->header.event_type = EVENT_WRITE;
-    event->header.pid = bpf_get_current_pid_tgid() >> 32;
+    event->header.pid = pid;
     bpf_get_current_comm(&event->header.comm, sizeof(event->header.comm));
+    event->inode = inode;
+    event->from_pid = info->writer_pid;
+    __builtin_memcpy(event->from_comm, info->writer_comm, TASK_COMM_LEN);
+    event->to_pid = info->reader_pid;
+    __builtin_memcpy(event->to_comm, info->reader_comm, TASK_COMM_LEN);
+
     event->size = ret;
     event->buf_size = ret < MAX_BUF_SIZE ? ret : MAX_BUF_SIZE;
     bpf_probe_read(event->buf, event->buf_size, buf);
@@ -148,7 +284,8 @@ int enumerate_loaded_modules(struct bpf_iter__task_vma *ctx) {
     struct library_event *event =
         bpf_ringbuf_reserve(&events, sizeof(struct library_event), 0);
     if (!event) {
-        bpf_printk("error: failed to reserve ring buffer for library event");
+        bpf_printk("error: enumerate_loaded_modules: failed to reserve ring "
+                   "buffer for library event");
         return 0;
     }
 
@@ -203,8 +340,9 @@ int BPF_PROG(trace_security_file_open, struct file *file) {
     struct library_event *event =
         bpf_ringbuf_reserve(&events, sizeof(struct library_event), 0);
     if (!event) {
-        bpf_printk("error: failed to reserve ring buffer for security file "
-                   "open event");
+        bpf_printk(
+            "error: security_file_open: failed to reserve ring buffer for "
+            "security file open event");
         return 0;
     }
 
@@ -259,7 +397,8 @@ int BPF_URETPROBE(ssl_read_exit, int ret) {
     if (ret > MAX_BUF_SIZE) {
         // We still want to deliver these messages for HTTP session integrity.
         // But it means we'll may lose information.
-        bpf_printk("info: ssl_read_exit: buffer is too big: %d > %d", ret, MAX_BUF_SIZE);
+        bpf_printk("info: ssl_read_exit: buffer is too big: %d > %d", ret,
+                   MAX_BUF_SIZE);
     }
 
     // Checking the session if was set to specific http version.
@@ -293,7 +432,8 @@ int BPF_URETPROBE(ssl_read_exit, int ret) {
     struct tls_payload_event *event =
         bpf_ringbuf_reserve(&events, sizeof(struct tls_payload_event), 0);
     if (!event) {
-        bpf_printk("error: failed to reserve ring buffer for SSL_read event");
+        bpf_printk("error: ssl_read_exit: failed to reserve ring buffer for "
+                   "SSL_read event");
         return 0;
     }
 
@@ -311,7 +451,7 @@ int BPF_URETPROBE(ssl_read_exit, int ret) {
 
     if (bpf_probe_read(&event->buf, event->buf_size,
                        (const void *)params->buf) != 0) {
-        bpf_printk("error: failed to read SSL_read data");
+        bpf_printk("error: ssl_read_exit: failed to read SSL_read data");
         bpf_ringbuf_discard(event, 0);
         return 0;
     }
@@ -329,7 +469,8 @@ int BPF_UPROBE(ssl_write_entry, void *ssl, const void *buf, int num) {
     if (num > MAX_BUF_SIZE) {
         // We still want to deliver these messages for HTTP session integrity.
         // But it means we'll may lose information.
-        bpf_printk("info: ssl_write_entry: buffer is too big: %d > %d", num, MAX_BUF_SIZE);
+        bpf_printk("info: ssl_write_entry: buffer is too big: %d > %d", num,
+                   MAX_BUF_SIZE);
     }
 
     // Checking the session if was set to specific http version.
@@ -363,7 +504,8 @@ int BPF_UPROBE(ssl_write_entry, void *ssl, const void *buf, int num) {
     struct tls_payload_event *event =
         bpf_ringbuf_reserve(&events, sizeof(struct tls_payload_event), 0);
     if (!event) {
-        bpf_printk("error: failed to reserve ring buffer for SSL_write event");
+        bpf_printk("error: ssl_write_entry: failed to reserve ring buffer for "
+                   "SSL_write event");
         return 0;
     }
 
@@ -381,7 +523,7 @@ int BPF_UPROBE(ssl_write_entry, void *ssl, const void *buf, int num) {
     event->buf_size = size > MAX_BUF_SIZE ? MAX_BUF_SIZE : size;
 
     if (bpf_probe_read(&event->buf, event->buf_size, buf) != 0) {
-        bpf_printk("error: failed to read SSL_write data");
+        bpf_printk("error: ssl_write_entry: failed to read SSL_write data");
         bpf_ringbuf_discard(event, 0);
         return 0;
     }
@@ -430,7 +572,8 @@ int BPF_URETPROBE(ssl_read_ex_exit, int ret) {
     if (actual_read > MAX_BUF_SIZE) {
         // We still want to deliver these messages for HTTP session integrity.
         // But it means we'll may lose information.
-        bpf_printk("info: ssl_read_ex_exit: buffer is too big: %d > %d", actual_read, MAX_BUF_SIZE);
+        bpf_printk("info: ssl_read_ex_exit: buffer is too big: %d > %d",
+                   actual_read, MAX_BUF_SIZE);
     }
 
     // Checking the session if was set to specific http version.
@@ -464,8 +607,8 @@ int BPF_URETPROBE(ssl_read_ex_exit, int ret) {
     struct tls_payload_event *event =
         bpf_ringbuf_reserve(&events, sizeof(struct tls_payload_event), 0);
     if (!event) {
-        bpf_printk(
-            "error: failed to reserve ring buffer for SSL_read_ex event");
+        bpf_printk("error: ssl_read_ex_exit: failed to reserve ring buffer for "
+                   "SSL_read_ex event");
         return 0;
     }
 
@@ -479,7 +622,7 @@ int BPF_URETPROBE(ssl_read_ex_exit, int ret) {
 
     if (bpf_probe_read(&event->buf, event->buf_size,
                        (const void *)params->buf) != 0) {
-        bpf_printk("error: failed to read SSL_read_ex data");
+        bpf_printk("error: ssl_read_ex_exit: failed to read SSL_read_ex data");
         bpf_ringbuf_discard(event, 0);
         return 0;
     }
@@ -498,7 +641,8 @@ int BPF_UPROBE(ssl_write_ex_entry, void *ssl, const void *buf, size_t num,
     if (num > MAX_BUF_SIZE) {
         // We still want to deliver these messages for HTTP session integrity.
         // But it means we'll may lose information.
-        bpf_printk("info: ssl_write_ex_entry: buffer is too big: %d > %d", num, MAX_BUF_SIZE);
+        bpf_printk("info: ssl_write_ex_entry: buffer is too big: %d > %d", num,
+                   MAX_BUF_SIZE);
     }
 
     // Checking the session if was set to specific http version.
@@ -532,8 +676,8 @@ int BPF_UPROBE(ssl_write_ex_entry, void *ssl, const void *buf, size_t num,
     struct tls_payload_event *event =
         bpf_ringbuf_reserve(&events, sizeof(struct tls_payload_event), 0);
     if (!event) {
-        bpf_printk(
-            "error: failed to reserve ring buffer for SSL_write_ex event");
+        bpf_printk("error: ssl_write_ex_entry: failed to reserve ring buffer "
+                   "for SSL_write_ex event");
         return 0;
     }
 
@@ -547,7 +691,8 @@ int BPF_UPROBE(ssl_write_ex_entry, void *ssl, const void *buf, size_t num,
     event->buf_size = num > MAX_BUF_SIZE ? MAX_BUF_SIZE : num;
 
     if (bpf_probe_read(&event->buf, event->buf_size, buf) != 0) {
-        bpf_printk("error: failed to read SSL_write_ex data");
+        bpf_printk(
+            "error: ssl_write_ex_entry: failed to read SSL_write_ex data");
         bpf_ringbuf_discard(event, 0);
         return 0;
     }
@@ -587,7 +732,8 @@ int BPF_UPROBE(ssl_free_entry, void *ssl) {
     struct tls_free_event *event =
         bpf_ringbuf_reserve(&events, sizeof(struct tls_free_event), 0);
     if (!event) {
-        bpf_printk("error: failed to reserve ring buffer for SSL_free event");
+        bpf_printk("error: ssl_free_entry: failed to reserve ring buffer for "
+                   "SSL_free event");
         return 0;
     }
 
@@ -635,6 +781,19 @@ int BPF_URETPROBE(ssl_do_handshake_exit, int ret) {
         session->is_active = 1;
         bpf_map_update_elem(&ssl_sessions, &ssl, session, BPF_ANY);
     }
+
+    return 0;
+}
+
+// Clean up cache when inode is destroyed
+SEC("fentry/destroy_inode")
+int BPF_PROG(trace_destroy_inode, struct inode *inode) {
+    if (!inode) {
+        return 0;
+    }
+
+    __u32 inode_num = BPF_CORE_READ(inode, i_ino);
+    bpf_map_delete_elem(&inode_process_map, &inode_num);
 
     return 0;
 }
