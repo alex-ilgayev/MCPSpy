@@ -123,8 +123,8 @@ func TestLibraryManager_ProcessLibraryEvent(t *testing.T) {
 		}
 	})
 
-	// Test previously failed - same inode (retryOnError enabled by default)
-	t.Run("previously failed with retry enabled", func(t *testing.T) {
+	// Test previously failed - same inode (will NOT retry for non-retryable errors)
+	t.Run("previously failed with non-retryable error", func(t *testing.T) {
 		initialCalls := len(tl.attachCalls)
 
 		event := &event.LibraryEvent{
@@ -133,19 +133,20 @@ func TestLibraryManager_ProcessLibraryEvent(t *testing.T) {
 				PID:       9999,
 				CommBytes: [16]uint8{'t', 'e', 's', 't', '3'},
 			},
-			Inode:     67890,      // Same inode as failed test
+			Inode:     67890,      // Same inode as failed test (with "probe failed" error)
 			MntNSID:   4026532221, // Same namespace as library manager
 			PathBytes: makePathBytes("/usr/lib/libssl.so.3"),
 		}
 
+		// Since "probe failed" is not retryable, this should not retry
 		err := lm.ProcessLibraryEvent(event)
-		if err == nil {
-			t.Error("Expected error for retry attempt, got nil")
+		if err != nil {
+			t.Errorf("Expected no error for cached non-retryable failure, got %v", err)
 		}
 
-		// Check that attach was called again (retry behavior)
-		if len(tl.attachCalls) != initialCalls+1 {
-			t.Errorf("Expected 1 additional attach call for retry, got %d", len(tl.attachCalls)-initialCalls)
+		// Check that attach was NOT called again (no retry for non-retryable error)
+		if len(tl.attachCalls) != initialCalls {
+			t.Errorf("Expected no additional attach calls for non-retryable error, got %d", len(tl.attachCalls)-initialCalls)
 		}
 	})
 
@@ -282,13 +283,13 @@ func TestLibraryManager_Close(t *testing.T) {
 	}
 }
 
-// Test retry behavior with feature flag disabled
-func TestLibraryManager_RetryDisabled(t *testing.T) {
+// Test retry behavior with non-retryable errors
+func TestLibraryManager_NonRetryableError(t *testing.T) {
 	tl := newTestLoader()
-	lm := NewLibraryManagerWithRetry(tl, 4026532221, false) // disable retry
+	lm := NewLibraryManager(tl, 4026532221)
 	defer lm.Close()
 
-	// Set up failure for this path
+	// Set up failure for this path with a non-retryable error
 	tl.attachResults["/usr/lib/libssl.so.retry"] = errors.New("probe failed")
 
 	// First attempt should fail
@@ -314,27 +315,72 @@ func TestLibraryManager_RetryDisabled(t *testing.T) {
 		t.Errorf("Expected 1 failed library, got %d", failed)
 	}
 
-	// Second attempt should be skipped
+	// Second attempt should be skipped because error is not retryable
 	initialCalls := len(tl.attachCalls)
 	err = lm.ProcessLibraryEvent(event)
 	if err != nil {
-		t.Errorf("Expected no error for cached failure (retry disabled), got %v", err)
+		t.Errorf("Expected no error for cached non-retryable failure, got %v", err)
 	}
 
 	// Check that no additional attach was called
 	if len(tl.attachCalls) != initialCalls {
-		t.Error("Expected no additional attach calls when retry is disabled")
+		t.Error("Expected no additional attach calls for non-retryable error")
+	}
+}
+
+// Test retry behavior with retryable errors (like "no such file or directory")
+func TestLibraryManager_RetryableError(t *testing.T) {
+	tl := newTestLoader()
+	lm := NewLibraryManager(tl, 4026532221)
+	defer lm.Close()
+
+	// Set up failure for this path with a retryable error
+	tl.attachResults["/usr/lib/libssl.so.retryable"] = errors.New("failed to open executable: no such file or directory")
+
+	// First attempt should fail
+	event := &event.LibraryEvent{
+		EventHeader: event.EventHeader{
+			EventType: event.EventTypeLibrary,
+			PID:       1234,
+			CommBytes: [16]uint8{'r', 'e', 't', 'r', 'y'},
+		},
+		Inode:     88888,
+		MntNSID:   4026532221,
+		PathBytes: makePathBytes("/usr/lib/libssl.so.retryable"),
+	}
+
+	err := lm.ProcessLibraryEvent(event)
+	if err == nil {
+		t.Error("Expected error on first attempt, got nil")
+	}
+
+	// Verify it was marked as failed
+	_, failed := lm.Stats()
+	if failed != 1 {
+		t.Errorf("Expected 1 failed library, got %d", failed)
+	}
+
+	// Second attempt should retry because error is retryable
+	initialCalls := len(tl.attachCalls)
+	err = lm.ProcessLibraryEvent(event)
+	if err == nil {
+		t.Error("Expected error on retry attempt, got nil")
+	}
+
+	// Check that attach was called again (retry behavior)
+	if len(tl.attachCalls) != initialCalls+1 {
+		t.Errorf("Expected 1 additional attach call for retryable error, got %d", len(tl.attachCalls)-initialCalls)
 	}
 }
 
 // Test error state removal when load succeeds
 func TestLibraryManager_ErrorStateRemoval(t *testing.T) {
 	tl := newTestLoader()
-	lm := NewLibraryManager(tl, 4026532221) // retry enabled by default
+	lm := NewLibraryManager(tl, 4026532221)
 	defer lm.Close()
 
-	// Set up initial failure
-	tl.attachResults["/usr/lib/libssl.so.recover"] = errors.New("probe failed")
+	// Set up initial failure with a retryable error
+	tl.attachResults["/usr/lib/libssl.so.recover"] = errors.New("failed to open: no such file or directory")
 
 	event := &event.LibraryEvent{
 		EventHeader: event.EventHeader{

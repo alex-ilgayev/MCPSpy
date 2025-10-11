@@ -2,6 +2,7 @@ package ebpf
 
 import (
 	"fmt"
+	"strings"
 	"sync"
 
 	"github.com/alex-ilgayev/mcpspy/pkg/event"
@@ -17,28 +18,41 @@ type SSLProbeAttacher interface {
 // LibraryManager manages uprobe hooks for dynamically loaded libraries.
 // It prevents duplicate hooks and caches failed attempts.
 type LibraryManager struct {
-	attacher     SSLProbeAttacher
-	mountNS      uint32            // mount namespace ID
-	retryOnError bool              // whether to retry failed libraries
-	hookedLibs   map[uint64]string // inode -> path (successfully hooked)
-	failedLibs   map[uint64]error  // inode -> error (failed to hook)
-	mu           sync.Mutex
+	attacher   SSLProbeAttacher
+	mountNS    uint32            // mount namespace ID
+	hookedLibs map[uint64]string // inode -> path (successfully hooked)
+	failedLibs map[uint64]error  // inode -> error (failed to hook)
+	mu         sync.Mutex
 }
 
 // NewLibraryManager creates a new library manager
 func NewLibraryManager(attacher SSLProbeAttacher, mountNS uint32) *LibraryManager {
-	return NewLibraryManagerWithRetry(attacher, mountNS, true)
+	return &LibraryManager{
+		attacher:   attacher,
+		mountNS:    mountNS,
+		hookedLibs: make(map[uint64]string),
+		failedLibs: make(map[uint64]error),
+	}
 }
 
-// NewLibraryManagerWithRetry creates a new library manager with configurable retry behavior
-func NewLibraryManagerWithRetry(attacher SSLProbeAttacher, mountNS uint32, retryOnError bool) *LibraryManager {
-	return &LibraryManager{
-		attacher:     attacher,
-		mountNS:      mountNS,
-		retryOnError: retryOnError,
-		hookedLibs:   make(map[uint64]string),
-		failedLibs:   make(map[uint64]error),
+// retryableErrorPatterns contains error patterns that should trigger a retry
+var retryableErrorPatterns = []string{
+	"no such file or directory",
+}
+
+// isRetryableError checks if an error should trigger a retry
+func isRetryableError(err error) bool {
+	if err == nil {
+		return false
 	}
+
+	errMsg := strings.ToLower(err.Error())
+	for _, pattern := range retryableErrorPatterns {
+		if strings.Contains(errMsg, pattern) {
+			return true
+		}
+	}
+	return false
 }
 
 // ProcessLibraryEvent processes a library event and attempts to attach SSL probes if needed
@@ -61,14 +75,14 @@ func (lm *LibraryManager) ProcessLibraryEvent(event *event.LibraryEvent) error {
 		return nil
 	}
 
-	// Check if previously failed and retryOnError is disabled
-	if err, ok := lm.failedLibs[inode]; ok && !lm.retryOnError {
+	// Check if previously failed and error is not retryable
+	if err, ok := lm.failedLibs[inode]; ok && !isRetryableError(err) {
 		logrus.WithFields(logrus.Fields{
 			"inode":         inode,
 			"path":          path,
 			"error":         err,
 			"target_mnt_ns": targetMountNS,
-		}).Trace("Library previously failed to hook, skipping")
+		}).Trace("Library previously failed to hook with non-retryable error, skipping")
 		return nil
 	}
 

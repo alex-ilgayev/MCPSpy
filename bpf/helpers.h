@@ -109,6 +109,36 @@ static __always_inline __u32 get_mount_ns_id(void) {
     return BPF_CORE_READ(mnt_ns, ns.inum);
 }
 
+// Get the mount namespace ID from a file's mount
+static __always_inline __u32 get_file_mount_ns_id(struct file *file) {
+    if (!file) {
+        return 0;
+    }
+
+    struct vfsmount *vfs_mnt = BPF_CORE_READ(file, f_path.mnt);
+    if (!vfs_mnt) {
+        return 0;
+    }
+
+    // struct vfsmount is embedded in struct mount at field 'mnt'
+    // Use CO-RE to calculate the offset and get to the parent structure
+    struct mount *mnt = NULL;
+    __builtin_preserve_access_index(({
+        mnt = container_of(vfs_mnt, struct mount, mnt);
+    }));
+
+    if (!mnt) {
+        return 0;
+    }
+
+    struct mnt_namespace *mnt_ns = BPF_CORE_READ(mnt, mnt_ns);
+    if (!mnt_ns) {
+        return 0;
+    }
+
+    return BPF_CORE_READ(mnt_ns, ns.inum);
+}
+
 // Check if the given PID belongs to the mcpspy process itself
 // and should be ignored
 static __always_inline bool should_ignore_pid(__u32 pid) {
