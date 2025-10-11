@@ -3,6 +3,7 @@
 
 #include "args.h"
 #include "helpers.h"
+#include "log.h"
 #include "tls.h"
 #include "types.h"
 #include "vmlinux.h"
@@ -10,7 +11,7 @@
 #include <bpf/bpf_helpers.h>
 
 // Checking if the buffer starts with '{', while ignoring whitespace.
-static __always_inline bool is_mcp_data(const char *buf, __u32 size) {
+static __always_inline bool is_json(const char *buf, __u32 size) {
     if (size < 8) {
         return false;
     }
@@ -49,16 +50,18 @@ int BPF_PROG(exit_vfs_read, struct file *file, const char *buf, size_t count,
         return 0;
     }
 
-    if (!is_mcp_data(buf, ret)) {
+    if (!is_json(buf, ret)) {
         return 0;
     }
+
+    LOG_TRACE("exit_vfs_read: file=%p, count=%d, ret=%d", file, buf, count,
+              ret);
 
     if (ret > MAX_BUF_SIZE) {
         // Currently the strategy is to drop incomplete fs events.
         // These events would fail in the JSON parsing anyways.
-        bpf_printk(
-            "info: exit_vfs_read: dropping read event with count %d > %d", ret,
-            MAX_BUF_SIZE);
+        LOG_DEBUG("exit_vfs_read: dropping read event with count %d > %d", ret,
+                  MAX_BUF_SIZE);
         return 0;
     }
 
@@ -78,8 +81,7 @@ int BPF_PROG(exit_vfs_read, struct file *file, const char *buf, size_t count,
                              sizeof(new_info.reader_comm));
         if (bpf_map_update_elem(&inode_process_map, &inode, &new_info,
                                 BPF_ANY)) {
-            bpf_printk("error: exit_vfs_read: failed to create inode_process "
-                       "map entry");
+            LOG_WARN("exit_vfs_read: failed to create inode_process map entry");
             return 0;
         }
 
@@ -101,9 +103,8 @@ int BPF_PROG(exit_vfs_read, struct file *file, const char *buf, size_t count,
             bpf_get_current_comm(info->reader_comm, sizeof(info->reader_comm));
             if (bpf_map_update_elem(&inode_process_map, &inode, info,
                                     BPF_ANY)) {
-                bpf_printk(
-                    "error: exit_vfs_read: failed to update inode_process "
-                    "map entry");
+                LOG_WARN(
+                    "exit_vfs_read: failed to update inode_process map entry");
                 return 0;
             }
         }
@@ -118,8 +119,7 @@ int BPF_PROG(exit_vfs_read, struct file *file, const char *buf, size_t count,
     struct data_event *event =
         bpf_ringbuf_reserve(&events, sizeof(struct data_event), 0);
     if (!event) {
-        bpf_printk("error: exit_vfs_read: failed to reserve ring buffer for "
-                   "read event");
+        LOG_WARN("exit_vfs_read: failed to reserve ring buffer for read event");
         return 0;
     }
 
@@ -131,7 +131,6 @@ int BPF_PROG(exit_vfs_read, struct file *file, const char *buf, size_t count,
     __builtin_memcpy(event->from_comm, info->writer_comm, TASK_COMM_LEN);
     event->to_pid = info->reader_pid;
     __builtin_memcpy(event->to_comm, info->reader_comm, TASK_COMM_LEN);
-
     event->size = ret;
     event->buf_size = ret < MAX_BUF_SIZE ? ret : MAX_BUF_SIZE;
     bpf_probe_read(event->buf, event->buf_size, buf);
@@ -155,16 +154,17 @@ int BPF_PROG(exit_vfs_write, struct file *file, const char *buf, size_t count,
         return 0;
     }
 
-    if (!is_mcp_data(buf, ret)) {
+    if (!is_json(buf, ret)) {
         return 0;
     }
+
+    LOG_TRACE("exit_vfs_write: file=%p, count=%d, ret=%d", file, count, ret);
 
     if (ret > MAX_BUF_SIZE) {
         // Currently the strategy is to drop incomplete fs events.
         // These events would fail in the JSON parsing anyways.
-        bpf_printk(
-            "info: exit_vfs_write: dropping write event with count %d > %d",
-            ret, MAX_BUF_SIZE);
+        LOG_DEBUG("exit_vfs_write: dropping write event with count %d > %d",
+                  ret, MAX_BUF_SIZE);
         return 0;
     }
 
@@ -184,8 +184,8 @@ int BPF_PROG(exit_vfs_write, struct file *file, const char *buf, size_t count,
                              sizeof(new_info.writer_comm));
         if (bpf_map_update_elem(&inode_process_map, &inode, &new_info,
                                 BPF_ANY)) {
-            bpf_printk("error: exit_vfs_write: failed to create inode_process "
-                       "map entry");
+            LOG_WARN(
+                "exit_vfs_write: failed to create inode_process map entry");
             return 0;
         }
 
@@ -207,9 +207,8 @@ int BPF_PROG(exit_vfs_write, struct file *file, const char *buf, size_t count,
             bpf_get_current_comm(info->writer_comm, sizeof(info->writer_comm));
             if (bpf_map_update_elem(&inode_process_map, &inode, info,
                                     BPF_ANY)) {
-                bpf_printk(
-                    "error: exit_vfs_write: failed to update inode_process "
-                    "map entry");
+                LOG_WARN(
+                    "exit_vfs_write: failed to update inode_process map entry");
                 return 0;
             }
         }
@@ -224,8 +223,8 @@ int BPF_PROG(exit_vfs_write, struct file *file, const char *buf, size_t count,
     struct data_event *event =
         bpf_ringbuf_reserve(&events, sizeof(struct data_event), 0);
     if (!event) {
-        bpf_printk("error: exit_vfs_write: failed to reserve ring buffer for "
-                   "write event");
+        LOG_WARN(
+            "exit_vfs_write: failed to reserve ring buffer for write event");
         return 0;
     }
 
@@ -237,7 +236,6 @@ int BPF_PROG(exit_vfs_write, struct file *file, const char *buf, size_t count,
     __builtin_memcpy(event->from_comm, info->writer_comm, TASK_COMM_LEN);
     event->to_pid = info->reader_pid;
     __builtin_memcpy(event->to_comm, info->reader_comm, TASK_COMM_LEN);
-
     event->size = ret;
     event->buf_size = ret < MAX_BUF_SIZE ? ret : MAX_BUF_SIZE;
     bpf_probe_read(event->buf, event->buf_size, buf);
@@ -284,8 +282,8 @@ int enumerate_loaded_modules(struct bpf_iter__task_vma *ctx) {
     struct library_event *event =
         bpf_ringbuf_reserve(&events, sizeof(struct library_event), 0);
     if (!event) {
-        bpf_printk("error: enumerate_loaded_modules: failed to reserve ring "
-                   "buffer for library event");
+        LOG_WARN("enumerate_loaded_modules: failed to reserve ring buffer for "
+                 "library event");
         return 0;
     }
 
@@ -340,9 +338,8 @@ int BPF_PROG(trace_security_file_open, struct file *file) {
     struct library_event *event =
         bpf_ringbuf_reserve(&events, sizeof(struct library_event), 0);
     if (!event) {
-        bpf_printk(
-            "error: security_file_open: failed to reserve ring buffer for "
-            "security file open event");
+        LOG_WARN("security_file_open: failed to reserve ring buffer for "
+                 "security file open event");
         return 0;
     }
 
@@ -394,11 +391,13 @@ int BPF_URETPROBE(ssl_read_exit, int ret) {
         return 0;
     }
 
+    LOG_TRACE("ssl_read_exit: ctx=%p, ret=%d", (void *)params->ssl, ret);
+
     if (ret > MAX_BUF_SIZE) {
         // We still want to deliver these messages for HTTP session integrity.
         // But it means we'll may lose information.
-        bpf_printk("info: ssl_read_exit: buffer is too big: %d > %d", ret,
-                   MAX_BUF_SIZE);
+        LOG_DEBUG("ssl_read_exit: buffer is too big: %d > %d", ret,
+                  MAX_BUF_SIZE);
     }
 
     // Checking the session if was set to specific http version.
@@ -406,6 +405,7 @@ int BPF_URETPROBE(ssl_read_exit, int ret) {
     __u64 ssl_ptr = params->ssl;
     struct ssl_session *session = bpf_map_lookup_elem(&ssl_sessions, &ssl_ptr);
     if (!session) {
+        LOG_TRACE("ssl_read_exit: session not found");
         return 0;
     }
 
@@ -418,6 +418,9 @@ int BPF_URETPROBE(ssl_read_exit, int ret) {
         if (http_version == HTTP_VERSION_UNKNOWN) {
             return 0;
         }
+
+        LOG_TRACE("ssl_read_exit: http_version=%d, http_message_type=%d",
+                  http_version, http_message_type);
 
         // We only care about HTTP clients (not servers).
         // ssl_read should be called only for responses.
@@ -432,8 +435,8 @@ int BPF_URETPROBE(ssl_read_exit, int ret) {
     struct tls_payload_event *event =
         bpf_ringbuf_reserve(&events, sizeof(struct tls_payload_event), 0);
     if (!event) {
-        bpf_printk("error: ssl_read_exit: failed to reserve ring buffer for "
-                   "SSL_read event");
+        LOG_WARN(
+            "ssl_read_exit: failed to reserve ring buffer for SSL_read event");
         return 0;
     }
 
@@ -451,7 +454,7 @@ int BPF_URETPROBE(ssl_read_exit, int ret) {
 
     if (bpf_probe_read(&event->buf, event->buf_size,
                        (const void *)params->buf) != 0) {
-        bpf_printk("error: ssl_read_exit: failed to read SSL_read data");
+        LOG_WARN("ssl_read_exit: failed to read SSL_read data");
         bpf_ringbuf_discard(event, 0);
         return 0;
     }
@@ -469,15 +472,18 @@ int BPF_UPROBE(ssl_write_entry, void *ssl, const void *buf, int num) {
     if (num > MAX_BUF_SIZE) {
         // We still want to deliver these messages for HTTP session integrity.
         // But it means we'll may lose information.
-        bpf_printk("info: ssl_write_entry: buffer is too big: %d > %d", num,
-                   MAX_BUF_SIZE);
+        LOG_DEBUG("ssl_write_entry: buffer is too big: %d > %d", num,
+                  MAX_BUF_SIZE);
     }
+
+    LOG_TRACE("ssl_write_entry: ctx=%p, num=%d", ssl, num);
 
     // Checking the session if was set to specific http version.
     // If not, we try to identify the version from the payload.
     __u64 ssl_ptr = (__u64)ssl;
     struct ssl_session *session = bpf_map_lookup_elem(&ssl_sessions, &ssl_ptr);
     if (!session) {
+        LOG_TRACE("ssl_write_entry: session not found");
         return 0;
     }
 
@@ -497,6 +503,9 @@ int BPF_UPROBE(ssl_write_entry, void *ssl, const void *buf, int num) {
             return 0;
         }
 
+        LOG_TRACE("ssl_write_entry: http_version=%d, http_message_type=%d",
+                  http_version, http_message_type);
+
         session->http_version = http_version;
         bpf_map_update_elem(&ssl_sessions, &ssl_ptr, session, BPF_ANY);
     }
@@ -504,8 +513,8 @@ int BPF_UPROBE(ssl_write_entry, void *ssl, const void *buf, int num) {
     struct tls_payload_event *event =
         bpf_ringbuf_reserve(&events, sizeof(struct tls_payload_event), 0);
     if (!event) {
-        bpf_printk("error: ssl_write_entry: failed to reserve ring buffer for "
-                   "SSL_write event");
+        LOG_WARN("ssl_write_entry: failed to reserve ring buffer for SSL_write "
+                 "event");
         return 0;
     }
 
@@ -523,7 +532,7 @@ int BPF_UPROBE(ssl_write_entry, void *ssl, const void *buf, int num) {
     event->buf_size = size > MAX_BUF_SIZE ? MAX_BUF_SIZE : size;
 
     if (bpf_probe_read(&event->buf, event->buf_size, buf) != 0) {
-        bpf_printk("error: ssl_write_entry: failed to read SSL_write data");
+        LOG_WARN("ssl_write_entry: failed to read SSL_write data");
         bpf_ringbuf_discard(event, 0);
         return 0;
     }
@@ -569,11 +578,14 @@ int BPF_URETPROBE(ssl_read_ex_exit, int ret) {
                        (const void *)params->readbytes);
     }
 
+    LOG_TRACE("ssl_read_ex_exit: ctx=%p, actual_read=%d", (void *)params->ssl,
+              actual_read);
+
     if (actual_read > MAX_BUF_SIZE) {
         // We still want to deliver these messages for HTTP session integrity.
         // But it means we'll may lose information.
-        bpf_printk("info: ssl_read_ex_exit: buffer is too big: %d > %d",
-                   actual_read, MAX_BUF_SIZE);
+        LOG_DEBUG("ssl_read_ex_exit: buffer is too big: %d > %d", actual_read,
+                  MAX_BUF_SIZE);
     }
 
     // Checking the session if was set to specific http version.
@@ -581,6 +593,7 @@ int BPF_URETPROBE(ssl_read_ex_exit, int ret) {
     __u64 ssl_ptr = params->ssl;
     struct ssl_session *session = bpf_map_lookup_elem(&ssl_sessions, &ssl_ptr);
     if (!session) {
+        LOG_TRACE("ssl_read_ex_exit: session not found");
         return 0;
     }
 
@@ -600,6 +613,9 @@ int BPF_URETPROBE(ssl_read_ex_exit, int ret) {
             return 0;
         }
 
+        LOG_TRACE("ssl_read_ex_exit: http_version=%d, http_message_type=%d",
+                  http_version, http_message_type);
+
         session->http_version = http_version;
         bpf_map_update_elem(&ssl_sessions, &ssl_ptr, session, BPF_ANY);
     }
@@ -607,8 +623,8 @@ int BPF_URETPROBE(ssl_read_ex_exit, int ret) {
     struct tls_payload_event *event =
         bpf_ringbuf_reserve(&events, sizeof(struct tls_payload_event), 0);
     if (!event) {
-        bpf_printk("error: ssl_read_ex_exit: failed to reserve ring buffer for "
-                   "SSL_read_ex event");
+        LOG_WARN("ssl_read_ex_exit: failed to reserve ring buffer for "
+                 "SSL_read_ex event");
         return 0;
     }
 
@@ -622,7 +638,7 @@ int BPF_URETPROBE(ssl_read_ex_exit, int ret) {
 
     if (bpf_probe_read(&event->buf, event->buf_size,
                        (const void *)params->buf) != 0) {
-        bpf_printk("error: ssl_read_ex_exit: failed to read SSL_read_ex data");
+        LOG_WARN("ssl_read_ex_exit: failed to read SSL_read_ex data");
         bpf_ringbuf_discard(event, 0);
         return 0;
     }
@@ -641,15 +657,18 @@ int BPF_UPROBE(ssl_write_ex_entry, void *ssl, const void *buf, size_t num,
     if (num > MAX_BUF_SIZE) {
         // We still want to deliver these messages for HTTP session integrity.
         // But it means we'll may lose information.
-        bpf_printk("info: ssl_write_ex_entry: buffer is too big: %d > %d", num,
-                   MAX_BUF_SIZE);
+        LOG_DEBUG("ssl_write_ex_entry: buffer is too big: %d > %d", num,
+                  MAX_BUF_SIZE);
     }
+
+    LOG_TRACE("ssl_write_entry: ctx=%p, num=%d", ssl, num);
 
     // Checking the session if was set to specific http version.
     // If not, we try to identify the version from the payload.
     __u64 ssl_ptr = (__u64)ssl;
     struct ssl_session *session = bpf_map_lookup_elem(&ssl_sessions, &ssl_ptr);
     if (!session) {
+        LOG_TRACE("ssl_write_ex_entry: session not found");
         return 0;
     }
 
@@ -662,6 +681,9 @@ int BPF_UPROBE(ssl_write_ex_entry, void *ssl, const void *buf, size_t num,
         if (http_version == HTTP_VERSION_UNKNOWN) {
             return 0;
         }
+
+        LOG_TRACE("ssl_write_ex_entry: http_version=%d, http_message_type=%d",
+                  http_version, http_message_type);
 
         // We only care about HTTP clients (not servers).
         // SSL_write_ex should be called only for requests.
@@ -676,8 +698,8 @@ int BPF_UPROBE(ssl_write_ex_entry, void *ssl, const void *buf, size_t num,
     struct tls_payload_event *event =
         bpf_ringbuf_reserve(&events, sizeof(struct tls_payload_event), 0);
     if (!event) {
-        bpf_printk("error: ssl_write_ex_entry: failed to reserve ring buffer "
-                   "for SSL_write_ex event");
+        LOG_WARN("ssl_write_ex_entry: failed to reserve ring buffer for "
+                 "SSL_write_ex event");
         return 0;
     }
 
@@ -691,8 +713,7 @@ int BPF_UPROBE(ssl_write_ex_entry, void *ssl, const void *buf, size_t num,
     event->buf_size = num > MAX_BUF_SIZE ? MAX_BUF_SIZE : num;
 
     if (bpf_probe_read(&event->buf, event->buf_size, buf) != 0) {
-        bpf_printk(
-            "error: ssl_write_ex_entry: failed to read SSL_write_ex data");
+        LOG_WARN("ssl_write_ex_entry: failed to read SSL_write_ex data");
         bpf_ringbuf_discard(event, 0);
         return 0;
     }
@@ -708,6 +729,8 @@ int BPF_URETPROBE(ssl_new_exit, void *ssl) {
     if (!ssl) {
         return 0;
     }
+
+    LOG_TRACE("ssl_new_exit: ctx=%p", ssl);
 
     __u64 ssl_ptr = (__u64)ssl;
     struct ssl_session session = {
@@ -726,14 +749,16 @@ int BPF_UPROBE(ssl_free_entry, void *ssl) {
         return 0;
     }
 
+    LOG_TRACE("ssl_free_entry: ctx=%p", ssl);
+
     __u64 ssl_ptr = (__u64)ssl;
     bpf_map_delete_elem(&ssl_sessions, &ssl_ptr);
 
     struct tls_free_event *event =
         bpf_ringbuf_reserve(&events, sizeof(struct tls_free_event), 0);
     if (!event) {
-        bpf_printk("error: ssl_free_entry: failed to reserve ring buffer for "
-                   "SSL_free event");
+        LOG_WARN(
+            "ssl_free_entry: failed to reserve ring buffer for SSL_free event");
         return 0;
     }
 
@@ -766,6 +791,8 @@ int BPF_URETPROBE(ssl_do_handshake_exit, int ret) {
     if (!ssl_ptr) {
         return 0;
     }
+
+    LOG_TRACE("ssl_do_handshake_exit: ctx=%p, ret=%d", *ssl_ptr, ret);
 
     __u64 ssl = *ssl_ptr;
     bpf_map_delete_elem(&ssl_handshake_args, &pid);

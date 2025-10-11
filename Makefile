@@ -38,6 +38,11 @@ CGO_ENABLED ?= 0
 BUILD_FLAGS := -ldflags "$(LDFLAGS)"
 TEST_FLAGS := -v -timeout=30s
 
+# eBPF build flags
+# Set MCPSPY_TRACE_LOG=1 to enable compile-time TRACE logging
+# Example: make build MCPSPY_TRACE_LOG=1
+MCPSPY_TRACE_LOG ?= 0
+
 # Directories
 BUILD_DIR := build
 GO_BIN_DIR := $(shell go env GOPATH)/bin
@@ -55,7 +60,7 @@ all: generate build ## Building everything (default target)
 .PHONY: generate
 generate: ## Generate eBPF Go bindings
 	@echo "Generating eBPF Go bindings..."
-	cd pkg/ebpf && go generate
+	cd pkg/ebpf && MCPSPY_TRACE_LOG=$(MCPSPY_TRACE_LOG) go generate
 
 # Build the binary
 .PHONY: build

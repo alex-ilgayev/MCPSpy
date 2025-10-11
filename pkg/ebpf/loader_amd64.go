@@ -6,4 +6,4 @@ import _ "embed"
 
 type archObjects = mcpspy_bpfel_x86Objects
 
-var loadArchObjects = loadMcpspy_bpfel_x86Objects
+var loadArchSpec = loadMcpspy_bpfel_x86

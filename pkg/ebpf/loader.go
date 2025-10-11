@@ -20,8 +20,8 @@ import (
 	mcpevents "github.com/alex-ilgayev/mcpspy/pkg/event"
 )
 
-//go:generate go run github.com/cilium/ebpf/cmd/bpf2go -target amd64 -cc clang -cflags "-D__TARGET_ARCH_x86" mcpspy_bpfel_x86 ../../bpf/mcpspy.c
-//go:generate go run github.com/cilium/ebpf/cmd/bpf2go -target arm64 -cc clang -cflags "-D__TARGET_ARCH_arm64" mcpspy_bpfel_arm64 ../../bpf/mcpspy.c
+//go:generate sh -c "if [ \"$MCPSPY_TRACE_LOG\" = \"1\" ]; then go run github.com/cilium/ebpf/cmd/bpf2go -target amd64 -cc clang -cflags '-D__TARGET_ARCH_x86 -DMCPSPY_TRACE_LOG' mcpspy_bpfel_x86 ../../bpf/mcpspy.c; else go run github.com/cilium/ebpf/cmd/bpf2go -target amd64 -cc clang -cflags '-D__TARGET_ARCH_x86' mcpspy_bpfel_x86 ../../bpf/mcpspy.c; fi"
+//go:generate sh -c "if [ \"$MCPSPY_TRACE_LOG\" = \"1\" ]; then go run github.com/cilium/ebpf/cmd/bpf2go -target arm64 -cc clang -cflags '-D__TARGET_ARCH_arm64 -DMCPSPY_TRACE_LOG' mcpspy_bpfel_arm64 ../../bpf/mcpspy.c; else go run github.com/cilium/ebpf/cmd/bpf2go -target arm64 -cc clang -cflags '-D__TARGET_ARCH_arm64' mcpspy_bpfel_arm64 ../../bpf/mcpspy.c; fi"
 
 // Loader manages eBPF program lifecycle
 type Loader struct {
@@ -29,7 +29,6 @@ type Loader struct {
 	links   []link.Link
 	reader  *ringbuf.Reader
 	eventCh chan mcpevents.Event
-	debug   bool
 
 	// Iterator link for library enumeration
 	// Will be != nil if enumeration is ongoing
@@ -37,7 +36,7 @@ type Loader struct {
 }
 
 // New creates a new eBPF loader
-func New(debug bool) (*Loader, error) {
+func New() (*Loader, error) {
 	// Remove the memory limit for eBPF
 	if err := rlimit.RemoveMemlock(); err != nil {
 		return nil, fmt.Errorf("failed to remove memlock: %w", err)
@@ -46,15 +45,44 @@ func New(debug bool) (*Loader, error) {
 	return &Loader{
 		// approximately maximum of 25-100MB memory.
 		eventCh: make(chan mcpevents.Event, 100000),
-		debug:   debug,
 	}, nil
 }
 
 // Load attaches eBPF programs to kernel
 func (l *Loader) Load() error {
-	// Load pre-compiled eBPF objects
+	// Load the eBPF collection spec
+	spec, err := loadArchSpec()
+	if err != nil {
+		return fmt.Errorf("failed to load eBPF spec: %w", err)
+	}
+
+	// eBPF log levels match logrus Level enumeration exactly:
+	bpfLogLevel := uint32(logrus.GetLevel())
+
+	// This following code is a workaround to rewrite the 'log_level' variable
+	// The right way to do it is to use spec.RewriteConstants with the following code:
+	// spec.RewriteConstants(map[string]interface{}{
+	// 	"log_level": bpfLogLevel,
+	// })
+	//
+	// Unfortunately, seems that it's not working. So we rewrite the first variable in .data section manually.
+	if dataSpec, ok := spec.Maps[".data"]; ok {
+		// Get the current value bytes
+		if len(dataSpec.Contents) > 0 {
+			// The value should be a byte slice containing the .data section
+			if valueBytes, ok := dataSpec.Contents[0].Value.([]byte); ok {
+				// log_level is a 4-byte uint32 at the beginning of .data
+				if len(valueBytes) >= 4 {
+					binary.LittleEndian.PutUint32(valueBytes[0:4], bpfLogLevel)
+					logrus.WithField("bpf_log_level", bpfLogLevel).Debug("Set eBPF log level in .data section")
+				}
+			}
+		}
+	}
+
+	// Load eBPF objects with the modified spec
 	objs := &archObjects{}
-	if err := loadArchObjects(objs, nil); err != nil {
+	if err := spec.LoadAndAssign(objs, nil); err != nil {
 		var verifierError *ebpf.VerifierError
 		if errors.As(err, &verifierError) && logrus.IsLevelEnabled(logrus.DebugLevel) {
 			if _, err := fmt.Fprintln(os.Stderr, strings.Join(verifierError.Log, "\n")); err != nil {

@@ -98,7 +98,7 @@ func run(cmd *cobra.Command, args []string) error {
 	}
 
 	// Create and load eBPF program
-	loader, err := ebpf.New(level >= logrus.DebugLevel)
+	loader, err := ebpf.New()
 	if err != nil {
 		return fmt.Errorf("failed to create eBPF loader: %w", err)
 	}
