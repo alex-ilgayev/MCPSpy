@@ -25,10 +25,11 @@ import (
 
 // Loader manages eBPF program lifecycle
 type Loader struct {
-	objs    *archObjects
-	links   []link.Link
-	reader  *ringbuf.Reader
-	eventCh chan mcpevents.Event
+	objs      *archObjects
+	links     []link.Link
+	reader    *ringbuf.Reader
+	eventCh   chan mcpevents.Event
+	mcpspyPID uint32
 
 	// Iterator link for library enumeration
 	// Will be != nil if enumeration is ongoing
@@ -36,7 +37,7 @@ type Loader struct {
 }
 
 // New creates a new eBPF loader
-func New() (*Loader, error) {
+func New(mcpspyPID uint32) (*Loader, error) {
 	// Remove the memory limit for eBPF
 	if err := rlimit.RemoveMemlock(); err != nil {
 		return nil, fmt.Errorf("failed to remove memlock: %w", err)
@@ -44,7 +45,8 @@ func New() (*Loader, error) {
 
 	return &Loader{
 		// approximately maximum of 25-100MB memory.
-		eventCh: make(chan mcpevents.Event, 100000),
+		eventCh:   make(chan mcpevents.Event, 100000),
+		mcpspyPID: mcpspyPID,
 	}, nil
 }
 
@@ -65,13 +67,13 @@ func (l *Loader) Load() error {
 	// 	"log_level": bpfLogLevel,
 	// })
 	//
-	// Unfortunately, seems that it's not working. So we rewrite the first variable in .data section manually.
+	// Unfortunately, seems that it's not working. So we rewrite the variable in the section manually.
 	if dataSpec, ok := spec.Maps[".data"]; ok {
 		// Get the current value bytes
 		if len(dataSpec.Contents) > 0 {
 			// The value should be a byte slice containing the .data section
 			if valueBytes, ok := dataSpec.Contents[0].Value.([]byte); ok {
-				// log_level is a 4-byte uint32 at the beginning of .data
+				// log_level is a 4-byte uint32 at the beginning of .data (offset 0)
 				if len(valueBytes) >= 4 {
 					binary.LittleEndian.PutUint32(valueBytes[0:4], bpfLogLevel)
 					logrus.WithField("bpf_log_level", bpfLogLevel).Debug("Set eBPF log level in .data section")
@@ -92,6 +94,13 @@ func (l *Loader) Load() error {
 		return fmt.Errorf("failed to load eBPF objects: %w", err)
 	}
 	l.objs = objs
+
+	// Set the mcpspy PID in the map
+	key := uint32(0)
+	if err := l.objs.McpspyPidMap.Put(&key, &l.mcpspyPID); err != nil {
+		return fmt.Errorf("failed to set mcpspy PID in map: %w", err)
+	}
+	logrus.WithField("mcpspy_pid", l.mcpspyPID).Debug("Set mcpspy PID in map")
 
 	// Attaching exit_vfs_read with Fexit
 	readEnterLink, err := link.AttachTracing(link.TracingOptions{

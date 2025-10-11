@@ -61,6 +61,15 @@ struct {
     __type(value, struct inode_process_info);
 } inode_process_map SEC(".maps");
 
+// Map to store the PID of the mcpspy process itself
+// Key is always 0, value is the PID to ignore
+struct {
+    __uint(type, BPF_MAP_TYPE_ARRAY);
+    __uint(max_entries, 1);
+    __type(key, __u32);
+    __type(value, __u32);
+} mcpspy_pid_map SEC(".maps");
+
 // Common header for all events
 // Parsed first to get the event type.
 struct event_header {

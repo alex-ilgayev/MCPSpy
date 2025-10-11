@@ -109,4 +109,21 @@ static __always_inline __u32 get_mount_ns_id(void) {
     return BPF_CORE_READ(mnt_ns, ns.inum);
 }
 
+// Check if the given PID belongs to the mcpspy process itself
+// and should be ignored
+static __always_inline bool should_ignore_pid(__u32 pid) {
+    __u32 key = 0;
+    __u32 *mcpspy_pid = bpf_map_lookup_elem(&mcpspy_pid_map, &key);
+    if (!mcpspy_pid) {
+        return false;
+    }
+
+    // 0 means not set, so don't filter
+    if (*mcpspy_pid == 0) {
+        return false;
+    }
+
+    return pid == *mcpspy_pid;
+}
+
 #endif // __HELPERS_H

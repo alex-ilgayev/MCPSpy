@@ -44,6 +44,13 @@ int BPF_PROG(exit_vfs_read, struct file *file, const char *buf, size_t count,
         return 0;
     }
 
+    __u32 pid = bpf_get_current_pid_tgid() >> 32;
+
+    // Ignore events from mcpspy itself
+    if (should_ignore_pid(pid)) {
+        return 0;
+    }
+
     // Check if inode is a pipe - we only track stdio (pipe) communication
     // This is cheaper than buffer inspection, so check it first
     if (!is_pipe(file)) {
@@ -64,8 +71,6 @@ int BPF_PROG(exit_vfs_read, struct file *file, const char *buf, size_t count,
                   MAX_BUF_SIZE);
         return 0;
     }
-
-    __u32 pid = bpf_get_current_pid_tgid() >> 32;
 
     // Lookup or create cache entry
     // Note: Inode numbers are only unique within a filesystem. If monitoring
@@ -148,6 +153,13 @@ int BPF_PROG(exit_vfs_write, struct file *file, const char *buf, size_t count,
         return 0;
     }
 
+    __u32 pid = bpf_get_current_pid_tgid() >> 32;
+
+    // Ignore events from mcpspy itself
+    if (should_ignore_pid(pid)) {
+        return 0;
+    }
+
     // Check if inode is a pipe - we only track stdio (pipe) communication
     // This is cheaper than buffer inspection, so check it first
     if (!is_pipe(file)) {
@@ -167,8 +179,6 @@ int BPF_PROG(exit_vfs_write, struct file *file, const char *buf, size_t count,
                   ret, MAX_BUF_SIZE);
         return 0;
     }
-
-    __u32 pid = bpf_get_current_pid_tgid() >> 32;
 
     // Lookup or create cache entry
     // Note: Inode numbers are only unique within a filesystem. If monitoring
@@ -258,6 +268,12 @@ int enumerate_loaded_modules(struct bpf_iter__task_vma *ctx) {
         return 0;
     }
 
+    // Ignore events from mcpspy itself
+    __u32 pid = task->tgid;
+    if (should_ignore_pid(pid)) {
+        return 0;
+    }
+
     // Check if this VMA is a file mapping
     struct file *file = vma->vm_file;
     if (!file) {
@@ -288,7 +304,7 @@ int enumerate_loaded_modules(struct bpf_iter__task_vma *ctx) {
     }
 
     event->header.event_type = EVENT_LIBRARY;
-    event->header.pid = task->tgid;
+    event->header.pid = pid;
     event->inode = file->f_inode->i_ino;
     event->mnt_ns_id = get_mount_ns_id();
     bpf_probe_read_kernel_str(&event->header.comm, sizeof(event->header.comm),
@@ -320,6 +336,12 @@ int BPF_PROG(trace_security_file_open, struct file *file) {
         return 0;
     }
 
+    // Ignore events from mcpspy itself
+    __u32 pid = bpf_get_current_pid_tgid() >> 32;
+    if (should_ignore_pid(pid)) {
+        return 0;
+    }
+
     // Check if directory
     if (is_directory(file->f_path.dentry)) {
         return 0;
@@ -347,7 +369,7 @@ int BPF_PROG(trace_security_file_open, struct file *file) {
     bpf_d_path(&file->f_path, (char *)event->path, PATH_MAX);
 
     event->header.event_type = EVENT_LIBRARY;
-    event->header.pid = bpf_get_current_pid_tgid() >> 32;
+    event->header.pid = pid;
     event->inode = file->f_inode->i_ino;
     event->mnt_ns_id = get_mount_ns_id();
     bpf_get_current_comm(&event->header.comm, sizeof(event->header.comm));
@@ -365,6 +387,11 @@ int BPF_PROG(trace_security_file_open, struct file *file) {
 SEC("uprobe/SSL_read")
 int BPF_UPROBE(ssl_read_entry, void *ssl, void *buf) {
     __u32 pid = bpf_get_current_pid_tgid() >> 32;
+
+    // Ignore events from mcpspy itself
+    if (should_ignore_pid(pid)) {
+        return 0;
+    }
 
     struct ssl_read_params params = {
         .ssl = (__u64)ssl,
@@ -469,14 +496,20 @@ int BPF_UPROBE(ssl_write_entry, void *ssl, const void *buf, int num) {
         return 0;
     }
 
+    // Ignore events from mcpspy itself
+    __u32 pid = bpf_get_current_pid_tgid() >> 32;
+    if (should_ignore_pid(pid)) {
+        return 0;
+    }
+
+    LOG_TRACE("ssl_write_entry: ctx=%p, num=%d", ssl, num);
+
     if (num > MAX_BUF_SIZE) {
         // We still want to deliver these messages for HTTP session integrity.
         // But it means we'll may lose information.
         LOG_DEBUG("ssl_write_entry: buffer is too big: %d > %d", num,
                   MAX_BUF_SIZE);
     }
-
-    LOG_TRACE("ssl_write_entry: ctx=%p, num=%d", ssl, num);
 
     // Checking the session if was set to specific http version.
     // If not, we try to identify the version from the payload.
@@ -519,7 +552,6 @@ int BPF_UPROBE(ssl_write_entry, void *ssl, const void *buf, int num) {
     }
 
     event->header.event_type = EVENT_TLS_PAYLOAD_SEND;
-    __u32 pid = bpf_get_current_pid_tgid() >> 32;
     event->header.pid = pid;
     bpf_get_current_comm(&event->header.comm, sizeof(event->header.comm));
     event->ssl_ctx = ssl_ptr;
@@ -546,6 +578,11 @@ SEC("uprobe/SSL_read_ex")
 int BPF_UPROBE(ssl_read_ex_entry, void *ssl, void *buf, size_t num,
                size_t *readbytes) {
     __u32 pid = bpf_get_current_pid_tgid() >> 32;
+
+    // Ignore events from mcpspy itself
+    if (should_ignore_pid(pid)) {
+        return 0;
+    }
 
     struct ssl_read_ex_params params = {
         .ssl = (__u64)ssl, .buf = (__u64)buf, .readbytes = (__u64)readbytes};
@@ -654,14 +691,20 @@ int BPF_UPROBE(ssl_write_ex_entry, void *ssl, const void *buf, size_t num,
         return 0;
     }
 
+    // Ignore events from mcpspy itself
+    __u32 pid = bpf_get_current_pid_tgid() >> 32;
+    if (should_ignore_pid(pid)) {
+        return 0;
+    }
+
+    LOG_TRACE("ssl_write_entry: ctx=%p, num=%d", ssl, num);
+
     if (num > MAX_BUF_SIZE) {
         // We still want to deliver these messages for HTTP session integrity.
         // But it means we'll may lose information.
         LOG_DEBUG("ssl_write_ex_entry: buffer is too big: %d > %d", num,
                   MAX_BUF_SIZE);
     }
-
-    LOG_TRACE("ssl_write_entry: ctx=%p, num=%d", ssl, num);
 
     // Checking the session if was set to specific http version.
     // If not, we try to identify the version from the payload.
@@ -704,7 +747,6 @@ int BPF_UPROBE(ssl_write_ex_entry, void *ssl, const void *buf, size_t num,
     }
 
     event->header.event_type = EVENT_TLS_PAYLOAD_SEND;
-    __u32 pid = bpf_get_current_pid_tgid() >> 32;
     event->header.pid = pid;
     bpf_get_current_comm(&event->header.comm, sizeof(event->header.comm));
     event->ssl_ctx = ssl_ptr;
@@ -730,6 +772,12 @@ int BPF_URETPROBE(ssl_new_exit, void *ssl) {
         return 0;
     }
 
+    // Ignore events from mcpspy itself
+    __u32 pid = bpf_get_current_pid_tgid() >> 32;
+    if (should_ignore_pid(pid)) {
+        return 0;
+    }
+
     LOG_TRACE("ssl_new_exit: ctx=%p", ssl);
 
     __u64 ssl_ptr = (__u64)ssl;
@@ -746,6 +794,12 @@ int BPF_URETPROBE(ssl_new_exit, void *ssl) {
 SEC("uprobe/SSL_free")
 int BPF_UPROBE(ssl_free_entry, void *ssl) {
     if (!ssl) {
+        return 0;
+    }
+
+    // Ignore events from mcpspy itself
+    __u32 pid = bpf_get_current_pid_tgid() >> 32;
+    if (should_ignore_pid(pid)) {
         return 0;
     }
 
@@ -777,6 +831,11 @@ SEC("uprobe/SSL_do_handshake")
 int BPF_UPROBE(ssl_do_handshake_entry, void *ssl) {
     __u32 pid = bpf_get_current_pid_tgid() >> 32;
     __u64 ssl_ptr = (__u64)ssl;
+
+    // Ignore events from mcpspy itself
+    if (should_ignore_pid(pid)) {
+        return 0;
+    }
 
     bpf_map_update_elem(&ssl_handshake_args, &pid, &ssl_ptr, BPF_ANY);
     return 0;
