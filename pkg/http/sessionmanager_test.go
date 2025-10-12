@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	tu "github.com/alex-ilgayev/mcpspy/internal/testing"
 	"github.com/alex-ilgayev/mcpspy/pkg/event"
 )
 
@@ -32,7 +33,11 @@ func containsBytes(haystack, needle []byte) bool {
 }
 
 func TestSessionManager_BasicRequestResponse(t *testing.T) {
-	sm := NewSessionManager()
+	mockBus := tu.NewMockBus()
+	sm, err := NewSessionManager(mockBus)
+	if err != nil {
+		t.Fatalf("Failed to create SessionManager: %v", err)
+	}
 	defer sm.Close()
 
 	sslCtx := uint64(12345)
@@ -50,10 +55,7 @@ func TestSessionManager_BasicRequestResponse(t *testing.T) {
 	copy(requestEvent.Buf[:], requestData)
 
 	// Process request
-	err := sm.ProcessTlsEvent(requestEvent)
-	if err != nil {
-		t.Fatalf("Failed to process request: %v", err)
-	}
+	sm.ProcessTlsEvent(requestEvent)
 
 	// Simulate HTTP response
 	responseData := []byte("HTTP/1.1 200 OK\r\nContent-Length: 13\r\n\r\nHello, World!")
@@ -68,14 +70,11 @@ func TestSessionManager_BasicRequestResponse(t *testing.T) {
 	copy(responseEvent.Buf[:], responseData)
 
 	// Process response
-	err = sm.ProcessTlsEvent(responseEvent)
-	if err != nil {
-		t.Fatalf("Failed to process response: %v", err)
-	}
+	sm.ProcessTlsEvent(responseEvent)
 
 	// Check if request event was emitted
 	select {
-	case evt := <-sm.HTTPEvents():
+	case evt := <-mockBus.Events():
 		if evt.Type() != event.EventTypeHttpRequest {
 			t.Errorf("Expected EventTypeHttpRequest, got %v", evt.Type())
 		}
@@ -101,7 +100,7 @@ func TestSessionManager_BasicRequestResponse(t *testing.T) {
 
 	// Check if response event was emitted
 	select {
-	case evt := <-sm.HTTPEvents():
+	case evt := <-mockBus.Events():
 		if evt.Type() != event.EventTypeHttpResponse {
 			t.Errorf("Expected EventTypeHttpResponse, got %v", evt.Type())
 		}
@@ -133,7 +132,11 @@ func TestSessionManager_BasicRequestResponse(t *testing.T) {
 }
 
 func TestSessionManager_FragmentedPayload(t *testing.T) {
-	sm := NewSessionManager()
+	mockBus := tu.NewMockBus()
+	sm, err := NewSessionManager(mockBus)
+	if err != nil {
+		t.Fatalf("Failed to create SessionManager: %v", err)
+	}
 	defer sm.Close()
 
 	sslCtx := uint64(67890)
@@ -181,7 +184,7 @@ func TestSessionManager_FragmentedPayload(t *testing.T) {
 
 	// Check request event
 	select {
-	case evt := <-sm.HTTPEvents():
+	case evt := <-mockBus.Events():
 		if evt.Type() != event.EventTypeHttpRequest {
 			t.Errorf("Expected EventTypeHttpRequest, got %v", evt.Type())
 		}
@@ -201,7 +204,7 @@ func TestSessionManager_FragmentedPayload(t *testing.T) {
 
 	// Check response event
 	select {
-	case evt := <-sm.HTTPEvents():
+	case evt := <-mockBus.Events():
 		if evt.Type() != event.EventTypeHttpResponse {
 			t.Errorf("Expected EventTypeHttpResponse, got %v", evt.Type())
 		}
@@ -215,7 +218,11 @@ func TestSessionManager_FragmentedPayload(t *testing.T) {
 }
 
 func TestSessionManager_MultipleSessions(t *testing.T) {
-	sm := NewSessionManager()
+	mockBus := tu.NewMockBus()
+	sm, err := NewSessionManager(mockBus)
+	if err != nil {
+		t.Fatalf("Failed to create SessionManager: %v", err)
+	}
 	defer sm.Close()
 
 	sslCtx1 := uint64(111)
@@ -279,7 +286,7 @@ func TestSessionManager_MultipleSessions(t *testing.T) {
 
 	for i := 0; i < 4; i++ {
 		select {
-		case evt := <-sm.HTTPEvents():
+		case evt := <-mockBus.Events():
 			if evt.Type() == event.EventTypeHttpRequest {
 				requestEvents[evt.(*event.HttpRequestEvent).SSLContext] = evt.(*event.HttpRequestEvent)
 			} else if evt.Type() == event.EventTypeHttpResponse {
@@ -334,7 +341,11 @@ func TestSessionManager_MultipleSessions(t *testing.T) {
 }
 
 func TestSessionManager_IgnoresNonHTTP11(t *testing.T) {
-	sm := NewSessionManager()
+	mockBus := tu.NewMockBus()
+	sm, err := NewSessionManager(mockBus)
+	if err != nil {
+		t.Fatalf("Failed to create SessionManager: %v", err)
+	}
 	defer sm.Close()
 
 	// HTTP/2 event should be ignored
@@ -348,14 +359,11 @@ func TestSessionManager_IgnoresNonHTTP11(t *testing.T) {
 	}
 	copy(event.Buf[:], []byte("some data"))
 
-	err := sm.ProcessTlsEvent(event)
-	if err != nil {
-		t.Fatalf("ProcessTlsEvent should not fail for non-HTTP/1.1: %v", err)
-	}
+	sm.ProcessTlsEvent(event)
 
 	// Verify no event is emitted
 	select {
-	case <-sm.HTTPEvents():
+	case <-mockBus.Events():
 		t.Fatal("Should not emit event for non-HTTP/1.1")
 	case <-time.After(50 * time.Millisecond):
 		// Expected: no event
@@ -569,7 +577,11 @@ func TestParseHTTPResponse(t *testing.T) {
 }
 
 func TestChunkedTransferEncoding(t *testing.T) {
-	sm := NewSessionManager()
+	mockBus := tu.NewMockBus()
+	sm, err := NewSessionManager(mockBus)
+	if err != nil {
+		t.Fatalf("Failed to create SessionManager: %v", err)
+	}
 	defer sm.Close()
 
 	sslCtx := uint64(33333)
@@ -602,7 +614,7 @@ func TestChunkedTransferEncoding(t *testing.T) {
 
 	// Check request event
 	select {
-	case evt := <-sm.HTTPEvents():
+	case evt := <-mockBus.Events():
 		if evt.Type() != event.EventTypeHttpRequest {
 			t.Errorf("Expected EventTypeHttpRequest, got %v", evt.Type())
 		}
@@ -612,7 +624,7 @@ func TestChunkedTransferEncoding(t *testing.T) {
 
 	// Check response event
 	select {
-	case evt := <-sm.HTTPEvents():
+	case evt := <-mockBus.Events():
 		if evt.Type() != event.EventTypeHttpResponse {
 			t.Errorf("Expected EventTypeHttpResponse, got %v", evt.Type())
 		}
@@ -702,7 +714,11 @@ func TestParseChunkedBody_Completeness(t *testing.T) {
 }
 
 func TestSessionManager_FragmentedChunkedResponse(t *testing.T) {
-	sm := NewSessionManager()
+	mockBus := tu.NewMockBus()
+	sm, err := NewSessionManager(mockBus)
+	if err != nil {
+		t.Fatalf("Failed to create SessionManager: %v", err)
+	}
 	defer sm.Close()
 
 	sslCtx := uint64(44444)
@@ -722,7 +738,7 @@ func TestSessionManager_FragmentedChunkedResponse(t *testing.T) {
 
 	// Should emit request event immediately after request is complete
 	select {
-	case evt := <-sm.HTTPEvents():
+	case evt := <-mockBus.Events():
 		if evt.Type() != event.EventTypeHttpRequest {
 			t.Errorf("Expected EventTypeHttpRequest, got %v", evt.Type())
 		}
@@ -745,7 +761,7 @@ func TestSessionManager_FragmentedChunkedResponse(t *testing.T) {
 
 	// Should not emit response event yet (response is incomplete)
 	select {
-	case <-sm.HTTPEvents():
+	case <-mockBus.Events():
 		t.Fatal("Should not emit response event for incomplete chunked response")
 	case <-time.After(50 * time.Millisecond):
 		// Expected
@@ -766,7 +782,7 @@ func TestSessionManager_FragmentedChunkedResponse(t *testing.T) {
 
 	// Now should emit response event (request was already emitted earlier)
 	select {
-	case evt := <-sm.HTTPEvents():
+	case evt := <-mockBus.Events():
 		if evt.Type() != event.EventTypeHttpResponse {
 			t.Errorf("Expected EventTypeHttpResponse, got %v", evt.Type())
 		}
@@ -783,7 +799,11 @@ func TestSessionManager_FragmentedChunkedResponse(t *testing.T) {
 }
 
 func TestSessionManager_RequestWithPayload(t *testing.T) {
-	sm := NewSessionManager()
+	mockBus := tu.NewMockBus()
+	sm, err := NewSessionManager(mockBus)
+	if err != nil {
+		t.Fatalf("Failed to create SessionManager: %v", err)
+	}
 	defer sm.Close()
 
 	sslCtx := uint64(55555)
@@ -816,7 +836,7 @@ func TestSessionManager_RequestWithPayload(t *testing.T) {
 
 	// Check request event
 	select {
-	case evt := <-sm.HTTPEvents():
+	case evt := <-mockBus.Events():
 		if evt.Type() != event.EventTypeHttpRequest {
 			t.Errorf("Expected EventTypeHttpRequest, got %v", evt.Type())
 		}
@@ -847,7 +867,7 @@ func TestSessionManager_RequestWithPayload(t *testing.T) {
 
 	// Check response event
 	select {
-	case evt := <-sm.HTTPEvents():
+	case evt := <-mockBus.Events():
 		if evt.Type() != event.EventTypeHttpResponse {
 			t.Errorf("Expected EventTypeHttpResponse, got %v", evt.Type())
 		}
@@ -869,7 +889,11 @@ func TestSessionManager_RequestWithPayload(t *testing.T) {
 }
 
 func TestProcessTlsFreeEvent_DeletesSession(t *testing.T) {
-	sm := NewSessionManager()
+	mockBus := tu.NewMockBus()
+	sm, err := NewSessionManager(mockBus)
+	if err != nil {
+		t.Fatalf("Failed to create SessionManager: %v", err)
+	}
 	defer sm.Close()
 
 	sslCtx := uint64(99999)
@@ -904,10 +928,7 @@ func TestProcessTlsFreeEvent_DeletesSession(t *testing.T) {
 		},
 		SSLContext: sslCtx,
 	}
-	err := sm.ProcessTlsFreeEvent(freeEvent)
-	if err != nil {
-		t.Fatalf("ProcessTlsFreeEvent failed: %v", err)
-	}
+	sm.ProcessTlsFreeEvent(freeEvent)
 
 	// Verify session is deleted
 	sm.mu.Lock()
@@ -919,7 +940,7 @@ func TestProcessTlsFreeEvent_DeletesSession(t *testing.T) {
 
 	// Should receive a request event (request is complete)
 	select {
-	case evt := <-sm.HTTPEvents():
+	case evt := <-mockBus.Events():
 		if evt.Type() != event.EventTypeHttpRequest {
 			t.Errorf("Expected EventTypeHttpRequest, got %v", evt.Type())
 		}
@@ -929,7 +950,11 @@ func TestProcessTlsFreeEvent_DeletesSession(t *testing.T) {
 }
 
 func TestProcessTlsFreeEvent_IncompleteChunkedResponse(t *testing.T) {
-	sm := NewSessionManager()
+	mockBus := tu.NewMockBus()
+	sm, err := NewSessionManager(mockBus)
+	if err != nil {
+		t.Fatalf("Failed to create SessionManager: %v", err)
+	}
 	defer sm.Close()
 
 	sslCtx := uint64(88888)
@@ -964,7 +989,7 @@ func TestProcessTlsFreeEvent_IncompleteChunkedResponse(t *testing.T) {
 
 	// Should receive request event (request is complete)
 	select {
-	case evt := <-sm.HTTPEvents():
+	case evt := <-mockBus.Events():
 		if evt.Type() != event.EventTypeHttpRequest {
 			t.Errorf("Expected EventTypeHttpRequest, got %v", evt.Type())
 		}
@@ -978,7 +1003,7 @@ func TestProcessTlsFreeEvent_IncompleteChunkedResponse(t *testing.T) {
 
 	// No response event should be emitted yet (incomplete)
 	select {
-	case <-sm.HTTPEvents():
+	case <-mockBus.Events():
 		t.Fatal("Should not receive response event for incomplete chunked response")
 	case <-time.After(50 * time.Millisecond):
 		// Expected - no event
@@ -996,7 +1021,7 @@ func TestProcessTlsFreeEvent_IncompleteChunkedResponse(t *testing.T) {
 
 	// Session should be deleted but no response event (incomplete response)
 	select {
-	case <-sm.HTTPEvents():
+	case <-mockBus.Events():
 		t.Fatal("Should not receive response event for incomplete chunked response even after TlsFree")
 	case <-time.After(100 * time.Millisecond):
 		// Expected - no response event for incomplete response
@@ -1004,7 +1029,11 @@ func TestProcessTlsFreeEvent_IncompleteChunkedResponse(t *testing.T) {
 }
 
 func TestProcessTlsFreeEvent_NoSession(t *testing.T) {
-	sm := NewSessionManager()
+	mockBus := tu.NewMockBus()
+	sm, err := NewSessionManager(mockBus)
+	if err != nil {
+		t.Fatalf("Failed to create SessionManager: %v", err)
+	}
 	defer sm.Close()
 
 	// Send TlsFreeEvent for non-existent session
@@ -1016,14 +1045,11 @@ func TestProcessTlsFreeEvent_NoSession(t *testing.T) {
 		SSLContext: 66666,
 	}
 
-	err := sm.ProcessTlsFreeEvent(freeEvent)
-	if err != nil {
-		t.Fatalf("ProcessTlsFreeEvent should not fail for non-existent session: %v", err)
-	}
+	sm.ProcessTlsFreeEvent(freeEvent)
 
 	// No event should be emitted
 	select {
-	case <-sm.HTTPEvents():
+	case <-mockBus.Events():
 		t.Fatal("Should not receive event for non-existent session")
 	case <-time.After(50 * time.Millisecond):
 		// Expected - no event
@@ -1031,7 +1057,11 @@ func TestProcessTlsFreeEvent_NoSession(t *testing.T) {
 }
 
 func TestProcessTlsFreeEvent_OnlyRequest(t *testing.T) {
-	sm := NewSessionManager()
+	mockBus := tu.NewMockBus()
+	sm, err := NewSessionManager(mockBus)
+	if err != nil {
+		t.Fatalf("Failed to create SessionManager: %v", err)
+	}
 	defer sm.Close()
 
 	sslCtx := uint64(55555)
@@ -1052,7 +1082,7 @@ func TestProcessTlsFreeEvent_OnlyRequest(t *testing.T) {
 
 	// Should receive request event (request is complete)
 	select {
-	case evt := <-sm.HTTPEvents():
+	case evt := <-mockBus.Events():
 		if evt.Type() != event.EventTypeHttpRequest {
 			t.Errorf("Expected EventTypeHttpRequest, got %v", evt.Type())
 		}
@@ -1079,7 +1109,7 @@ func TestProcessTlsFreeEvent_OnlyRequest(t *testing.T) {
 
 	// Should NOT receive response event (no response was sent)
 	select {
-	case <-sm.HTTPEvents():
+	case <-mockBus.Events():
 		t.Fatal("Should not receive response event for session with only request")
 	case <-time.After(100 * time.Millisecond):
 		// Expected - no response event
@@ -1088,7 +1118,11 @@ func TestProcessTlsFreeEvent_OnlyRequest(t *testing.T) {
 
 func TestSessionManager_SSEResponse(t *testing.T) {
 	// Create session manager without callback (will use channel)
-	sm := NewSessionManager()
+	mockBus := tu.NewMockBus()
+	sm, err := NewSessionManager(mockBus)
+	if err != nil {
+		t.Fatalf("Failed to create SessionManager: %v", err)
+	}
 	defer sm.Close()
 
 	// Track SSE events from channel
@@ -1113,7 +1147,7 @@ func TestSessionManager_SSEResponse(t *testing.T) {
 
 	// Should receive request event first
 	select {
-	case evt := <-sm.HTTPEvents():
+	case evt := <-mockBus.Events():
 		if evt.Type() != event.EventTypeHttpRequest {
 			t.Errorf("Expected EventTypeHttpRequest, got %v", evt.Type())
 		}
@@ -1158,7 +1192,7 @@ func TestSessionManager_SSEResponse(t *testing.T) {
 
 	// Check first SSE event was received through channel
 	select {
-	case sseEvt := <-sm.HTTPEvents():
+	case sseEvt := <-mockBus.Events():
 		// Make a copy of the SSE data
 		sseEvent := sseEvt.(*event.SSEEvent)
 		dataCopy := make([]byte, len(sseEvent.Data))
@@ -1217,7 +1251,7 @@ func TestSessionManager_SSEResponse(t *testing.T) {
 	// Receive 3 more SSE events from channel
 	for i := 0; i < 3; i++ {
 		select {
-		case sseEvt := <-sm.HTTPEvents():
+		case sseEvt := <-mockBus.Events():
 			// Make a copy of the SSE data
 			sseEvent := sseEvt.(*event.SSEEvent)
 			dataCopy := make([]byte, len(sseEvent.Data))
@@ -1263,7 +1297,7 @@ func TestSessionManager_SSEResponse(t *testing.T) {
 
 	// No regular HTTP event should be emitted yet (response not complete)
 	select {
-	case <-sm.HTTPEvents():
+	case <-mockBus.Events():
 		t.Fatal("Should not emit regular HTTP event for ongoing SSE stream")
 	case <-time.After(50 * time.Millisecond):
 		// Expected - no event
@@ -1272,7 +1306,11 @@ func TestSessionManager_SSEResponse(t *testing.T) {
 
 func TestSessionManager_SSEWithNonSSEResponse(t *testing.T) {
 	// Create session manager
-	sm := NewSessionManager()
+	mockBus := tu.NewMockBus()
+	sm, err := NewSessionManager(mockBus)
+	if err != nil {
+		t.Fatalf("Failed to create SessionManager: %v", err)
+	}
 	defer sm.Close()
 
 	sslCtx := uint64(88888)
@@ -1293,7 +1331,7 @@ func TestSessionManager_SSEWithNonSSEResponse(t *testing.T) {
 
 	// Should receive request event first
 	select {
-	case evt := <-sm.HTTPEvents():
+	case evt := <-mockBus.Events():
 		if evt.Type() != event.EventTypeHttpRequest {
 			t.Errorf("Expected EventTypeHttpRequest, got %v", evt.Type())
 		}
@@ -1321,7 +1359,7 @@ func TestSessionManager_SSEWithNonSSEResponse(t *testing.T) {
 
 	// Regular HTTP response event should be emitted (no SSE events)
 	select {
-	case evt := <-sm.HTTPEvents():
+	case evt := <-mockBus.Events():
 		if evt.Type() == event.EventTypeHttpSSE {
 			t.Error("Should not receive SSE events for non-SSE responses")
 		}
@@ -1345,7 +1383,11 @@ func TestSessionManager_SSEWithNonSSEResponse(t *testing.T) {
 
 func TestSessionManager_SSECompleteResponse(t *testing.T) {
 	// Create session manager
-	sm := NewSessionManager()
+	mockBus := tu.NewMockBus()
+	sm, err := NewSessionManager(mockBus)
+	if err != nil {
+		t.Fatalf("Failed to create SessionManager: %v", err)
+	}
 	defer sm.Close()
 
 	sslCtx := uint64(55555)
@@ -1366,7 +1408,7 @@ func TestSessionManager_SSECompleteResponse(t *testing.T) {
 
 	// Should receive request event first
 	select {
-	case evt := <-sm.HTTPEvents():
+	case evt := <-mockBus.Events():
 		if evt.Type() != event.EventTypeHttpRequest {
 			t.Errorf("Expected EventTypeHttpRequest, got %v", evt.Type())
 		}
@@ -1390,7 +1432,7 @@ func TestSessionManager_SSECompleteResponse(t *testing.T) {
 
 	// Check SSE event was received through channel
 	select {
-	case sseEvt := <-sm.HTTPEvents():
+	case sseEvt := <-mockBus.Events():
 		expectedData := "complete"
 		sseEvent := sseEvt.(*event.SSEEvent)
 		if string(sseEvent.Data) != expectedData {
@@ -1416,7 +1458,7 @@ func TestSessionManager_SSECompleteResponse(t *testing.T) {
 
 	// Response should complete and be emitted
 	select {
-	case evt := <-sm.HTTPEvents():
+	case evt := <-mockBus.Events():
 		if evt.Type() != event.EventTypeHttpResponse {
 			t.Errorf("Expected EventTypeHttpResponse, got %v", evt.Type())
 		}
@@ -1427,7 +1469,11 @@ func TestSessionManager_SSECompleteResponse(t *testing.T) {
 
 func TestSessionManager_SSENoCallback(t *testing.T) {
 	// Create session manager without SSE callback
-	sm := NewSessionManager()
+	mockBus := tu.NewMockBus()
+	sm, err := NewSessionManager(mockBus)
+	if err != nil {
+		t.Fatalf("Failed to create SessionManager: %v", err)
+	}
 	defer sm.Close()
 
 	sslCtx := uint64(99999)
@@ -1461,7 +1507,7 @@ func TestSessionManager_SSENoCallback(t *testing.T) {
 
 	// Should receive request event first
 	select {
-	case evt := <-sm.HTTPEvents():
+	case evt := <-mockBus.Events():
 		if evt.Type() != event.EventTypeHttpRequest {
 			t.Errorf("Expected EventTypeHttpRequest, got %v", evt.Type())
 		}
@@ -1474,14 +1520,11 @@ func TestSessionManager_SSENoCallback(t *testing.T) {
 	}
 
 	// Should not panic even without callback
-	err := sm.ProcessTlsEvent(responseEvent)
-	if err != nil {
-		t.Fatalf("ProcessTlsEvent should not fail without SSE callback: %v", err)
-	}
+	sm.ProcessTlsEvent(responseEvent)
 
 	// Should receive SSE event through channel even without callback
 	select {
-	case sseEvt := <-sm.HTTPEvents():
+	case sseEvt := <-mockBus.Events():
 		expectedData := "{\"test\":\"data\"}"
 		sseEvent := sseEvt.(*event.SSEEvent)
 		if string(sseEvent.Data) != expectedData {
@@ -1503,7 +1546,7 @@ func TestSessionManager_SSENoCallback(t *testing.T) {
 
 	// Regular HTTP response event should still be emitted when response completes
 	select {
-	case evt := <-sm.HTTPEvents():
+	case evt := <-mockBus.Events():
 		if evt.Type() != event.EventTypeHttpResponse {
 			t.Errorf("Expected EventTypeHttpResponse, got %v", evt.Type())
 		}

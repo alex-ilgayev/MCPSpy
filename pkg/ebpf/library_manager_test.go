@@ -4,6 +4,7 @@ import (
 	"errors"
 	"testing"
 
+	tu "github.com/alex-ilgayev/mcpspy/internal/testing"
 	"github.com/alex-ilgayev/mcpspy/pkg/event"
 )
 
@@ -33,7 +34,10 @@ func TestLibraryManager_ProcessLibraryEvent(t *testing.T) {
 	tl := newTestLoader()
 
 	// Create library manager with the test loader
-	lm := NewLibraryManager(tl, 4026532221) // Use a test mount namespace
+	lm, err := NewLibraryManager(tu.NewMockBus(), tl, 4026532221) // Use a test mount namespace
+	if err != nil {
+		t.Fatalf("Failed to create LibraryManager: %v", err)
+	}
 	defer lm.Close()
 
 	// Test successful hook
@@ -49,10 +53,7 @@ func TestLibraryManager_ProcessLibraryEvent(t *testing.T) {
 			PathBytes: makePathBytes("/usr/lib/libssl.so.1.1"),
 		}
 
-		err := lm.ProcessLibraryEvent(event)
-		if err != nil {
-			t.Errorf("Expected no error, got %v", err)
-		}
+		lm.ProcessLibraryEvent(event)
 
 		// Check if library was marked as hooked
 		hooked, _ := lm.Stats()
@@ -85,10 +86,7 @@ func TestLibraryManager_ProcessLibraryEvent(t *testing.T) {
 			PathBytes: makePathBytes("/usr/lib/libssl.so.3"),
 		}
 
-		err := lm.ProcessLibraryEvent(event)
-		if err == nil {
-			t.Error("Expected error, got nil")
-		}
+		lm.ProcessLibraryEvent(event)
 
 		// Check if library was marked as failed
 		_, failed := lm.Stats()
@@ -112,10 +110,7 @@ func TestLibraryManager_ProcessLibraryEvent(t *testing.T) {
 			PathBytes: makePathBytes("/usr/lib/libssl.so.1.1"),
 		}
 
-		err := lm.ProcessLibraryEvent(event)
-		if err != nil {
-			t.Errorf("Expected no error, got %v", err)
-		}
+		lm.ProcessLibraryEvent(event)
 
 		// Check that no additional attach was called
 		if len(tl.attachCalls) != initialCalls {
@@ -139,10 +134,7 @@ func TestLibraryManager_ProcessLibraryEvent(t *testing.T) {
 		}
 
 		// Since "probe failed" is not retryable, this should not retry
-		err := lm.ProcessLibraryEvent(event)
-		if err != nil {
-			t.Errorf("Expected no error for cached non-retryable failure, got %v", err)
-		}
+		lm.ProcessLibraryEvent(event)
 
 		// Check that attach was NOT called again (no retry for non-retryable error)
 		if len(tl.attachCalls) != initialCalls {
@@ -166,10 +158,7 @@ func TestLibraryManager_ProcessLibraryEvent(t *testing.T) {
 		}
 
 		// This will fail because we can't actually switch namespaces in a test
-		err := lm.ProcessLibraryEvent(event)
-		if err == nil {
-			t.Error("Expected error for cross-namespace switch in test environment")
-		}
+		lm.ProcessLibraryEvent(event)
 
 		// Should not have made additional attach calls (because namespace switching failed)
 		if len(tl.attachCalls) != initialCalls {
@@ -182,13 +171,16 @@ func TestLibraryManager_ProcessLibraryEvent(t *testing.T) {
 	if hooked != 1 {
 		t.Errorf("Expected 1 hooked library in final stats, got %d", hooked)
 	}
-	if failed != 1 {
-		t.Errorf("Expected 1 failed libraries in final stats, got %d", failed)
+	if failed != 2 {
+		t.Errorf("Expected 2 failed libraries in final stats, got %d", failed)
 	}
 }
 
 func TestLibraryManager_GetHookedLibraries(t *testing.T) {
-	lm := NewLibraryManager(nil, 4026532221)
+	lm, err := NewLibraryManager(tu.NewMockBus(), nil, 4026532221)
+	if err != nil {
+		t.Fatalf("Failed to create LibraryManager: %v", err)
+	}
 	defer lm.Close()
 
 	// Add some test data directly
@@ -211,7 +203,10 @@ func TestLibraryManager_GetHookedLibraries(t *testing.T) {
 }
 
 func TestLibraryManager_GetFailedLibraries(t *testing.T) {
-	lm := NewLibraryManager(nil, 4026532221)
+	lm, err := NewLibraryManager(tu.NewMockBus(), nil, 4026532221)
+	if err != nil {
+		t.Fatalf("Failed to create LibraryManager: %v", err)
+	}
 	defer lm.Close()
 
 	// Add some test data directly
@@ -236,7 +231,10 @@ func TestLibraryManager_GetFailedLibraries(t *testing.T) {
 }
 
 func TestLibraryManager_Reset(t *testing.T) {
-	lm := NewLibraryManager(nil, 4026532221)
+	lm, err := NewLibraryManager(tu.NewMockBus(), nil, 4026532221)
+	if err != nil {
+		t.Fatalf("Failed to create LibraryManager: %v", err)
+	}
 	defer lm.Close()
 
 	// Add some test data
@@ -268,10 +266,14 @@ func TestLibraryManager_Reset(t *testing.T) {
 }
 
 func TestLibraryManager_Close(t *testing.T) {
-	lm := NewLibraryManager(nil, 4026532221)
+	lm, err := NewLibraryManager(tu.NewMockBus(), nil, 4026532221)
+	if err != nil {
+		t.Fatalf("Failed to create LibraryManager: %v", err)
+	}
+	defer lm.Close()
 
 	// Close should work without error
-	err := lm.Close()
+	err = lm.Close()
 	if err != nil {
 		t.Errorf("Expected no error from Close(), got %v", err)
 	}
@@ -286,7 +288,10 @@ func TestLibraryManager_Close(t *testing.T) {
 // Test retry behavior with non-retryable errors
 func TestLibraryManager_NonRetryableError(t *testing.T) {
 	tl := newTestLoader()
-	lm := NewLibraryManager(tl, 4026532221)
+	lm, err := NewLibraryManager(tu.NewMockBus(), tl, 4026532221)
+	if err != nil {
+		t.Fatalf("Failed to create LibraryManager: %v", err)
+	}
 	defer lm.Close()
 
 	// Set up failure for this path with a non-retryable error
@@ -304,10 +309,7 @@ func TestLibraryManager_NonRetryableError(t *testing.T) {
 		PathBytes: makePathBytes("/usr/lib/libssl.so.retry"),
 	}
 
-	err := lm.ProcessLibraryEvent(event)
-	if err == nil {
-		t.Error("Expected error on first attempt, got nil")
-	}
+	lm.ProcessLibraryEvent(event)
 
 	// Verify it was marked as failed
 	_, failed := lm.Stats()
@@ -317,10 +319,7 @@ func TestLibraryManager_NonRetryableError(t *testing.T) {
 
 	// Second attempt should be skipped because error is not retryable
 	initialCalls := len(tl.attachCalls)
-	err = lm.ProcessLibraryEvent(event)
-	if err != nil {
-		t.Errorf("Expected no error for cached non-retryable failure, got %v", err)
-	}
+	lm.ProcessLibraryEvent(event)
 
 	// Check that no additional attach was called
 	if len(tl.attachCalls) != initialCalls {
@@ -331,7 +330,10 @@ func TestLibraryManager_NonRetryableError(t *testing.T) {
 // Test retry behavior with retryable errors (like "no such file or directory")
 func TestLibraryManager_RetryableError(t *testing.T) {
 	tl := newTestLoader()
-	lm := NewLibraryManager(tl, 4026532221)
+	lm, err := NewLibraryManager(tu.NewMockBus(), tl, 4026532221)
+	if err != nil {
+		t.Fatalf("Failed to create LibraryManager: %v", err)
+	}
 	defer lm.Close()
 
 	// Set up failure for this path with a retryable error
@@ -349,10 +351,7 @@ func TestLibraryManager_RetryableError(t *testing.T) {
 		PathBytes: makePathBytes("/usr/lib/libssl.so.retryable"),
 	}
 
-	err := lm.ProcessLibraryEvent(event)
-	if err == nil {
-		t.Error("Expected error on first attempt, got nil")
-	}
+	lm.ProcessLibraryEvent(event)
 
 	// Verify it was marked as failed
 	_, failed := lm.Stats()
@@ -362,10 +361,7 @@ func TestLibraryManager_RetryableError(t *testing.T) {
 
 	// Second attempt should retry because error is retryable
 	initialCalls := len(tl.attachCalls)
-	err = lm.ProcessLibraryEvent(event)
-	if err == nil {
-		t.Error("Expected error on retry attempt, got nil")
-	}
+	lm.ProcessLibraryEvent(event)
 
 	// Check that attach was called again (retry behavior)
 	if len(tl.attachCalls) != initialCalls+1 {
@@ -376,7 +372,10 @@ func TestLibraryManager_RetryableError(t *testing.T) {
 // Test error state removal when load succeeds
 func TestLibraryManager_ErrorStateRemoval(t *testing.T) {
 	tl := newTestLoader()
-	lm := NewLibraryManager(tl, 4026532221)
+	lm, err := NewLibraryManager(tu.NewMockBus(), tl, 4026532221)
+	if err != nil {
+		t.Fatalf("Failed to create LibraryManager: %v", err)
+	}
 	defer lm.Close()
 
 	// Set up initial failure with a retryable error
@@ -394,10 +393,7 @@ func TestLibraryManager_ErrorStateRemoval(t *testing.T) {
 	}
 
 	// First attempt should fail
-	err := lm.ProcessLibraryEvent(event)
-	if err == nil {
-		t.Error("Expected error on first attempt, got nil")
-	}
+	lm.ProcessLibraryEvent(event)
 
 	// Verify it was marked as failed
 	_, failed := lm.Stats()
@@ -409,7 +405,7 @@ func TestLibraryManager_ErrorStateRemoval(t *testing.T) {
 	delete(tl.attachResults, "/usr/lib/libssl.so.recover")
 
 	// Second attempt should succeed
-	err = lm.ProcessLibraryEvent(event)
+	lm.ProcessLibraryEvent(event)
 	if err != nil {
 		t.Errorf("Expected success on retry, got %v", err)
 	}
@@ -425,10 +421,7 @@ func TestLibraryManager_ErrorStateRemoval(t *testing.T) {
 
 	// Third attempt should be skipped (already hooked)
 	initialCalls := len(tl.attachCalls)
-	err = lm.ProcessLibraryEvent(event)
-	if err != nil {
-		t.Errorf("Expected no error for already hooked library, got %v", err)
-	}
+	lm.ProcessLibraryEvent(event)
 
 	// Check that no additional attach was called
 	if len(tl.attachCalls) != initialCalls {

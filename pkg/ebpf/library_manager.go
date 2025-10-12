@@ -1,10 +1,10 @@
 package ebpf
 
 import (
-	"fmt"
 	"strings"
 	"sync"
 
+	"github.com/alex-ilgayev/mcpspy/pkg/bus"
 	"github.com/alex-ilgayev/mcpspy/pkg/event"
 	"github.com/alex-ilgayev/mcpspy/pkg/namespace"
 	"github.com/sirupsen/logrus"
@@ -22,17 +22,26 @@ type LibraryManager struct {
 	mountNS    uint32            // mount namespace ID
 	hookedLibs map[uint64]string // inode -> path (successfully hooked)
 	failedLibs map[uint64]error  // inode -> error (failed to hook)
+	eventBus   bus.EventBus
 	mu         sync.Mutex
 }
 
 // NewLibraryManager creates a new library manager
-func NewLibraryManager(attacher SSLProbeAttacher, mountNS uint32) *LibraryManager {
-	return &LibraryManager{
+func NewLibraryManager(eventBus bus.EventBus, attacher SSLProbeAttacher, mountNS uint32) (*LibraryManager, error) {
+	lm := &LibraryManager{
 		attacher:   attacher,
 		mountNS:    mountNS,
 		hookedLibs: make(map[uint64]string),
 		failedLibs: make(map[uint64]error),
+		eventBus:   eventBus,
 	}
+
+	// Subscribe to library events
+	if err := eventBus.Subscribe(event.EventTypeLibrary, lm.ProcessLibraryEvent); err != nil {
+		return nil, err
+	}
+
+	return lm, nil
 }
 
 // retryableErrorPatterns contains error patterns that should trigger a retry
@@ -56,13 +65,19 @@ func isRetryableError(err error) bool {
 }
 
 // ProcessLibraryEvent processes a library event and attempts to attach SSL probes if needed
-func (lm *LibraryManager) ProcessLibraryEvent(event *event.LibraryEvent) error {
+func (lm *LibraryManager) ProcessLibraryEvent(e event.Event) {
+	// We only handle LibraryEvent types
+	libEvent, ok := e.(*event.LibraryEvent)
+	if !ok {
+		return
+	}
+
 	lm.mu.Lock()
 	defer lm.mu.Unlock()
 
-	inode := event.Inode
-	path := event.Path()
-	targetMountNS := event.MountNamespaceID()
+	inode := libEvent.Inode
+	path := libEvent.Path()
+	targetMountNS := libEvent.MountNamespaceID()
 
 	// Check if already hooked
 	if hookedPath, ok := lm.hookedLibs[inode]; ok {
@@ -72,7 +87,7 @@ func (lm *LibraryManager) ProcessLibraryEvent(event *event.LibraryEvent) error {
 			"hooked_path":   hookedPath,
 			"target_mnt_ns": targetMountNS,
 		}).Trace("Library already hooked")
-		return nil
+		return
 	}
 
 	// Check if previously failed and error is not retryable
@@ -83,7 +98,7 @@ func (lm *LibraryManager) ProcessLibraryEvent(event *event.LibraryEvent) error {
 			"error":         err,
 			"target_mnt_ns": targetMountNS,
 		}).Trace("Library previously failed to hook with non-retryable error, skipping")
-		return nil
+		return
 	}
 
 	var modifiedPath string
@@ -94,8 +109,13 @@ func (lm *LibraryManager) ProcessLibraryEvent(event *event.LibraryEvent) error {
 		// Different namespace - need to modify path
 		modifiedPath, err = namespace.GetPathInMountNamespace(path, targetMountNS)
 		if err != nil {
-			return fmt.Errorf("failed to get path in mount namespace for %s (inode %d) in mount namespace %d: %w",
-				path, inode, targetMountNS, err)
+			lm.failedLibs[inode] = err
+			logrus.WithFields(logrus.Fields{
+				"inode":         inode,
+				"path":          path,
+				"target_mnt_ns": targetMountNS,
+			}).Warn("Failed to get path in mount namespace")
+			return
 		}
 	} else {
 		// Same namespace - no need path modification
@@ -104,7 +124,12 @@ func (lm *LibraryManager) ProcessLibraryEvent(event *event.LibraryEvent) error {
 
 	if err := lm.attacher.AttachSSLProbes(modifiedPath); err != nil {
 		lm.failedLibs[inode] = err
-		return fmt.Errorf("failed to attach SSL probes to %s (inode %d): %w", modifiedPath, inode, err)
+		logrus.WithFields(logrus.Fields{
+			"inode":         inode,
+			"path":          path,
+			"target_mnt_ns": targetMountNS,
+		}).Warn("Failed to attach SSL probes")
+		return
 	}
 
 	// Successfully attached - remove from failed libs if it was there
@@ -115,8 +140,6 @@ func (lm *LibraryManager) ProcessLibraryEvent(event *event.LibraryEvent) error {
 		"path":          path,
 		"target_mnt_ns": targetMountNS,
 	}).Debug("Successfully attached SSL probes to library")
-
-	return nil
 }
 
 // Stats returns statistics about hooked and failed libraries

@@ -9,6 +9,7 @@ import (
 	"io"
 	"time"
 
+	"github.com/alex-ilgayev/mcpspy/pkg/bus"
 	"github.com/alex-ilgayev/mcpspy/pkg/event"
 	"github.com/hashicorp/golang-lru/v2/expirable"
 	"github.com/sirupsen/logrus"
@@ -69,99 +70,16 @@ var allowedMCPMethods = map[string]string{
 	"notifications/roots/list_changed": "Root list changed",
 }
 
-// JSONRPCMessageType represents the type of JSON-RPC message
-type JSONRPCMessageType string
-
-const (
-	JSONRPCMessageTypeRequest      JSONRPCMessageType = "request"
-	JSONRPCMessageTypeResponse     JSONRPCMessageType = "response"
-	JSONRPCMessageTypeNotification JSONRPCMessageType = "notification"
-)
-
-// TransportType represents the type of transport
-type TransportType string
-
-const (
-	TransportTypeStdio TransportType = "stdio"
-	TransportTypeSSE   TransportType = "sse"
-	TransportTypeHTTP  TransportType = "http"
-)
-
-// StdioTransport represents the info relevant for the stdio transport.
-type StdioTransport struct {
-	FromPID  uint32 `json:"from_pid"`
-	FromComm string `json:"from_comm"`
-	ToPID    uint32 `json:"to_pid"`
-	ToComm   string `json:"to_comm"`
-}
-
-type HttpTransport struct {
-	PID       uint32 `json:"pid,omitempty"`
-	Comm      string `json:"comm,omitempty"`
-	Host      string `json:"host,omitempty"`
-	IsRequest bool   `json:"is_request,omitempty"`
-}
-
-// JSONRPCMessage represents a parsed JSON-RPC 2.0 message.
-type JSONRPCMessage struct {
-	Type   JSONRPCMessageType     `json:"type"`
-	ID     interface{}            `json:"id,omitempty"` // string or number
-	Method string                 `json:"method,omitempty"`
-	Params map[string]interface{} `json:"params,omitempty"`
-	Result interface{}            `json:"result,omitempty"`
-	Error  JSONRPCError           `json:"error,omitempty"`
-}
-
-// JSONRPCError represents a JSON-RPC error
-type JSONRPCError struct {
-	Code    int         `json:"code,omitempty"`
-	Message string      `json:"message,omitempty"`
-	Data    interface{} `json:"data,omitempty"`
-}
-
-// Message represents a parsed MCP message
-type Message struct {
-	Timestamp       time.Time     `json:"timestamp"`
-	TransportType   TransportType `json:"transport_type"`
-	*StdioTransport `json:"stdio_transport,omitempty"`
-	*HttpTransport  `json:"http_transport,omitempty"`
-
-	JSONRPCMessage
-
-	Raw string `json:"raw"`
-}
-
-// ExtractToolName attempts to extract tool name from a tools/call request
-func (msg *Message) ExtractToolName() string {
-	if msg.Method != "tools/call" || msg.Params == nil {
-		return ""
-	}
-
-	if name, ok := msg.Params["name"].(string); ok {
-		return name
-	}
-
-	return ""
-}
-
-// ExtractResourceURI attempts to extract resource URI from resource-related requests
-func (msg *Message) ExtractResourceURI() string {
-	// Check if this is a resource method that has a URI parameter
-	if (msg.Method != "resources/read" &&
-		msg.Method != "resources/subscribe" &&
-		msg.Method != "resources/unsubscribe") ||
-		msg.Params == nil {
-		return ""
-	}
-
-	if uri, ok := msg.Params["uri"].(string); ok {
-		return uri
-	}
-
-	return ""
-}
-
 // Parser handles parsing of MCP messages
+// Subscribes to the following events:
+// - EventTypeFSRead
+// - EventTypeFSWrite
+// - EventTypeHttpRequest
+// - EventTypeHttpResponse
+// - EventTypeHttpSSE
+//
+// Emits the following events:
+// - EventTypeMCPMessage
 type Parser struct {
 	// Cache for correlating requests and responses by ID.
 	// Stores request IDs to validate that responses correspond to actual requests.
@@ -173,14 +91,39 @@ type Parser struct {
 	// Relevant for docker-based MCPs which may emit duplicates.
 	// Thread-safe.
 	seenHashCache *expirable.LRU[string, struct{}]
+
+	eventBus bus.EventBus
 }
 
 // NewParser creates a new MCP parser
-func NewParser() *Parser {
-	return &Parser{
+func NewParser(eventBus bus.EventBus) (*Parser, error) {
+	p := &Parser{
 		requestIDCache: expirable.NewLRU[string, struct{}](requestIDCacheSize, nil, requestIDCacheTTL),
 		seenHashCache:  expirable.NewLRU[string, struct{}](seenHashCacheSize, nil, seenHashCacheTTL),
+		eventBus:       eventBus,
 	}
+
+	if err := p.eventBus.Subscribe(event.EventTypeFSRead, p.ParseDataStdio); err != nil {
+		return nil, err
+	}
+	if err := p.eventBus.Subscribe(event.EventTypeFSWrite, p.ParseDataStdio); err != nil {
+		p.Close()
+		return nil, err
+	}
+	if err := p.eventBus.Subscribe(event.EventTypeHttpRequest, p.ParseDataHttp); err != nil {
+		p.Close()
+		return nil, err
+	}
+	if err := p.eventBus.Subscribe(event.EventTypeHttpResponse, p.ParseDataHttp); err != nil {
+		p.Close()
+		return nil, err
+	}
+	if err := p.eventBus.Subscribe(event.EventTypeHttpSSE, p.ParseDataHttp); err != nil {
+		p.Close()
+		return nil, err
+	}
+
+	return p, nil
 }
 
 // ParseDataStdio attempts to parse MCP messages from Stdio raw data.
@@ -193,22 +136,28 @@ func NewParser() *Parser {
 // Note: Write/read correlation is done in kernel-mode via inode tracking.
 // So the events passed here should have from/to PID/comm set correctly.
 // With that said, the event type (write/read) is not used in parsing.
-func (p *Parser) ParseDataStdio(data []byte, eventType event.EventType, fromPID uint32, fromComm string, toPID uint32, toComm string) ([]*Message, error) {
-	if eventType != event.EventTypeFSWrite && eventType != event.EventTypeFSRead {
-		return []*Message{}, fmt.Errorf("unknown event type in stdio parsing: %d", eventType)
+func (p *Parser) ParseDataStdio(e event.Event) {
+	// func (p *Parser) ParseDataStdio(data []byte, eventType event.EventType, fromPID uint32, fromComm string, toPID uint32, toComm string) ([]*event.MCPEvent, error) {
+	stdioEvent, ok := e.(*event.FSDataEvent)
+	if !ok {
+		return
 	}
 
-	var messages []*Message
+	buf := stdioEvent.Buffer()
+	if len(buf) == 0 {
+		return
+	}
 
 	// Use JSON decoder to handle multi-line JSON properly
-	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder := json.NewDecoder(bytes.NewReader(buf))
 	for {
 		var jsonData json.RawMessage
 		if err := decoder.Decode(&jsonData); err != nil {
 			if err == io.EOF {
 				break
 			}
-			return []*Message{}, fmt.Errorf("failed to decode JSON: %w", err)
+			logrus.WithError(err).Debug("Failed to decode JSON")
+			return
 		}
 
 		if len(bytes.TrimSpace(jsonData)) == 0 {
@@ -224,45 +173,71 @@ func (p *Parser) ParseDataStdio(data []byte, eventType event.EventType, fromPID 
 		// Part 2 & 3: Parse JSON-RPC and validate MCP
 		jsonRpcMsg, err := p.parseJSONRPC(jsonData)
 		if err != nil {
-			return nil, fmt.Errorf("failed to parse JSON-RPC: %w", err)
+			logrus.WithError(err).Debug("Failed to parse JSON-RPC")
+			return
 		}
 
 		if ok, err := p.validateMCPMessage(jsonRpcMsg); !ok {
-			return nil, fmt.Errorf("invalid MCP message: %w", err)
+			logrus.WithError(err).Debug("Invalid MCP message")
+			return
 		}
 
 		// Part 4: Handle request/response correlation
 		if !p.handleRequestResponseCorrelation(jsonRpcMsg) {
-			return nil, fmt.Errorf("failed to correlate json-rpc request/response")
+			logrus.Debug("Failed to correlate json-rpc request/response")
+			return
 		}
 
 		// Create message with kernel-provided correlation
-		msg := &Message{
+		msg := &event.MCPEvent{
 			Timestamp:     time.Now(),
 			Raw:           string(jsonData),
-			TransportType: TransportTypeStdio,
-			StdioTransport: &StdioTransport{
-				FromPID:  fromPID,
-				FromComm: fromComm,
-				ToPID:    toPID,
-				ToComm:   toComm,
+			TransportType: event.TransportTypeStdio,
+			StdioTransport: &event.StdioTransport{
+				FromPID:  stdioEvent.FromPID,
+				FromComm: stdioEvent.FromCommStr(),
+				ToPID:    stdioEvent.ToPID,
+				ToComm:   stdioEvent.ToCommStr(),
 			},
 			JSONRPCMessage: jsonRpcMsg,
 		}
 
-		messages = append(messages, msg)
+		p.eventBus.Publish(msg)
 	}
-
-	return messages, nil
 }
 
 // ParseDataHttp attempts to parse MCP messages from HTTP payload data
 // This method is used for HTTP transport where MCP messages are sent via HTTP requests/responses
-func (p *Parser) ParseDataHttp(data []byte, eventType event.EventType, pid uint32, comm string, host string, isRequest bool) ([]*Message, error) {
-	var messages []*Message
+// func (p *Parser) ParseDataHttp(data []byte, eventType event.EventType, pid uint32, comm string, host string, isRequest bool) ([]*event.MCPEvent, error) {
+func (p *Parser) ParseDataHttp(e event.Event) {
+	// Extract relevant fields from the event
+	var data []byte
+	var pid uint32
+	var comm string
+	var host string
+	var isRequest bool
 
-	if eventType != event.EventTypeHttpRequest && eventType != event.EventTypeHttpResponse && eventType != event.EventTypeHttpSSE {
-		return []*Message{}, fmt.Errorf("unknown event type in http parsing: %d", eventType)
+	switch event := e.(type) {
+	case *event.HttpRequestEvent:
+		data = event.RequestPayload
+		pid = event.PID
+		comm = event.Comm()
+		host = event.Host
+		isRequest = true
+	case *event.HttpResponseEvent:
+		data = event.ResponsePayload
+		pid = event.PID
+		comm = event.Comm()
+		host = event.Host
+		isRequest = false
+	case *event.SSEEvent:
+		data = event.Data
+		pid = event.PID
+		comm = event.Comm()
+		host = event.Host
+		isRequest = false
+	default:
+		return
 	}
 
 	// Split the data into individual JSON messages
@@ -276,11 +251,13 @@ func (p *Parser) ParseDataHttp(data []byte, eventType event.EventType, pid uint3
 		// Parse the message
 		jsonRpcMsg, err := p.parseJSONRPC(msgData)
 		if err != nil {
-			return nil, fmt.Errorf("failed to parse JSON-RPC: %w", err)
+			logrus.WithError(err).Debug("Failed to parse JSON-RPC")
+			return
 		}
 
 		if ok, err := p.validateMCPMessage(jsonRpcMsg); !ok {
-			return nil, fmt.Errorf("invalid MCP message: %w", err)
+			logrus.WithError(err).Debug("Invalid MCP message")
+			return
 		}
 
 		// Handle request/response correlation
@@ -297,11 +274,11 @@ func (p *Parser) ParseDataHttp(data []byte, eventType event.EventType, pid uint3
 		}
 
 		// Create http transport info from correlated events
-		messages = append(messages, &Message{
+		p.eventBus.Publish(&event.MCPEvent{
 			Timestamp:     time.Now(),
 			Raw:           string(msgData),
-			TransportType: TransportTypeHTTP,
-			HttpTransport: &HttpTransport{
+			TransportType: event.TransportTypeHTTP,
+			HttpTransport: &event.HttpTransport{
 				PID:       pid,
 				Comm:      comm,
 				Host:      host,
@@ -310,32 +287,30 @@ func (p *Parser) ParseDataHttp(data []byte, eventType event.EventType, pid uint3
 			JSONRPCMessage: jsonRpcMsg,
 		})
 	}
-
-	return messages, nil
 }
 
 // parseJSONRPC parses a single JSON-RPC message
-func (p *Parser) parseJSONRPC(data []byte) (JSONRPCMessage, error) {
+func (p *Parser) parseJSONRPC(data []byte) (event.JSONRPCMessage, error) {
 	// Validate JSON
 	if !gjson.ValidBytes(data) {
-		return JSONRPCMessage{}, fmt.Errorf("invalid JSON")
+		return event.JSONRPCMessage{}, fmt.Errorf("invalid JSON")
 	}
 
 	result := gjson.ParseBytes(data)
 
 	// Check for jsonrpc field
 	if result.Get("jsonrpc").String() != "2.0" {
-		return JSONRPCMessage{}, fmt.Errorf("not JSON-RPC 2.0")
+		return event.JSONRPCMessage{}, fmt.Errorf("not JSON-RPC 2.0")
 	}
 
-	msg := JSONRPCMessage{}
+	msg := event.JSONRPCMessage{}
 
 	// Determine message type
 	// Requirements for Request type: method and id
 	// Requirements for Response type: id and either result or error
 	// Requirements for Notification type: method and id is missing
 	if result.Get("method").Exists() && result.Get("id").Exists() {
-		msg.Type = JSONRPCMessageTypeRequest
+		msg.MessageType = event.JSONRPCMessageTypeRequest
 		msg.ID = parseID(result.Get("id"))
 		msg.Method = result.Get("method").String()
 
@@ -344,7 +319,7 @@ func (p *Parser) parseJSONRPC(data []byte) (JSONRPCMessage, error) {
 			msg.Params = parseParams(params)
 		}
 	} else if result.Get("id").Exists() && (result.Get("result").Exists() || result.Get("error").Exists()) {
-		msg.Type = JSONRPCMessageTypeResponse
+		msg.MessageType = event.JSONRPCMessageTypeResponse
 		msg.ID = parseID(result.Get("id"))
 
 		if result.Get("result").Exists() {
@@ -352,14 +327,14 @@ func (p *Parser) parseJSONRPC(data []byte) (JSONRPCMessage, error) {
 		}
 
 		if errResult := result.Get("error"); errResult.Exists() {
-			msg.Error = JSONRPCError{
+			msg.Error = event.JSONRPCError{
 				Code:    int(errResult.Get("code").Int()),
 				Message: errResult.Get("message").String(),
 				Data:    errResult.Get("data").Value(),
 			}
 		}
 	} else if result.Get("method").Exists() {
-		msg.Type = JSONRPCMessageTypeNotification
+		msg.MessageType = event.JSONRPCMessageTypeNotification
 		msg.Method = result.Get("method").String()
 
 		// Parse params if present
@@ -367,7 +342,7 @@ func (p *Parser) parseJSONRPC(data []byte) (JSONRPCMessage, error) {
 			msg.Params = parseParams(params)
 		}
 	} else {
-		return JSONRPCMessage{}, fmt.Errorf("unknown JSON-RPC message type")
+		return event.JSONRPCMessage{}, fmt.Errorf("unknown JSON-RPC message type")
 	}
 
 	return msg, nil
@@ -376,9 +351,9 @@ func (p *Parser) parseJSONRPC(data []byte) (JSONRPCMessage, error) {
 // validateMCPMessage validates that the message is a valid MCP message.
 // Currently, we only validate the method.
 // TODO: Validate that responses are valid (with matching id for requests).
-func (p *Parser) validateMCPMessage(msg JSONRPCMessage) (bool, error) {
-	switch msg.Type {
-	case JSONRPCMessageTypeRequest:
+func (p *Parser) validateMCPMessage(msg event.JSONRPCMessage) (bool, error) {
+	switch msg.MessageType {
+	case event.JSONRPCMessageTypeRequest:
 		if _, ok := allowedMCPMethods[msg.Method]; !ok {
 			return false, fmt.Errorf("unknown MCP method: %s", msg.Method)
 		}
@@ -388,13 +363,13 @@ func (p *Parser) validateMCPMessage(msg JSONRPCMessage) (bool, error) {
 		}
 
 		return true, nil
-	case JSONRPCMessageTypeResponse:
+	case event.JSONRPCMessageTypeResponse:
 		if msg.ID == nil {
 			return false, fmt.Errorf("response message has no id")
 		}
 
 		return true, nil
-	case JSONRPCMessageTypeNotification:
+	case event.JSONRPCMessageTypeNotification:
 		if _, ok := allowedMCPMethods[msg.Method]; !ok {
 			return false, fmt.Errorf("unknown MCP method: %s", msg.Method)
 		}
@@ -406,7 +381,7 @@ func (p *Parser) validateMCPMessage(msg JSONRPCMessage) (bool, error) {
 		return true, nil
 	}
 
-	return false, fmt.Errorf("unknown JSON-RPC message type: %s", msg.Type)
+	return false, fmt.Errorf("unknown JSON-RPC message type: %s", msg.MessageType)
 }
 
 // calculateHash creates a hash of the buffer content for duplicate detection
@@ -448,13 +423,13 @@ func (p *Parser) validateResponseID(id interface{}) bool {
 
 // handleRequestResponseCorrelation handles caching request IDs and validating response IDs.
 // Returns true if the message should be kept, false if it should be dropped.
-func (p *Parser) handleRequestResponseCorrelation(msg JSONRPCMessage) bool {
-	switch msg.Type {
-	case JSONRPCMessageTypeRequest:
+func (p *Parser) handleRequestResponseCorrelation(msg event.JSONRPCMessage) bool {
+	switch msg.MessageType {
+	case event.JSONRPCMessageTypeRequest:
 		// Cache request ID for future response validation
 		p.cacheRequestID(msg.ID)
 		return true
-	case JSONRPCMessageTypeResponse:
+	case event.JSONRPCMessageTypeResponse:
 		// Validate that this response corresponds to a known request
 		return p.validateResponseID(msg.ID)
 	}
@@ -472,6 +447,14 @@ func (p *Parser) isDuplicate(hash string) bool {
 	// Mark as seen
 	p.seenHashCache.Add(hash, struct{}{})
 	return false
+}
+
+func (p *Parser) Close() {
+	p.eventBus.Unsubscribe(event.EventTypeFSRead, p.ParseDataStdio)
+	p.eventBus.Unsubscribe(event.EventTypeFSWrite, p.ParseDataStdio)
+	p.eventBus.Unsubscribe(event.EventTypeHttpRequest, p.ParseDataHttp)
+	p.eventBus.Unsubscribe(event.EventTypeHttpResponse, p.ParseDataHttp)
+	p.eventBus.Unsubscribe(event.EventTypeHttpSSE, p.ParseDataHttp)
 }
 
 // parseID parses the ID field which can be string or number

@@ -17,6 +17,7 @@ import (
 	"github.com/cilium/ebpf/rlimit"
 	"github.com/sirupsen/logrus"
 
+	"github.com/alex-ilgayev/mcpspy/pkg/bus"
 	mcpevents "github.com/alex-ilgayev/mcpspy/pkg/event"
 )
 
@@ -28,25 +29,25 @@ type Loader struct {
 	objs      *archObjects
 	links     []link.Link
 	reader    *ringbuf.Reader
-	eventCh   chan mcpevents.Event
 	mcpspyPID uint32
 
 	// Iterator link for library enumeration
 	// Will be != nil if enumeration is ongoing
 	iterLink link.Link
+
+	eventBus bus.EventBus
 }
 
 // New creates a new eBPF loader
-func New(mcpspyPID uint32) (*Loader, error) {
+func New(mcpspyPID uint32, eventBus bus.EventBus) (*Loader, error) {
 	// Remove the memory limit for eBPF
 	if err := rlimit.RemoveMemlock(); err != nil {
 		return nil, fmt.Errorf("failed to remove memlock: %w", err)
 	}
 
 	return &Loader{
-		// approximately maximum of 25-100MB memory.
-		eventCh:   make(chan mcpevents.Event, 100000),
 		mcpspyPID: mcpspyPID,
+		eventBus:  eventBus,
 	}, nil
 }
 
@@ -153,11 +154,6 @@ func (l *Loader) Load() error {
 	return nil
 }
 
-// Events returns a channel for receiving events
-func (l *Loader) Events() <-chan mcpevents.Event {
-	return l.eventCh
-}
-
 // Start begins reading events from the ring buffer
 func (l *Loader) Start(ctx context.Context) error {
 	if l.reader == nil {
@@ -165,8 +161,6 @@ func (l *Loader) Start(ctx context.Context) error {
 	}
 
 	go func() {
-		defer close(l.eventCh)
-
 		for {
 			select {
 			case <-ctx.Done():
@@ -248,13 +242,7 @@ func (l *Loader) Start(ctx context.Context) error {
 					continue
 				}
 
-				select {
-				case l.eventCh <- event:
-				case <-ctx.Done():
-					return
-				default:
-					logrus.Warn("Event channel full, dropping event")
-				}
+				l.eventBus.Publish(event)
 			}
 		}
 	}()

@@ -6,6 +6,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/alex-ilgayev/mcpspy/pkg/bus"
 	"github.com/alex-ilgayev/mcpspy/pkg/event"
 	"github.com/sirupsen/logrus"
 )
@@ -54,47 +55,75 @@ type session struct {
 	sseEventsSent int // Track how many SSE events we've already sent
 }
 
+// SessionManager manages HTTP sessions over SSL contexts
+// Subscribes to the following events:
+// - TlsPayload (for both send and recv) - to capture HTTP data
+// - TlsFree - to clean up sessions
+//
+// Emits the following events:
+// - HttpRequestEvent
+// - HttpResponseEvent
+// - SSEEvent
 type SessionManager struct {
-	mu sync.Mutex
-
+	mu       sync.Mutex
 	sessions map[uint64]*session // key is SSL context
-	eventCh  chan event.Event
+	eventBus bus.EventBus
 }
 
-func NewSessionManager() *SessionManager {
-	return &SessionManager{
+func NewSessionManager(eventBus bus.EventBus) (*SessionManager, error) {
+	sm := &SessionManager{
 		sessions: make(map[uint64]*session),
-		eventCh:  make(chan event.Event, 100),
+		eventBus: eventBus,
 	}
+
+	if err := eventBus.Subscribe(event.EventTypeTlsPayloadRecv, sm.ProcessTlsEvent); err != nil {
+		return nil, err
+	}
+	if err := eventBus.Subscribe(event.EventTypeTlsPayloadSend, sm.ProcessTlsEvent); err != nil {
+		sm.Close()
+		return nil, err
+	}
+	if err := eventBus.Subscribe(event.EventTypeTlsFree, sm.ProcessTlsFreeEvent); err != nil {
+		sm.Close()
+		return nil, err
+	}
+
+	return sm, nil
 }
 
-func (s *SessionManager) ProcessTlsEvent(e *event.TlsPayloadEvent) error {
+func (s *SessionManager) ProcessTlsEvent(e event.Event) {
+	// We only handle TlsPayload events here
+	tlsEvent, ok := e.(*event.TlsPayloadEvent)
+	if !ok {
+		return
+	}
+
 	// Only process HTTP/1.1 events for now.
-	if e.HttpVersion != event.HttpVersion1 {
-		return nil
+	if tlsEvent.HttpVersion != event.HttpVersion1 {
+		return
 	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	// Get or create session
-	sess, exists := s.sessions[e.SSLContext]
+	sess, exists := s.sessions[tlsEvent.SSLContext]
 	if !exists {
 		sess = &session{
-			pid:         e.PID,
-			comm:        e.CommBytes,
-			sslContext:  e.SSLContext,
+			pid:         tlsEvent.PID,
+			comm:        tlsEvent.CommBytes,
+			sslContext:  tlsEvent.SSLContext,
 			request:     &httpRequest{},
 			requestBuf:  &bytes.Buffer{},
 			response:    &httpResponse{},
 			responseBuf: &bytes.Buffer{},
 		}
-		s.sessions[e.SSLContext] = sess
+		s.sessions[tlsEvent.SSLContext] = sess
 	}
 
 	// Append data based on direction and parse
-	data := e.Buffer()
-	switch e.EventType {
+	data := tlsEvent.Buffer()
+	switch tlsEvent.EventType {
 	case event.EventTypeTlsPayloadSend:
 		// Client -> Server (Request)
 		sess.requestBuf.Write(data)
@@ -131,25 +160,27 @@ func (s *SessionManager) ProcessTlsEvent(e *event.TlsPayloadEvent) error {
 
 	// Clean up session when both events have been emitted
 	if sess.requestEventEmitted && sess.responseEventEmitted {
-		delete(s.sessions, e.SSLContext)
+		delete(s.sessions, tlsEvent.SSLContext)
 	}
-
-	return nil
 }
 
-func (s *SessionManager) ProcessTlsFreeEvent(e *event.TlsFreeEvent) error {
+func (s *SessionManager) ProcessTlsFreeEvent(e event.Event) {
+	// We only handle TlsFree events here
+	tlsFreeEvent, ok := e.(*event.TlsFreeEvent)
+	if !ok {
+		return
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	// Clean up the session
-	delete(s.sessions, e.SSLContext)
-
-	return nil
+	delete(s.sessions, tlsFreeEvent.SSLContext)
 }
 
 func (s *SessionManager) emitHttpRequestEvent(sess *session) {
 	// Build request event
-	event := event.HttpRequestEvent{
+	event := &event.HttpRequestEvent{
 		EventHeader: event.EventHeader{
 			EventType: event.EventTypeHttpRequest,
 			PID:       sess.pid,
@@ -163,11 +194,7 @@ func (s *SessionManager) emitHttpRequestEvent(sess *session) {
 		RequestPayload: sess.request.body,
 	}
 
-	select {
-	case s.eventCh <- &event:
-	default:
-		logrus.Warn("HTTP event channel is full, dropping HTTP request event")
-	}
+	s.eventBus.Publish(event)
 }
 
 func (s *SessionManager) emitHttpResponseEvent(sess *session) {
@@ -176,7 +203,7 @@ func (s *SessionManager) emitHttpResponseEvent(sess *session) {
 	}
 
 	// Build response event - includes request info for context
-	event := event.HttpResponseEvent{
+	event := &event.HttpResponseEvent{
 		EventHeader: event.EventHeader{
 			EventType: event.EventTypeHttpResponse,
 			PID:       sess.pid,
@@ -202,16 +229,12 @@ func (s *SessionManager) emitHttpResponseEvent(sess *session) {
 		ResponsePayload: sess.response.body,
 	}
 
-	select {
-	case s.eventCh <- &event:
-	default:
-		logrus.Warn("HTTP event channel is full, dropping HTTP response event")
-	}
+	s.eventBus.Publish(event)
 }
 
 func (s *SessionManager) emitSSEEvent(sess *session, eventType string, data []byte) {
 	// Build SSE event - include request and response context
-	event := event.SSEEvent{
+	event := &event.SSEEvent{
 		EventHeader: event.EventHeader{
 			EventType: event.EventTypeHttpSSE,
 			PID:       sess.pid,
@@ -235,21 +258,14 @@ func (s *SessionManager) emitSSEEvent(sess *session, eventType string, data []by
 		Data:         data,
 	}
 
-	select {
-	case s.eventCh <- &event:
-	default:
-		logrus.Warn("HTTP event channel is full, dropping HTTP SSE event")
-	}
-}
-
-// HTTPEvents returns a channel for receiving HTTP events
-func (s *SessionManager) HTTPEvents() <-chan event.Event {
-	return s.eventCh
+	s.eventBus.Publish(event)
 }
 
 // Close closes the event channel
 func (s *SessionManager) Close() {
-	close(s.eventCh)
+	s.eventBus.Unsubscribe(event.EventTypeTlsPayloadRecv, s.ProcessTlsEvent)
+	s.eventBus.Unsubscribe(event.EventTypeTlsPayloadSend, s.ProcessTlsEvent)
+	s.eventBus.Unsubscribe(event.EventTypeTlsFree, s.ProcessTlsFreeEvent)
 }
 
 // parseHTTPRequest parses HTTP request data and returns parsed information

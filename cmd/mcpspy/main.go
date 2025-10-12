@@ -10,8 +10,8 @@ import (
 	"github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
 
+	"github.com/alex-ilgayev/mcpspy/pkg/bus"
 	"github.com/alex-ilgayev/mcpspy/pkg/ebpf"
-	mcpevents "github.com/alex-ilgayev/mcpspy/pkg/event"
 	"github.com/alex-ilgayev/mcpspy/pkg/http"
 	"github.com/alex-ilgayev/mcpspy/pkg/mcp"
 	"github.com/alex-ilgayev/mcpspy/pkg/namespace"
@@ -77,19 +77,27 @@ func run(cmd *cobra.Command, args []string) error {
 	}
 	logrus.WithField("mount_ns", mountNS).Debug("Current mount namespace")
 
+	// A publish/subscribe event bus for inter-component communication
+	eventBus := bus.New()
+	defer eventBus.Close()
+
 	// Set up console display (always show console output)
-	consoleDisplay := output.NewConsoleDisplay(os.Stdout, showBuffers)
+	consoleDisplay, err := output.NewConsoleDisplay(os.Stdout, showBuffers, eventBus)
+	if err != nil {
+		return fmt.Errorf("failed to create console display: %w", err)
+	}
 	consoleDisplay.PrintHeader()
 
 	// Set up file output if specified
-	var fileDisplay output.OutputHandler
-
 	if outputFile != "" {
 		file, err := os.Create(outputFile)
 		if err != nil {
 			return fmt.Errorf("failed to create output file '%s': %w", outputFile, err)
 		}
-		fileDisplay = output.NewJSONLDisplay(file)
+		_, err = output.NewJSONLDisplay(file, eventBus)
+		if err != nil {
+			return fmt.Errorf("failed to create file display: %w", err)
+		}
 		defer func() {
 			if err := file.Close(); err != nil {
 				logrus.WithError(err).Error("Failed to close output file")
@@ -98,7 +106,7 @@ func run(cmd *cobra.Command, args []string) error {
 	}
 
 	// Create and load eBPF program
-	loader, err := ebpf.New(uint32(os.Getpid()))
+	loader, err := ebpf.New(uint32(os.Getpid()), eventBus)
 	if err != nil {
 		return fmt.Errorf("failed to create eBPF loader: %w", err)
 	}
@@ -106,11 +114,17 @@ func run(cmd *cobra.Command, args []string) error {
 
 	// Process library events
 	// and creates uprobe hooks for dynamically loaded libraries
-	libManager := ebpf.NewLibraryManager(loader, mountNS)
+	libManager, err := ebpf.NewLibraryManager(eventBus, loader, mountNS)
+	if err != nil {
+		return fmt.Errorf("failed to create library manager: %w", err)
+	}
 	defer libManager.Close()
 
 	// Manage HTTP sessions (1.1/2/chunked encoding/SSE)
-	httpManager := http.NewSessionManager()
+	httpManager, err := http.NewSessionManager(eventBus)
+	if err != nil {
+		return fmt.Errorf("failed to create HTTP session manager: %w", err)
+	}
 	defer httpManager.Close()
 
 	consoleDisplay.PrintInfo("Loading eBPF programs...")
@@ -143,173 +157,15 @@ func run(cmd *cobra.Command, args []string) error {
 	consoleDisplay.PrintInfo("")
 
 	// Create MCP parser and statistics
-	parser := mcp.NewParser()
-	stats := make(map[string]int)
-
-	// Main event loop
-	for {
-		select {
-		case <-ctx.Done():
-			consoleDisplay.PrintStats(stats)
-			return nil
-		case event, ok := <-httpManager.HTTPEvents():
-			if !ok {
-				// Channel closed, exit
-				consoleDisplay.PrintStats(stats)
-				return nil
-			}
-
-			var allMessages []*mcp.Message
-
-			switch event.Type() {
-			case mcpevents.EventTypeHttpRequest:
-				httpEvt := event.(*mcpevents.HttpRequestEvent)
-
-				logrus.WithFields(logrus.Fields{
-					"method": httpEvt.Method,
-					"host":   httpEvt.Host,
-					"path":   httpEvt.Path,
-				}).Trace("HTTP request event")
-
-				// Parse request payload for MCP messages
-				requestMessages, err := parser.ParseDataHttp(httpEvt.RequestPayload, httpEvt.EventType, httpEvt.PID, httpEvt.Comm(), httpEvt.Host, true)
-				if err != nil {
-					logrus.WithError(err).Debugf("Failed to process %s event", httpEvt.Type())
-				} else {
-					allMessages = append(allMessages, requestMessages...)
-				}
-
-			case mcpevents.EventTypeHttpResponse:
-				httpEvt := event.(*mcpevents.HttpResponseEvent)
-
-				logrus.WithFields(logrus.Fields{
-					"method":     httpEvt.Method,
-					"host":       httpEvt.Host,
-					"path":       httpEvt.Path,
-					"code":       httpEvt.Code,
-					"is_chunked": httpEvt.IsChunked,
-				}).Trace("HTTP response event")
-
-				// Parse response payload for MCP messages
-				responseMessages, err := parser.ParseDataHttp(httpEvt.ResponsePayload, httpEvt.EventType, httpEvt.PID, httpEvt.Comm(), httpEvt.Host, false)
-				if err != nil {
-					logrus.WithError(err).Debugf("Failed to process %s event", httpEvt.Type())
-				} else {
-					allMessages = append(allMessages, responseMessages...)
-				}
-
-			case mcpevents.EventTypeHttpSSE:
-				sseEvent := event.(*mcpevents.SSEEvent)
-
-				logrus.WithFields(logrus.Fields{
-					"method":    sseEvent.Method,
-					"host":      sseEvent.Host,
-					"path":      sseEvent.Path,
-					"sse_event": sseEvent.SSEEventType,
-				}).Trace("HTTP SSE event")
-
-				// Parse SSE data as MCP messages
-				messages, err := parser.ParseDataHttp(sseEvent.Data, sseEvent.EventType, sseEvent.PID, sseEvent.Comm(), sseEvent.Host, false)
-				if err != nil {
-					logrus.WithError(err).Debugf("Failed to process %s event", sseEvent.Type())
-				} else {
-					allMessages = append(allMessages, messages...)
-				}
-			}
-
-			// Update statistics and display messages
-			for _, msg := range allMessages {
-				if msg.Method != "" {
-					stats[msg.Method]++
-				}
-			}
-
-			// Display messages to console
-			if len(allMessages) > 0 {
-				consoleDisplay.PrintMessages(allMessages)
-
-				// Also write to file if specified
-				if fileDisplay != nil {
-					fileDisplay.PrintMessages(allMessages)
-				}
-			}
-		case event, ok := <-loader.Events():
-			if !ok {
-				// Channel closed, exit
-				consoleDisplay.PrintStats(stats)
-				return nil
-			}
-
-			// Handle different event types
-			switch e := event.(type) {
-			case *mcpevents.FSDataEvent:
-				buf := e.Buf[:e.BufSize]
-				if len(buf) == 0 {
-					continue
-				}
-
-				// Parse raw eBPF event data into MCP messages
-				messages, err := parser.ParseDataStdio(buf, e.EventType, e.FromPID, e.FromCommStr(), e.ToPID, e.ToCommStr())
-				if err != nil {
-					logrus.WithError(err).Debugf("Failed to process %s event", e.Type())
-					continue
-				}
-
-				// Update statistics
-				for _, msg := range messages {
-					if msg.Method != "" {
-						stats[msg.Method]++
-					}
-				}
-
-				// Display messages to console
-				consoleDisplay.PrintMessages(messages)
-
-				// Also write to file if specified
-				if fileDisplay != nil {
-					fileDisplay.PrintMessages(messages)
-				}
-			case *mcpevents.LibraryEvent:
-				// Handle library events
-				logrus.WithFields(logrus.Fields{
-					"pid":     e.PID,
-					"comm":    e.Comm(),
-					"path":    e.Path(),
-					"inode":   e.Inode,
-					"mountNS": e.MntNSID,
-				}).Trace("Library loaded")
-
-				if err := libManager.ProcessLibraryEvent(e); err != nil {
-					logrus.WithError(err).WithField("path", e.Path()).Warnf("Failed to process %s event", e.Type())
-				}
-			case *mcpevents.TlsPayloadEvent:
-				// Handle TLS payloads
-				logrus.WithFields(logrus.Fields{
-					"type":     e.Type(),
-					"pid":      e.PID,
-					"comm":     e.Comm(),
-					"size":     e.Size,
-					"buf_size": e.BufSize,
-					"version":  e.HttpVersion,
-				}).Trace("TLS payload event")
-				// Raw TLS event, we need to aggregate it into HTTP sessions
-				if err := httpManager.ProcessTlsEvent(e); err != nil {
-					logrus.WithError(err).Warnf("Failed to process %s event", e.Type())
-				}
-			case *mcpevents.TlsFreeEvent:
-				// Handle TLS free event
-				logrus.WithFields(logrus.Fields{
-					"pid":     e.PID,
-					"comm":    e.Comm(),
-					"ssl_ctx": e.SSLContext,
-				}).Trace("TLS free event")
-
-				if err := httpManager.ProcessTlsFreeEvent(e); err != nil {
-					logrus.WithError(err).Warnf("Failed to process %s event", e.Type())
-				}
-			default:
-				logrus.WithField("type", event.Type()).Warn("Unknown event type")
-			}
-		}
+	parser, err := mcp.NewParser(eventBus)
+	if err != nil {
+		return fmt.Errorf("failed to create MCP parser: %w", err)
 	}
+	defer parser.Close()
+
+	// The main loop starts in loader.Start().
+	// Waiting for context cancellation (Ctrl+C).
+	<-ctx.Done()
+
+	return nil
 }

@@ -142,11 +142,13 @@ kubectl apply -f https://raw.githubusercontent.com/alex-ilgayev/mcpspy/main/depl
 #### Real-World Use Cases in Kubernetes
 
 1. **Monitoring LangFlow/LangGraph Deployments**
+
    - Observe MCP traffic between LangFlow/LangGraph and AI services
    - Debug integration issues in complex AI workflows
    - Audit AI interactions for security and compliance
 
 2. **AI Service Monitoring**
+
    - Track interactions with both remote and local MCP servers
    - Identify performance bottlenecks in AI service calls
    - Detect potential data leakage in AI communications
@@ -228,9 +230,15 @@ For HTTP/HTTPS transport:
 
 ## Architecture
 
-MCPSpy consists of several components:
+MCPSpy uses an event-driven architecture with a publish-subscribe pattern to decouple components and enable extensibility. The system consists of several components that communicate through a central event bus:
 
-### 1. eBPF Program (`bpf/`)
+### 1. Event Bus (`pkg/bus/`)
+
+- Central communication hub using publish-subscribe pattern
+- Enables asynchronous event processing
+- Using `github.com/asaskevich/EventBus` library
+
+### 2. eBPF Program (`bpf/`)
 
 - Hooks into `vfs_read` and `vfs_write` kernel functions for stdio transport
 - Hooks into TLS library functions (`SSL_read`, `SSL_write`) for HTTP/HTTPS transport
@@ -238,31 +246,43 @@ MCPSpy consists of several components:
 - Sends events to userspace via ring buffer
 - Minimal performance impact with early filtering
 
-### 2. eBPF Loader (`pkg/ebpf/`)
+### 3. eBPF Loader (`pkg/ebpf/`)
 
 - Manages the lifecycle of eBPF programs and resources
 - Loads pre-compiled eBPF objects into the kernel using cilium/ebpf library
 - Converts raw binary events from kernel space into structured Go data types
+- Publishes events to the event bus for downstream processing
 
-### 3. HTTP Session Manager (`pkg/http/`)
+### 4. HTTP Session Manager (`pkg/http/`)
 
+- Subscribes to TLS-related events from the event bus
 - Manages HTTP/HTTPS sessions and correlates request/response pairs
 - Handles TLS payload interception and parsing
 - Supports chunked transfer encoding and Server-Sent Events (SSE)
 - Reconstructs complete HTTP messages from fragmented TLS data
+- Publishes reconstructed HTTP bodies to the event bus for MCP parsing
 
-### 4. MCP Protocol Parser (`pkg/mcp/`)
+### 5. MCP Protocol Parser (`pkg/mcp/`)
 
+- Subscribes to data events from the event bus (stdio and HTTP TLS payloads)
 - Validates JSON-RPC 2.0 message format
 - Parses MCP-specific methods and parameters
 - Correlates read operations and write operations into a single MCP message (relevant for stdio transport)
 - Supports both stdio and HTTP/HTTPS transports (including SSE)
+- Publishes parsed MCP messages to the event bus
 
-### 5. Output Handlers (`pkg/output/`)
+### 6. Output Handlers (`pkg/output/`)
 
+- Subscribe to MCP message events from the event bus
 - Console display with colored, formatted output
 - JSONL output for programmatic analysis
 - Real-time statistics tracking
+
+### 7. Event Logger (`pkg/eventlogger/`)
+
+- Subscribes to all events on the event bus for debugging
+- Provides detailed logging of event flow through the system
+- Configurable log levels for different event types
 
 ## Development
 

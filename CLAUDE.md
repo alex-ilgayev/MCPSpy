@@ -17,16 +17,30 @@ MCPSpy is a CLI utility that uses eBPF to monitor MCP (Model Context Protocol) c
 mcpspy/
 ├── cmd/mcpspy/          # CLI entry point
 ├── pkg/
+│   ├── bus/             # Event bus for publish-subscribe communication
 │   ├── ebpf/            # eBPF loading and management
 │   ├── event/           # Event definitions and handling
-|   |── http/            # HTTP transport parsing and analysis
+│   ├── eventlogger/     # Event logging component
+│   ├── http/            # HTTP transport parsing and analysis
 │   ├── mcp/             # MCP protocol parsing and analysis
 │   └── output/          # Output formatting (console, and file output)
+├── internal/
+│   └── testing/         # Testing utilities (mock event bus, etc.)
 ├── bpf/                 # eBPF C programs
 ├── tests/               # Test files
-├── deploy/docker/  # Docker configuration
+├── deploy/docker/       # Docker configuration
 └── .github/workflows/   # CI/CD workflows
 ```
+
+## Architecture
+
+MCPSpy uses an event-driven architecture with a publish-subscribe pattern:
+
+- **Event Bus (`pkg/bus/`)**: Central communication hub that decouples components
+- Components communicate by publishing and subscribing to typed events
+- The eBPF loader publishes raw events from kernel space
+- The HTTP session manager and MCP parser subscribe to relevant events
+- Output handlers subscribe to parsed MCP messages
 
 ## MCP Protocol Context
 
@@ -41,6 +55,7 @@ mcpspy/
 - Use efficient data structures
 - Minimize data copying between kernel and userspace
 - Filter early in eBPF to reduce overhead
+- Event bus uses asynchronous processing to avoid blocking
 
 ## Building
 

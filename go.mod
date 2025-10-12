@@ -3,6 +3,7 @@ module github.com/alex-ilgayev/mcpspy
 go 1.24
 
 require (
+	github.com/asaskevich/EventBus v0.0.0-20200907212545-49d423059eef
 	github.com/cilium/ebpf v0.12.3
 	github.com/fatih/color v1.16.0
 	github.com/hashicorp/golang-lru/v2 v2.0.7

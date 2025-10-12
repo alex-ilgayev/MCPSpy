@@ -23,6 +23,8 @@ const (
 	EventTypeHttpResponse EventType = 101
 	// Received an SSE event through an existing HTTP connection.
 	EventTypeHttpSSE EventType = 102
+	// Detected a parsed MCP message
+	EventTypeMCPMessage EventType = 103
 )
 
 type HttpVersion uint8
@@ -103,13 +105,14 @@ type FSDataEvent struct {
 }
 
 func (e *FSDataEvent) Type() EventType { return e.EventType }
-
 func (e *FSDataEvent) FromCommStr() string {
 	return encoder.BytesToStr(e.FromComm[:])
 }
-
 func (e *FSDataEvent) ToCommStr() string {
 	return encoder.BytesToStr(e.ToComm[:])
+}
+func (e *FSDataEvent) Buffer() []byte {
+	return e.Buf[:e.BufSize]
 }
 
 // LibraryEvent represents a new loaded library in memory.
