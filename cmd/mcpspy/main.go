@@ -27,6 +27,7 @@ var (
 	verbose     bool
 	outputFile  string
 	logLevel    string
+	tui         bool
 )
 
 func main() {
@@ -41,10 +42,11 @@ communication by tracking stdio operations and analyzing JSON-RPC 2.0 messages.`
 	}
 
 	// Add flags
-	rootCmd.Flags().BoolVarP(&showBuffers, "buffers", "b", false, "Show raw message buffers")
+	rootCmd.Flags().BoolVarP(&showBuffers, "buffers", "b", false, "Show raw message buffers (static mode only)")
 	rootCmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "Enable verbose logging (debug level)")
 	rootCmd.Flags().StringVarP(&outputFile, "output", "o", "", "Output file (JSONL format will be written to file)")
 	rootCmd.Flags().StringVarP(&logLevel, "log-level", "l", "info", "Set log level (trace, debug, info, warn, error, fatal, panic)")
+	rootCmd.Flags().BoolVar(&tui, "tui", false, "Enable TUI (Terminal UI) mode")
 
 	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)
@@ -63,6 +65,13 @@ func run(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("invalid log level '%s': %w", logLevel, err)
 	}
+
+	// In TUI mode, disable debug logs to prevent display corruption
+	// Only show ERROR and above (temporary solution until debug viewer is implemented)
+	if tui && level > logrus.ErrorLevel {
+		level = logrus.ErrorLevel
+	}
+
 	logrus.SetLevel(level)
 
 	// Setup trace pipe to debug eBPF programs if debug or trace level
@@ -81,12 +90,24 @@ func run(cmd *cobra.Command, args []string) error {
 	eventBus := bus.New()
 	defer eventBus.Close()
 
-	// Set up console display (always show console output)
-	consoleDisplay, err := output.NewConsoleDisplay(os.Stdout, showBuffers, eventBus)
-	if err != nil {
-		return fmt.Errorf("failed to create console display: %w", err)
+	// Set up display based on mode
+	var tuiDisplay *output.TUIDisplay
+	var consoleDisplay *output.ConsoleDisplay
+
+	if tui {
+		// TUI mode: use interactive TUI
+		tuiDisplay, err = output.NewTUIDisplay(eventBus)
+		if err != nil {
+			return fmt.Errorf("failed to create TUI display: %w", err)
+		}
+	} else {
+		// Static mode: use console display (default)
+		consoleDisplay, err = output.NewConsoleDisplay(os.Stdout, showBuffers, eventBus)
+		if err != nil {
+			return fmt.Errorf("failed to create console display: %w", err)
+		}
+		consoleDisplay.PrintHeader()
 	}
-	consoleDisplay.PrintHeader()
 
 	// Set up file output if specified
 	if outputFile != "" {
@@ -127,7 +148,9 @@ func run(cmd *cobra.Command, args []string) error {
 	}
 	defer httpManager.Close()
 
-	consoleDisplay.PrintInfo("Loading eBPF programs...")
+	if !tui {
+		consoleDisplay.PrintInfo("Loading eBPF programs...")
+	}
 	if err := loader.Load(); err != nil {
 		return fmt.Errorf("failed to load eBPF programs: %w", err)
 	}
@@ -153,8 +176,10 @@ func run(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to enumerate libraries: %w", err)
 	}
 
-	consoleDisplay.PrintInfo("Monitoring MCP communication... Press Ctrl+C to stop")
-	consoleDisplay.PrintInfo("")
+	if !tui {
+		consoleDisplay.PrintInfo("Monitoring MCP communication... Press Ctrl+C to stop")
+		consoleDisplay.PrintInfo("")
+	}
 
 	// Create MCP parser and statistics
 	parser, err := mcp.NewParser(eventBus)
@@ -163,8 +188,19 @@ func run(cmd *cobra.Command, args []string) error {
 	}
 	defer parser.Close()
 
+	// Run TUI or wait for context cancellation
+	if tui {
+		// Run TUI in a goroutine, cancel context when TUI exits
+		go func() {
+			if err := tuiDisplay.Run(); err != nil {
+				logrus.WithError(err).Error("TUI error")
+			}
+			cancel()
+		}()
+	}
+
 	// The main loop starts in loader.Start().
-	// Waiting for context cancellation (Ctrl+C).
+	// Waiting for context cancellation (Ctrl+C or TUI exit).
 	<-ctx.Done()
 
 	return nil

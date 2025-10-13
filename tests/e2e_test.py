@@ -78,6 +78,7 @@ class MCPSpyE2ETest:
 
     def _start_mcpspy(self) -> None:
         """Start MCPSpy process in background."""
+        # Static mode is now the default, so no --static flag needed
         cmd = ["sudo", self.mcpspy_path, "--output", self.output_file]
         print(f"Starting MCPSpy: {' '.join(cmd)}")
 
