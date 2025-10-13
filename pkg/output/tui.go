@@ -117,7 +117,18 @@ func (d *TUIDisplay) handleMessage(e event.Event) {
 
 // Run starts the TUI
 func (d *TUIDisplay) Run() error {
+	// Ensure terminal is properly restored even on panic/crash
+	defer func() {
+		if r := recover(); r != nil {
+			// Force exit alternate screen and restore terminal
+			d.program.ReleaseTerminal()
+			// Re-panic to preserve the original error
+			panic(r)
+		}
+	}()
+
 	_, err := d.program.Run()
+
 	return err
 }
 
