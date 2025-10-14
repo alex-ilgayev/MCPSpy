@@ -12,7 +12,6 @@ import (
 
 	"github.com/alex-ilgayev/mcpspy/pkg/bus"
 	"github.com/alex-ilgayev/mcpspy/pkg/ebpf"
-	"github.com/alex-ilgayev/mcpspy/pkg/eventlogger"
 	"github.com/alex-ilgayev/mcpspy/pkg/fs"
 	"github.com/alex-ilgayev/mcpspy/pkg/http"
 	"github.com/alex-ilgayev/mcpspy/pkg/mcp"
@@ -127,13 +126,6 @@ func run(cmd *cobra.Command, args []string) error {
 			}
 		}()
 	}
-
-	// Set up event logger (for debugging purposes)
-	eventLogger, err := eventlogger.New(eventBus)
-	if err != nil {
-		return fmt.Errorf("failed to create event logger: %w", err)
-	}
-	defer eventLogger.Close()
 
 	// Create and load eBPF program
 	loader, err := ebpf.New(uint32(os.Getpid()), eventBus)

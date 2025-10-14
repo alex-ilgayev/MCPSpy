@@ -1,7 +1,6 @@
 package mcp
 
 import (
-	"bufio"
 	"bytes"
 	"crypto/sha1"
 	"encoding/json"
@@ -201,6 +200,15 @@ func (p *Parser) ParseDataStdio(e event.Event) {
 			JSONRPCMessage: jsonRpcMsg,
 		}
 
+		logrus.WithFields(logrus.Fields{
+			"from_pid":     stdioEvent.FromPID,
+			"to_pid":       stdioEvent.ToPID,
+			"transport":    msg.TransportType,
+			"message_type": msg.MessageType,
+			"method":       msg.Method,
+			"id":           msg.ID,
+		}).Trace(fmt.Sprintf("event#%s", msg.Type().String()))
+
 		p.eventBus.Publish(msg)
 	}
 }
@@ -210,7 +218,7 @@ func (p *Parser) ParseDataStdio(e event.Event) {
 // func (p *Parser) ParseDataHttp(data []byte, eventType event.EventType, pid uint32, comm string, host string, isRequest bool) ([]*event.MCPEvent, error) {
 func (p *Parser) ParseDataHttp(e event.Event) {
 	// Extract relevant fields from the event
-	var data []byte
+	var buf []byte
 	var pid uint32
 	var comm string
 	var host string
@@ -218,19 +226,19 @@ func (p *Parser) ParseDataHttp(e event.Event) {
 
 	switch event := e.(type) {
 	case *event.HttpRequestEvent:
-		data = event.RequestPayload
+		buf = event.RequestPayload
 		pid = event.PID
 		comm = event.Comm()
 		host = event.Host
 		isRequest = true
 	case *event.HttpResponseEvent:
-		data = event.ResponsePayload
+		buf = event.ResponsePayload
 		pid = event.PID
 		comm = event.Comm()
 		host = event.Host
 		isRequest = false
 	case *event.SSEEvent:
-		data = event.Data
+		buf = event.Data
 		pid = event.PID
 		comm = event.Comm()
 		host = event.Host
@@ -239,43 +247,55 @@ func (p *Parser) ParseDataHttp(e event.Event) {
 		return
 	}
 
-	// Split the data into individual JSON messages
-	scanner := bufio.NewScanner(bytes.NewReader(data))
-	for scanner.Scan() {
-		msgData := scanner.Bytes()
-		if len(bytes.TrimSpace(msgData)) == 0 {
+	eventFields := logrus.Fields{
+		"pid":   pid,
+		"comm":  comm,
+		"host":  host,
+		"size":  len(buf),
+		"event": e.Type(),
+	}
+
+	logrus.WithFields(eventFields).Trace("Parsing HTTP data for MCP")
+
+	// Use JSON decoder to handle multi-line JSON properly
+	decoder := json.NewDecoder(bytes.NewReader(buf))
+	for {
+		var jsonData json.RawMessage
+		if err := decoder.Decode(&jsonData); err != nil {
+			if err == io.EOF {
+				break
+			}
+			logrus.WithError(err).Debug("Failed to decode JSON")
+			return
+		}
+
+		if len(bytes.TrimSpace(jsonData)) == 0 {
 			continue
 		}
 
 		// Parse the message
-		jsonRpcMsg, err := p.parseJSONRPC(msgData)
+		jsonRpcMsg, err := p.parseJSONRPC(jsonData)
 		if err != nil {
-			logrus.WithError(err).Debug("Failed to parse JSON-RPC")
+			logrus.WithFields(eventFields).WithError(err).Debug("Failed to parse JSON-RPC")
 			return
 		}
 
 		if ok, err := p.validateMCPMessage(jsonRpcMsg); !ok {
-			logrus.WithError(err).Debug("Invalid MCP message")
+			logrus.WithFields(eventFields).WithError(err).Debug("Invalid MCP message")
 			return
 		}
 
 		// Handle request/response correlation
 		if !p.handleRequestResponseCorrelation(jsonRpcMsg) {
 			// Drop responses without matching request IDs
-			logrus.WithFields(logrus.Fields{
-				"pid":    pid,
-				"comm":   comm,
-				"host":   host,
-				"method": jsonRpcMsg.Method,
-				"id":     jsonRpcMsg.ID,
-			}).Debug("Dropping response without matching request ID")
+			logrus.WithFields(eventFields).Debug("Dropping response without matching request ID")
 			continue
 		}
 
 		// Create http transport info from correlated events
-		p.eventBus.Publish(&event.MCPEvent{
+		msg := &event.MCPEvent{
 			Timestamp:     time.Now(),
-			Raw:           string(msgData),
+			Raw:           string(jsonData),
 			TransportType: event.TransportTypeHTTP,
 			HttpTransport: &event.HttpTransport{
 				PID:       pid,
@@ -284,7 +304,19 @@ func (p *Parser) ParseDataHttp(e event.Event) {
 				IsRequest: isRequest,
 			},
 			JSONRPCMessage: jsonRpcMsg,
-		})
+		}
+
+		logrus.WithFields(logrus.Fields{
+			"pid":          pid,
+			"comm":         comm,
+			"transport":    msg.TransportType,
+			"message_type": msg.MessageType,
+			"method":       msg.Method,
+			"id":           msg.ID,
+			"host":         host,
+		}).Trace(fmt.Sprintf("event#%s", msg.Type().String()))
+
+		p.eventBus.Publish(msg)
 	}
 }
 

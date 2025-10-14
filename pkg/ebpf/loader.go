@@ -200,6 +200,15 @@ func (l *Loader) Start(ctx context.Context) error {
 						logrus.WithError(err).Error("Failed to parse data event")
 						continue
 					}
+
+					logrus.WithFields(logrus.Fields{
+						"pid":      dataEvent.PID,
+						"comm":     dataEvent.Comm(),
+						"size":     dataEvent.Size,
+						"buf_size": dataEvent.BufSize,
+						"file_ptr": dataEvent.FilePtr,
+					}).Trace(fmt.Sprintf("event#%s", dataEvent.Type().String()))
+
 					event = &dataEvent
 				case mcpevents.EventTypeLibrary:
 					if len(record.RawSample) < int(unsafe.Sizeof(mcpevents.LibraryEvent{})) {
@@ -212,6 +221,15 @@ func (l *Loader) Start(ctx context.Context) error {
 						logrus.WithError(err).Error("Failed to parse library event")
 						continue
 					}
+
+					logrus.WithFields(logrus.Fields{
+						"pid":     libraryEvent.PID,
+						"comm":    libraryEvent.Comm(),
+						"path":    libraryEvent.Path(),
+						"inode":   libraryEvent.Inode,
+						"mountNS": libraryEvent.MntNSID,
+					}).Trace(fmt.Sprintf("event#%s", libraryEvent.Type().String()))
+
 					event = &libraryEvent
 				case mcpevents.EventTypeTlsPayloadSend, mcpevents.EventTypeTlsPayloadRecv:
 					if len(record.RawSample) < int(unsafe.Sizeof(mcpevents.TlsPayloadEvent{})) {
@@ -224,6 +242,16 @@ func (l *Loader) Start(ctx context.Context) error {
 						logrus.WithError(err).Error("Failed to parse TLS event")
 						continue
 					}
+
+					logrus.WithFields(logrus.Fields{
+						"pid":      tlsEvent.PID,
+						"comm":     tlsEvent.Comm(),
+						"size":     tlsEvent.Size,
+						"buf_size": tlsEvent.BufSize,
+						"ssl_ctx":  tlsEvent.SSLContext,
+						"version":  tlsEvent.HttpVersion,
+					}).Trace(fmt.Sprintf("event#%s", tlsEvent.Type().String()))
+
 					event = &tlsEvent
 				case mcpevents.EventTypeTlsFree:
 					if len(record.RawSample) < int(unsafe.Sizeof(mcpevents.TlsFreeEvent{})) {
@@ -236,6 +264,13 @@ func (l *Loader) Start(ctx context.Context) error {
 						logrus.WithError(err).Error("Failed to parse TLS free event")
 						continue
 					}
+
+					logrus.WithFields(logrus.Fields{
+						"pid":     tlsFreeEvent.PID,
+						"comm":    tlsFreeEvent.Comm(),
+						"ssl_ctx": tlsFreeEvent.SSLContext,
+					}).Trace(fmt.Sprintf("event#%s", tlsFreeEvent.Type().String()))
+
 					event = &tlsFreeEvent
 				default:
 					logrus.WithField("type", eventType).Warn("Unknown event type")

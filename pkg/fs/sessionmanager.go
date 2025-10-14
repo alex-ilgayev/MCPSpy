@@ -190,6 +190,13 @@ func (s *SessionManager) emitJsonEvent(sess *session, key sessionKey, payload []
 		payload,
 	)
 
+	logrus.WithFields(logrus.Fields{
+		"pid":      evt.PID,
+		"comm":     evt.Comm(),
+		"size":     len(evt.Payload),
+		"file_ptr": evt.FilePtr,
+	}).Trace(fmt.Sprintf("event#%s", evt.Type().String()))
+
 	s.eventBus.Publish(evt)
 	return nil
 }

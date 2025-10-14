@@ -29,6 +29,9 @@ func PrintTracePipe(log *logrus.Logger) error {
 		bpfMarker := "bpf_trace_printk: "
 		bpfIdx := strings.Index(line, bpfMarker)
 		if bpfIdx == -1 {
+			// Usually this means a printk for a multi-line output.
+			// We do want to show it as sometimes we are printing payloads and buffers.
+			logrus.WithField("ebpf", true).Debug(line)
 			continue
 		}
 

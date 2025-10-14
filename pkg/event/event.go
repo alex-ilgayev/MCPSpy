@@ -70,6 +70,8 @@ func (e EventType) String() string {
 		return "http_response"
 	case EventTypeHttpSSE:
 		return "http_sse"
+	case EventTypeMCPMessage:
+		return "mcp_message"
 	case EventTypeFSAggregatedRead:
 		return "fs_aggregated_read"
 	case EventTypeFSAggregatedWrite:
