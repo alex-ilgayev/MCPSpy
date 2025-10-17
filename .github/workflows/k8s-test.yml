@@ -1,8 +1,6 @@
 name: Kubernetes Deployment Test
 
 on:
-  push:
-    branches: [ issue_55 ] # Test on this branch only
   pull_request:
     paths:
       - 'deploy/kubernetes/**'
@@ -67,8 +65,7 @@ jobs:
     runs-on: ubuntu-24.04
     strategy:
       matrix:
-        k8s-version: ["v1.33.1"]
-#        k8s-version: ["v1.31.9", "v1.32.5", "v1.33.1"]
+        k8s-version: ["v1.31.9", "v1.32.5", "v1.33.1"]
 
     steps:
       - name: Checkout code
@@ -198,6 +195,143 @@ jobs:
           fi
 
           echo "SUCCESS: Probes are working correctly"
+
+      - name: Basic functional tests (detect MCP communication)
+        run: |
+          echo "=== Deploying MCP test server pod ==="
+
+          # Create a simple MCP test pod that runs the server and client
+          cat <<EOF | kubectl apply -f -
+          apiVersion: v1
+          kind: Pod
+          metadata:
+            name: mcp-test-client
+            namespace: default
+          spec:
+            restartPolicy: Never
+            containers:
+            - name: mcp-client
+              image: python:3.12-slim
+              command: ["/bin/bash", "-c"]
+              args:
+                - |
+                  set -e
+                  echo "Installing MCP SDK..."
+                  pip install --quiet mcp httpx
+
+                  echo "Creating MCP server..."
+                  cat > /tmp/mcp_server.py <<'SERVEREOF'
+                  from mcp.server.fastmcp import FastMCP
+                  mcp = FastMCP("test-server")
+
+                  @mcp.tool()
+                  def add(a: int, b: int) -> int:
+                      """Add two numbers"""
+                      return a + b
+
+                  if __name__ == "__main__":
+                      mcp.run(transport="stdio")
+                  SERVEREOF
+
+                  echo "Creating MCP client..."
+                  cat > /tmp/mcp_client.py <<'CLIENTEOF'
+                  import asyncio
+                  from mcp import ClientSession, StdioServerParameters
+                  from mcp.client.stdio import stdio_client
+
+                  async def main():
+                      server_params = StdioServerParameters(
+                          command="python",
+                          args=["/tmp/mcp_server.py"],
+                      )
+
+                      async with stdio_client(server_params) as (read, write):
+                          async with ClientSession(read, write) as session:
+                              await session.initialize()
+                              print("Session initialized")
+
+                              # List tools
+                              tools = await session.list_tools()
+                              print(f"Available tools: {[t.name for t in tools.tools]}")
+
+                              # Call a tool
+                              result = await session.call_tool("add", {"a": 5, "b": 3})
+                              print(f"Tool result: {result}")
+
+                  if __name__ == "__main__":
+                      asyncio.run(main())
+                  CLIENTEOF
+
+                  echo "Running MCP client to generate traffic..."
+                  python /tmp/mcp_client.py
+
+                  echo "MCP test completed successfully"
+                  sleep 5
+          EOF
+
+          echo "=== Waiting for MCP test pod to complete ==="
+          kubectl wait --for=condition=Ready pod/mcp-test-client -n default --timeout=120s || true
+          kubectl wait --for=jsonpath='{.status.phase}'=Succeeded pod/mcp-test-client -n default --timeout=120s || {
+            echo "MCP test pod did not complete successfully"
+            kubectl logs -n default mcp-test-client || true
+            exit 1
+          }
+
+          echo "=== MCP test pod logs ==="
+          kubectl logs -n default mcp-test-client
+
+          echo "=== Checking MCPSpy logs for detected MCP communication ==="
+          # Give MCPSpy a moment to process and write the events
+          sleep 5
+
+          POD_NAME=$(kubectl get pods -n mcpspy -o jsonpath='{.items[0].metadata.name}')
+
+          # Check if MCPSpy output file exists and has content
+          if ! kubectl exec -n mcpspy "$POD_NAME" -- test -f /output/mcpspy.jsonl; then
+            echo "ERROR: MCPSpy output file does not exist"
+            echo "=== MCPSpy logs ==="
+            kubectl logs -n mcpspy "$POD_NAME" --tail=50
+            exit 1
+          fi
+
+          # Check if file has content
+          OUTPUT_SIZE=$(kubectl exec -n mcpspy "$POD_NAME" -- wc -l /output/mcpspy.jsonl | awk '{print $1}')
+          if [ "$OUTPUT_SIZE" -eq 0 ]; then
+            echo "ERROR: MCPSpy did not capture any MCP messages"
+            echo "=== MCPSpy logs ==="
+            kubectl logs -n mcpspy "$POD_NAME" --tail=50
+            exit 1
+          fi
+
+          echo "=== MCPSpy captured $OUTPUT_SIZE messages ==="
+
+          # Display first few captured messages
+          echo "=== Sample MCPSpy output (first 5 lines) ==="
+          kubectl exec -n mcpspy "$POD_NAME" -- head -5 /output/mcpspy.jsonl
+
+          # Verify we captured MCP initialize request
+          if kubectl exec -n mcpspy "$POD_NAME" -- grep -q '"method":"initialize"' /output/mcpspy.jsonl; then
+            echo "✅ MCPSpy successfully detected MCP initialize request"
+          else
+            echo "⚠️  Warning: Did not find 'initialize' method in captured messages"
+          fi
+
+          # Verify we captured tools/list request
+          if kubectl exec -n mcpspy "$POD_NAME" -- grep -q '"method":"tools/list"' /output/mcpspy.jsonl; then
+            echo "✅ MCPSpy successfully detected tools/list request"
+          else
+            echo "⚠️  Warning: Did not find 'tools/list' method in captured messages"
+          fi
+
+          # Verify we captured tools/call request
+          if kubectl exec -n mcpspy "$POD_NAME" -- grep -q '"method":"tools/call"' /output/mcpspy.jsonl; then
+            echo "✅ MCPSpy successfully detected tools/call request"
+          else
+            echo "⚠️  Warning: Did not find 'tools/call' method in captured messages"
+          fi
+
+          echo ""
+          echo "SUCCESS: MCPSpy functional test completed - detected MCP communication"
 
       - name: Collect logs on failure
         if: failure()
