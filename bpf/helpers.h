@@ -123,9 +123,8 @@ static __always_inline __u32 get_file_mount_ns_id(struct file *file) {
     // struct vfsmount is embedded in struct mount at field 'mnt'
     // Use CO-RE to calculate the offset and get to the parent structure
     struct mount *mnt = NULL;
-    __builtin_preserve_access_index(({
-        mnt = container_of(vfs_mnt, struct mount, mnt);
-    }));
+    __builtin_preserve_access_index(
+        ({ mnt = container_of(vfs_mnt, struct mount, mnt); }));
 
     if (!mnt) {
         return 0;

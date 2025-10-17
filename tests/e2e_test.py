@@ -16,6 +16,7 @@ Supports multiple transport layers:
 import argparse
 import json
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -34,12 +35,15 @@ class MCPSpyE2ETest:
         mcpspy_path: str = "../mcpspy",
         transport: str = "stdio",
         update_expected: bool = False,
+        mcpspy_flags: Optional[List[str]] = None,
     ):
         self.mcpspy_path = mcpspy_path
         self.transport = transport
         self.update_expected = update_expected
+        self.mcpspy_flags = mcpspy_flags or []
         self.mcpspy_process: Optional[subprocess.Popen] = None
         self.output_file: Optional[str] = None
+        self.log_file: Optional[str] = None
 
     def run_test(self) -> bool:
         """Run the complete end-to-end test. Returns True if all tests pass."""
@@ -52,7 +56,14 @@ class MCPSpyE2ETest:
             ) as f:
                 self.output_file = f.name
 
+            # Create temporary log file for mcpspy stderr/stdout
+            with tempfile.NamedTemporaryFile(
+                mode="w", suffix=".log", delete=False
+            ) as f:
+                self.log_file = f.name
+
             print(f"Output file: {self.output_file}")
+            print(f"Log file: {self.log_file}")
 
             # Start MCPSpy in background
             self._start_mcpspy()
@@ -72,19 +83,26 @@ class MCPSpyE2ETest:
 
         except Exception as e:
             print(f"Test failed with error: {e}")
+            self._print_logs_on_failure()
             return False
         finally:
             self._cleanup()
 
     def _start_mcpspy(self) -> None:
         """Start MCPSpy process in background."""
-        # Static mode is now the default, so no --static flag needed
-        cmd = ["sudo", self.mcpspy_path, "--output", self.output_file]
+        cmd = ["sudo", "-n", self.mcpspy_path, "--output", self.output_file]
+        # Append any additional mcpspy flags
+        cmd.extend(self.mcpspy_flags)
         print(f"Starting MCPSpy: {' '.join(cmd)}")
 
-        self.mcpspy_process = subprocess.Popen(
-            cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, preexec_fn=os.setsid
-        )
+        # Open log file for writing stderr and stdout
+        with open(self.log_file, "w") as log_f:
+            self.mcpspy_process = subprocess.Popen(
+                cmd,
+                stdout=log_f,
+                stderr=subprocess.STDOUT,
+                preexec_fn=os.setsid,
+            )
 
     def _stop_mcpspy(self) -> None:
         """Stop MCPSpy process."""
@@ -139,11 +157,13 @@ class MCPSpyE2ETest:
         # Captured data
         if not os.path.exists(self.output_file):
             print("Output file does not exist")
+            self._print_logs_on_failure()
             return False
 
         captured_messages = self._read_jsonl_file(self.output_file)
         if not captured_messages:
             print("No messages captured")
+            self._print_logs_on_failure()
             return False
 
         print(f"Captured {len(captured_messages)} messages")
@@ -204,6 +224,11 @@ class MCPSpyE2ETest:
             print("\n=== Comparison Results ===")
             print(diff.pretty())
 
+            # Show detailed message comparison for better debugging
+            self._show_detailed_diff(expected_patterns, captured_messages, diff)
+
+            self._print_logs_on_failure()
+
             return False
 
     def _read_jsonl_file(self, file_path: str) -> List[Dict[str, Any]]:
@@ -224,7 +249,9 @@ class MCPSpyE2ETest:
             print(f"JSONL file not found: {file_path}")
         return messages
 
-    def _write_jsonl_file(self, file_path: Path, messages: List[Dict[str, Any]]) -> None:
+    def _write_jsonl_file(
+        self, file_path: Path, messages: List[Dict[str, Any]]
+    ) -> None:
         """Write messages to a JSONL file."""
         try:
             with open(file_path, "w") as f:
@@ -232,6 +259,98 @@ class MCPSpyE2ETest:
                     f.write(json.dumps(message) + "\n")
         except IOError as e:
             print(f"Failed to write JSONL file {file_path}: {e}")
+
+    def _show_detailed_diff(
+        self,
+        expected: List[Dict[str, Any]],
+        actual: List[Dict[str, Any]],
+        diff: DeepDiff,
+    ) -> None:
+        """Show detailed comparison of differing messages."""
+        print("\n=== Detailed Message Comparison ===")
+
+        # If message counts differ, show which messages are missing
+        if len(expected) != len(actual):
+            print(
+                f"\n⚠️  Message count mismatch: expected {len(expected)}, got {len(actual)}"
+            )
+
+            if len(expected) > len(actual):
+                print(f"\n📍 Missing {len(expected) - len(actual)} message(s):")
+                for idx in range(len(actual), len(expected)):
+                    print(f"\n--- Missing message at index {idx} ---")
+                    self._print_message_summary(expected[idx])
+                    print("-" * 60)
+            else:
+                print(f"\n📍 Extra {len(actual) - len(expected)} message(s):")
+                for idx in range(len(expected), len(actual)):
+                    print(f"\n--- Extra message at index {idx} ---")
+                    self._print_message_summary(actual[idx])
+                    print("-" * 60)
+            return
+
+        # Only show detailed per-message diff if counts match
+        # Extract indices of messages that have differences
+        affected_indices = set()
+
+        # Parse DeepDiff to find affected message indices
+        for change_type in [
+            "values_changed",
+            "dictionary_item_added",
+            "dictionary_item_removed",
+            "type_changes",
+        ]:
+            if change_type in diff:
+                for path in diff[change_type]:
+                    # Extract index from path like "root[2]['method']"
+                    match = re.search(r"root\[(\d+)\]", str(path))
+                    if match:
+                        affected_indices.add(int(match.group(1)))
+
+        if not affected_indices:
+            print("(Unable to extract specific message indices from diff)")
+            return
+
+        # Show affected messages
+        for idx in sorted(affected_indices):
+            print(f"\n--- Message at index {idx} differs ---")
+
+            # Show expected
+            if idx < len(expected):
+                print("\n[EXPECTED]")
+                self._print_message_summary(expected[idx])
+            else:
+                print("\n[EXPECTED] (index out of bounds)")
+
+            # Show actual
+            if idx < len(actual):
+                print("\n[ACTUAL]")
+                self._print_message_summary(actual[idx])
+            else:
+                print("\n[ACTUAL] (index out of bounds)")
+
+            print("-" * 60)
+
+    def _print_message_summary(self, message: Dict[str, Any]) -> None:
+        """Print a message for debugging."""
+        # Print the full message in a readable format
+        print(json.dumps(message, indent=2))
+
+    def _print_logs_on_failure(self) -> None:
+        """Print mcpspy logs from temporary log file on test failure."""
+        if self.log_file and os.path.exists(self.log_file):
+            print("\n" + "=" * 60)
+            print(f"MCPSpy logs saved to: {self.log_file}")
+            print("=" * 60)
+            try:
+                with open(self.log_file, "r") as f:
+                    content = f.read()
+                    if content.strip():
+                        print(content)
+                    else:
+                        print("(No log output captured)")
+            except IOError as e:
+                print(f"Failed to read log file: {e}")
 
     def _cleanup(self) -> None:
         """Clean up temporary files and processes."""
@@ -267,6 +386,12 @@ def main():
         action="store_true",
         help="Update expected output files with captured messages instead of validating",
     )
+    parser.add_argument(
+        "--mcpspy-flags",
+        nargs=argparse.REMAINDER,
+        default=[],
+        help="Additional flags to pass to mcpspy (e.g., --mcpspy-flags --verbose --log-level debug)",
+    )
 
     args = parser.parse_args()
 
@@ -275,13 +400,9 @@ def main():
         print("Build it first with: make build")
         sys.exit(1)
 
-    # Check if running as root (required for eBPF)
-    if os.geteuid() != 0:
-        print("Error: This test must be run as root (required for eBPF)")
-        print("Run with: sudo python tests/e2e_test.py")
-        sys.exit(1)
-
-    test = MCPSpyE2ETest(args.mcpspy, args.transport, args.update_expected)
+    test = MCPSpyE2ETest(
+        args.mcpspy, args.transport, args.update_expected, args.mcpspy_flags
+    )
     success = test.run_test()
 
     if success:

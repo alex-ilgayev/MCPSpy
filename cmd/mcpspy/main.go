@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 
 	"github.com/sirupsen/logrus"
@@ -35,7 +36,7 @@ func main() {
 	rootCmd := &cobra.Command{
 		Use:   "mcpspy",
 		Short: "Monitor Model Context Protocol communication",
-		Long: `MCPSpy is a CLI utility that uses eBPF to monitor MCP (Model Context Protocol) 
+		Long: `MCPSpy is a CLI utility that uses eBPF to monitor MCP (Model Context Protocol)
 communication by tracking stdio operations and analyzing JSON-RPC 2.0 messages.`,
 		Version:      fmt.Sprintf("%s (commit: %s, built: %s)", version.Version, version.Commit, version.Date),
 		RunE:         run,
@@ -52,6 +53,45 @@ communication by tracking stdio operations and analyzing JSON-RPC 2.0 messages.`
 	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)
 	}
+}
+
+// chownToOriginalUser changes the ownership of a file to the original user
+// who invoked sudo. This allows the user to access files created by mcpspy
+// without needing sudo privileges.
+func chownToOriginalUser(filepath string) error {
+	// Get the original user's UID and GID from environment variables
+	// These are set by sudo when the program is run with elevated privileges
+	sudoUID := os.Getenv("SUDO_UID")
+	sudoGID := os.Getenv("SUDO_GID")
+
+	// If not running under sudo, nothing to do
+	if sudoUID == "" || sudoGID == "" {
+		logrus.Debug("Not running under sudo, skipping chown")
+		return nil
+	}
+
+	uid, err := strconv.Atoi(sudoUID)
+	if err != nil {
+		return fmt.Errorf("failed to parse SUDO_UID '%s': %w", sudoUID, err)
+	}
+
+	gid, err := strconv.Atoi(sudoGID)
+	if err != nil {
+		return fmt.Errorf("failed to parse SUDO_GID '%s': %w", sudoGID, err)
+	}
+
+	// Change ownership to the original user
+	if err := os.Chown(filepath, uid, gid); err != nil {
+		return fmt.Errorf("failed to chown '%s' to uid=%d gid=%d: %w", filepath, uid, gid, err)
+	}
+
+	logrus.WithFields(logrus.Fields{
+		"file": filepath,
+		"uid":  uid,
+		"gid":  gid,
+	}).Debug("Changed file ownership to original user")
+
+	return nil
 }
 
 func run(cmd *cobra.Command, args []string) error {
@@ -115,6 +155,11 @@ func run(cmd *cobra.Command, args []string) error {
 		file, err := os.Create(outputFile)
 		if err != nil {
 			return fmt.Errorf("failed to create output file '%s': %w", outputFile, err)
+		}
+		// Change ownership to original user (if running under sudo)
+		// so the user can access the file without sudo after mcpspy exits
+		if err := chownToOriginalUser(outputFile); err != nil {
+			logrus.WithError(err).Debug("Failed to change ownership of output file")
 		}
 		_, err = output.NewJSONLDisplay(file, eventBus)
 		if err != nil {
