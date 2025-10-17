@@ -1,0 +1,228 @@
+name: Kubernetes Deployment Test
+
+on:
+  push:
+    branches: [ issue_55 ] # Test on this branch only
+  pull_request:
+    paths:
+      - 'deploy/kubernetes/**'
+      - 'deploy/docker/**'
+      - '.github/workflows/k8s-test.yml'
+  schedule:
+    # Weekly on Sundays at 3 AM UTC
+    - cron: '0 3 * * 0'
+  workflow_dispatch:
+
+env:
+  DOCKER_REGISTRY: ghcr.io
+  DOCKER_IMAGE: alex-ilgayev/mcpspy
+
+jobs:
+  build-test-image:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang llvm make libbpf-dev build-essential
+
+      - name: Install Go tools
+        run: go install github.com/cilium/ebpf/cmd/bpf2go@latest
+
+      - name: Download dependencies
+        run: go mod download
+
+      - name: Build binary for testing
+        run: make build
+
+      - name: Build Docker image for testing
+        run: |
+          # Move the built binary for Docker build
+          mv build/mcpspy-linux-amd64 deploy/docker/mcpspy
+          docker build -t test-mcpspy:latest -f deploy/docker/Dockerfile deploy/docker/
+          rm deploy/docker/mcpspy
+
+      - name: Save Docker image as artifact
+        run: |
+          docker save test-mcpspy:latest -o /tmp/test-mcpspy.tar
+
+      - name: Upload Docker image artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-mcpspy-image
+          path: /tmp/test-mcpspy.tar
+          retention-days: 1
+
+  k8s-deployment-test:
+    needs: build-test-image
+    runs-on: ubuntu-24.04
+    strategy:
+      matrix:
+        k8s-version: ["v1.33.1"]
+#        k8s-version: ["v1.31.9", "v1.32.5", "v1.33.1"]
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download Docker image artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: test-mcpspy-image
+          path: /tmp
+
+      - name: Load Docker image
+        run: |
+          docker load -i /tmp/test-mcpspy.tar
+          docker images
+
+      - name: Set up kind (Kubernetes in Docker)
+        uses: helm/kind-action@v1
+        with:
+          version: v0.29.0
+          cluster_name: mcpspy-test
+          node_image: kindest/node:${{ matrix.k8s-version }}
+          wait: 60s
+
+      - name: Verify kind cluster
+        run: |
+          kubectl cluster-info
+          kubectl get nodes
+
+      - name: Load Docker image into kind
+        run: |
+          kind load docker-image test-mcpspy:latest --name mcpspy-test
+
+      - name: Update manifest to use test image
+        run: |
+          # Create a temporary manifest with the test image
+          sed 's|image: ghcr.io/alex-ilgayev/mcpspy:v0.0.3|image: test-mcpspy:latest|g' \
+            deploy/kubernetes/mcpspy.yaml > /tmp/mcpspy-test.yaml
+          sed -i 's|imagePullPolicy: Always|imagePullPolicy: IfNotPresent|g' /tmp/mcpspy-test.yaml
+
+      - name: Deploy MCPSpy to kind cluster
+        run: |
+          kubectl apply -f /tmp/mcpspy-test.yaml
+
+      - name: Wait for namespace to be created
+        run: |
+          kubectl wait --for=jsonpath='{.status.phase}'=Active namespace/mcpspy --timeout=30s
+
+      - name: Wait for DaemonSet to be ready
+        run: |
+          # Wait for DaemonSet to be created
+          kubectl wait --for=condition=available --timeout=120s daemonset/mcpspy -n mcpspy || true
+
+          # Check DaemonSet rollout status
+          kubectl rollout status daemonset/mcpspy -n mcpspy --timeout=120s
+
+      - name: Verify pods are running
+        run: |
+          echo "=== DaemonSet Status ==="
+          kubectl get daemonset -n mcpspy
+
+          echo -e "\n=== Pod Status ==="
+          kubectl get pods -n mcpspy -o wide
+
+          echo -e "\n=== Pod Details ==="
+          kubectl describe pods -n mcpspy
+
+          # Verify at least one pod is running
+          RUNNING_PODS=$(kubectl get pods -n mcpspy -o json | jq '.items | length')
+          if [ "$RUNNING_PODS" -eq 0 ]; then
+            echo "ERROR: No pods are running"
+            exit 1
+          fi
+
+          # Verify pods are in Running state
+          NOT_RUNNING=$(kubectl get pods -n mcpspy --field-selector=status.phase!=Running --no-headers 2>/dev/null | wc -l)
+          if [ "$NOT_RUNNING" -gt 0 ]; then
+            echo "ERROR: Some pods are not in Running state"
+            exit 1
+          fi
+
+          echo "SUCCESS: All pods are running"
+
+      - name: Verify MCPSpy process is running
+        run: |
+          # Get the first pod name
+          POD_NAME=$(kubectl get pods -n mcpspy -o jsonpath='{.items[0].metadata.name}')
+
+          echo "Checking MCPSpy process in pod: $POD_NAME"
+
+          # Check if mcpspy process is running
+          kubectl exec -n mcpspy "$POD_NAME" -- pgrep mcpspy
+
+          echo "SUCCESS: MCPSpy process is running"
+
+      - name: Test MCPSpy functionality
+        run: |
+          # Get the first pod name
+          POD_NAME=$(kubectl get pods -n mcpspy -o jsonpath='{.items[0].metadata.name}')
+
+          echo "Testing MCPSpy in pod: $POD_NAME"
+
+          # Check if output directory exists
+          kubectl exec -n mcpspy "$POD_NAME" -- ls -la /output
+
+          # Check if mcpspy is writing to output file (file may be empty if no MCP traffic)
+          kubectl exec -n mcpspy "$POD_NAME" -- ls -lh /output/mcpspy.jsonl || echo "Output file not created yet (no MCP traffic detected)"
+
+          echo "SUCCESS: MCPSpy is configured correctly"
+
+      - name: Check liveness and readiness probes
+        run: |
+          # Wait a bit for probes to run
+          sleep 15
+
+          # Get pod status and check probes
+          POD_NAME=$(kubectl get pods -n mcpspy -o jsonpath='{.items[0].metadata.name}')
+
+          echo "=== Pod Conditions ==="
+          kubectl get pod -n mcpspy "$POD_NAME" -o jsonpath='{.status.conditions[*]}' | jq
+
+          # Verify pod is ready
+          POD_READY=$(kubectl get pod -n mcpspy "$POD_NAME" -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}')
+          if [ "$POD_READY" != "True" ]; then
+            echo "ERROR: Pod is not ready"
+            exit 1
+          fi
+
+          echo "SUCCESS: Probes are working correctly"
+
+      - name: Collect logs on failure
+        if: failure()
+        run: |
+          echo "=== Collecting diagnostic information ==="
+
+          echo -e "\n=== Namespace Events ==="
+          kubectl get events -n mcpspy --sort-by='.lastTimestamp'
+
+          echo -e "\n=== DaemonSet Description ==="
+          kubectl describe daemonset -n mcpspy || true
+
+          echo -e "\n=== Pod Logs ==="
+          for pod in $(kubectl get pods -n mcpspy -o jsonpath='{.items[*].metadata.name}'); do
+            echo -e "\n--- Logs from pod: $pod ---"
+            kubectl logs -n mcpspy "$pod" --tail=100 || true
+          done
+
+          echo -e "\n=== Node Information ==="
+          kubectl get nodes -o wide
+
+          echo -e "\n=== All Resources in mcpspy namespace ==="
+          kubectl get all -n mcpspy
+
+      - name: Cleanup
+        if: always()
+        run: |
+          kubectl delete namespace mcpspy --timeout=60s || true
