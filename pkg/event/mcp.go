@@ -47,6 +47,11 @@ type JSONRPCMessage struct {
 	Params      map[string]interface{} `json:"params,omitempty"`
 	Result      interface{}            `json:"result,omitempty"`
 	Error       JSONRPCError           `json:"error,omitempty"`
+
+	// Request holds the original request message for response messages.
+	// This field is nil for request and notification messages.
+	// For response messages, it contains the corresponding request that triggered this response.
+	Request *JSONRPCMessage `json:"request,omitempty"`
 }
 
 func (m *JSONRPCMessage) LogFields() logrus.Fields {
