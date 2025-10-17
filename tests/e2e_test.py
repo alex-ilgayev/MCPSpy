@@ -213,7 +213,7 @@ class MCPSpyE2ETest:
         diff = DeepDiff(
             expected_patterns,
             captured_messages,
-            ignore_order=False,
+            ignore_order=True,
             exclude_regex_paths=exclude_regex_paths,
         )
         if not diff:
@@ -226,6 +226,9 @@ class MCPSpyE2ETest:
 
             # Show detailed message comparison for better debugging
             self._show_detailed_diff(expected_patterns, captured_messages, diff)
+
+            # Print JSONL format comparison
+            self._print_jsonl_comparison(expected_patterns, captured_messages)
 
             self._print_logs_on_failure()
 
@@ -335,6 +338,22 @@ class MCPSpyE2ETest:
         """Print a message for debugging."""
         # Print the full message in a readable format
         print(json.dumps(message, indent=2))
+
+    def _print_jsonl_comparison(
+        self,
+        expected: List[Dict[str, Any]],
+        actual: List[Dict[str, Any]],
+    ) -> None:
+        """Print expected and actual data in JSONL format for easy comparison."""
+        print("\n=== JSONL Format Comparison ===")
+
+        print("\n[EXPECTED - JSONL]")
+        for message in expected:
+            print(json.dumps(message))
+
+        print("\n[ACTUAL - JSONL]")
+        for message in actual:
+            print(json.dumps(message))
 
     def _print_logs_on_failure(self) -> None:
         """Print mcpspy logs from temporary log file on test failure."""

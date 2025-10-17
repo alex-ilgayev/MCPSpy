@@ -7,7 +7,7 @@
 #include "vmlinux.h"
 #include <bpf/bpf_tracing.h>
 
-#define MAX_BUF_SIZE 16 * 1024
+#define MAX_BUF_SIZE 128 * 1024
 #define TASK_COMM_LEN 16
 
 // limit.h indicates 4096 is the max path,
@@ -43,7 +43,7 @@
 
 struct {
     __uint(type, BPF_MAP_TYPE_RINGBUF);
-    __uint(max_entries, 4 * 1024 * 1024); // 4MB buffer
+    __uint(max_entries, 16 * 1024 * 1024); // 16MB buffer
 } events SEC(".maps");
 
 // Inode to process correlation tracking

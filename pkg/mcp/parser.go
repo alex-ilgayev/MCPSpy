@@ -146,6 +146,15 @@ func (p *Parser) ParseDataStdio(e event.Event) {
 		return
 	}
 
+	eventFields := logrus.Fields{
+		"pid":   stdioEvent.PID,
+		"comm":  stdioEvent.Comm(),
+		"size":  len(buf),
+		"event": e.Type(),
+	}
+
+	logrus.WithFields(eventFields).Trace("Parsing STDIO data for MCP")
+
 	// Use JSON decoder to handle multi-line JSON properly
 	decoder := json.NewDecoder(bytes.NewReader(buf))
 	for {
@@ -154,7 +163,7 @@ func (p *Parser) ParseDataStdio(e event.Event) {
 			if err == io.EOF {
 				break
 			}
-			logrus.WithError(err).Debug("Failed to decode JSON")
+			logrus.WithFields(eventFields).WithError(err).Debug("Failed to decode JSON")
 			return
 		}
 
@@ -171,19 +180,23 @@ func (p *Parser) ParseDataStdio(e event.Event) {
 		// Part 2 & 3: Parse JSON-RPC and validate MCP
 		jsonRpcMsg, err := p.parseJSONRPC(jsonData)
 		if err != nil {
-			logrus.WithError(err).Debug("Failed to parse JSON-RPC")
+			logrus.WithFields(eventFields).WithError(err).Debug("Failed to parse JSON-RPC")
 			return
 		}
 
 		if ok, err := p.validateMCPMessage(jsonRpcMsg); !ok {
-			logrus.WithError(err).Debug("Invalid MCP message")
+			logrus.WithFields(eventFields).WithError(err).Debug("Invalid MCP message")
 			return
 		}
 
 		// Part 4: Handle request/response correlation
 		if !p.handleRequestResponseCorrelation(jsonRpcMsg) {
-			logrus.Debug("Failed to correlate json-rpc request/response")
-			return
+			// Drop responses without matching request IDs
+			logrus.
+				WithFields(eventFields).
+				WithFields(logrus.Fields{"id": jsonRpcMsg.ID, "method": jsonRpcMsg.Method}).
+				Debug("Dropping response without matching request ID")
+			continue
 		}
 
 		// Create message with kernel-provided correlation
@@ -288,7 +301,10 @@ func (p *Parser) ParseDataHttp(e event.Event) {
 		// Handle request/response correlation
 		if !p.handleRequestResponseCorrelation(jsonRpcMsg) {
 			// Drop responses without matching request IDs
-			logrus.WithFields(eventFields).Debug("Dropping response without matching request ID")
+			logrus.
+				WithFields(eventFields).
+				WithFields(logrus.Fields{"id": jsonRpcMsg.ID, "method": jsonRpcMsg.Method}).
+				Debug("Dropping response without matching request ID")
 			continue
 		}
 

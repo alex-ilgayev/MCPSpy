@@ -205,7 +205,8 @@ test-e2e-stdio: build test-e2e-setup ## Run end-to-end test for stdio transport
 	@echo "Note: MCPSpy requires root privileges for eBPF operations"
 	sudo -E tests/venv/bin/python tests/e2e_test.py \
 		--mcpspy $(BUILD_DIR)/$(BINARY_NAME)-$(PLATFORM) \
-		--transport stdio
+		--transport stdio \
+		--mcpspy-flags --log-level trace
 
 # Run end-to-end test for HTTP transport
 .PHONY: test-e2e-https
@@ -214,7 +215,8 @@ test-e2e-https: build test-e2e-setup ## Run end-to-end test for HTTP transport
 	@echo "Note: MCPSpy requires root privileges for eBPF operations"
 	sudo -E tests/venv/bin/python tests/e2e_test.py \
 		--mcpspy $(BUILD_DIR)/$(BINARY_NAME)-$(PLATFORM) \
-		--transport http
+		--transport http \
+		--mcpspy-flags --log-level trace
 
 # Run end-to-end tests for all transports
 .PHONY: test-e2e

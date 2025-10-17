@@ -41,7 +41,7 @@ func (b *eventBus) Publish(e event.Event) {
 func (b *eventBus) Subscribe(eventType event.EventType, fn EventProcessor) error {
 	topic := fmt.Sprintf("topic:%s", eventType.String())
 
-	return b.bus.SubscribeAsync(topic, fn, false)
+	return b.bus.SubscribeAsync(topic, fn, true)
 }
 
 // Unsubscribe removes a previously registered EventProcessor for a specific event type.

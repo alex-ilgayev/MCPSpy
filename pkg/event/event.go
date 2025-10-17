@@ -123,9 +123,9 @@ func (e *FSEventBase) ToCommStr() string {
 type FSDataEvent struct {
 	FSEventBase
 
-	Size    uint32           // Actual data size
-	BufSize uint32           // Size of data in buf (may be truncated)
-	Buf     [16 * 1024]uint8 // Data buffer
+	Size    uint32            // Actual data size
+	BufSize uint32            // Size of data in buf (may be truncated)
+	Buf     [128 * 1024]uint8 // Data buffer
 }
 
 func (e *FSDataEvent) Type() EventType { return e.EventType }
@@ -197,11 +197,11 @@ func (e *LibraryEvent) MountNamespaceID() uint32 {
 type TlsPayloadEvent struct {
 	EventHeader
 
-	SSLContext  uint64           // SSL context pointer (session identifier)
-	Size        uint32           // Actual data size
-	BufSize     uint32           // Size of data in buf (may be truncated)
-	HttpVersion HttpVersion      // Identified HTTP version
-	Buf         [16 * 1024]uint8 // Data buffer
+	SSLContext  uint64            // SSL context pointer (session identifier)
+	Size        uint32            // Actual data size
+	BufSize     uint32            // Size of data in buf (may be truncated)
+	HttpVersion HttpVersion       // Identified HTTP version
+	Buf         [128 * 1024]uint8 // Data buffer
 }
 
 func (e *TlsPayloadEvent) Type() EventType { return e.EventType }

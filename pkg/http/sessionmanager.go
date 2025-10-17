@@ -55,7 +55,7 @@ type session struct {
 	sseEventsSent int // Track how many SSE events we've already sent
 }
 
-func (s *session) LogFields() logrus.Fields {
+func (s *session) logFields() logrus.Fields {
 	return logrus.Fields{
 		"ssl_ctx": s.sslContext,
 		"pid":     s.pid,
@@ -114,9 +114,17 @@ func (s *SessionManager) ProcessTlsEvent(e event.Event) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	eventLogFields := logrus.Fields{
+		"ssl_ctx": tlsEvent.SSLContext,
+		"type":    tlsEvent.EventType.String(),
+	}
+
+	logrus.WithFields(eventLogFields).Trace("Processing TLS event")
+
 	// Get or create session
 	sess, exists := s.sessions[tlsEvent.SSLContext]
 	if !exists {
+		logrus.WithFields(eventLogFields).Trace("Creating new session")
 		sess = &session{
 			pid:         tlsEvent.PID,
 			comm:        tlsEvent.CommBytes,
@@ -127,6 +135,8 @@ func (s *SessionManager) ProcessTlsEvent(e event.Event) {
 			responseBuf: &bytes.Buffer{},
 		}
 		s.sessions[tlsEvent.SSLContext] = sess
+	} else {
+		logrus.WithFields(eventLogFields).Trace("Using existing session")
 	}
 
 	// Append data based on direction and parse
@@ -136,6 +146,12 @@ func (s *SessionManager) ProcessTlsEvent(e event.Event) {
 		// Client -> Server (Request)
 		sess.requestBuf.Write(data)
 		sess.request = parseHTTPRequest(sess.requestBuf.Bytes())
+
+		// Emit request event if complete and not yet emitted
+		if sess.request != nil && sess.request.isComplete && !sess.requestEventEmitted {
+			s.emitHttpRequestEvent(sess)
+			sess.requestEventEmitted = true
+		}
 	case event.EventTypeTlsPayloadRecv:
 		// Server -> Client (Response)
 		sess.responseBuf.Write(data)
@@ -143,7 +159,7 @@ func (s *SessionManager) ProcessTlsEvent(e event.Event) {
 
 		// Check if this is an SSE response
 		if sess.response != nil && sess.response.isSSE {
-			logrus.WithFields(sess.LogFields()).Trace("SSE response detected")
+			logrus.WithFields(sess.logFields()).Trace("SSE response detected")
 			sess.isSSE = true
 		}
 
@@ -152,18 +168,12 @@ func (s *SessionManager) ProcessTlsEvent(e event.Event) {
 			// Process SSE events from the current response buffer
 			s.processHTTPSSEResponse(sess)
 		}
-	}
 
-	// Emit request event if complete and not yet emitted
-	if sess.request != nil && sess.request.isComplete && !sess.requestEventEmitted {
-		s.emitHttpRequestEvent(sess)
-		sess.requestEventEmitted = true
-	}
-
-	// Emit response event if complete and not yet emitted
-	if sess.response != nil && sess.response.isComplete && !sess.responseEventEmitted {
-		s.emitHttpResponseEvent(sess)
-		sess.responseEventEmitted = true
+		// Emit response event if complete and not yet emitted
+		if sess.response != nil && sess.response.isComplete && !sess.responseEventEmitted {
+			s.emitHttpResponseEvent(sess)
+			sess.responseEventEmitted = true
+		}
 	}
 
 	// Clean up session when both events have been emitted
@@ -203,7 +213,7 @@ func (s *SessionManager) emitHttpRequestEvent(sess *session) {
 	}
 
 	logrus.
-		WithFields(sess.LogFields()).
+		WithFields(sess.logFields()).
 		WithFields(logrus.Fields{
 			"method": event.Method,
 			"host":   event.Host,
@@ -215,7 +225,7 @@ func (s *SessionManager) emitHttpRequestEvent(sess *session) {
 
 func (s *SessionManager) emitHttpResponseEvent(sess *session) {
 	if !sess.request.isComplete {
-		logrus.WithFields(sess.LogFields()).Debug("HTTP request is not complete when HTTP response event is emitted. Expect missing data.")
+		logrus.WithFields(sess.logFields()).Debug("HTTP request is not complete when HTTP response event is emitted. Expect missing data.")
 	}
 
 	// Build response event - includes request info for context
@@ -246,7 +256,7 @@ func (s *SessionManager) emitHttpResponseEvent(sess *session) {
 	}
 
 	logrus.
-		WithFields(sess.LogFields()).
+		WithFields(sess.logFields()).
 		WithFields(logrus.Fields{
 			"method":     event.Method,
 			"host":       event.Host,
@@ -285,7 +295,7 @@ func (s *SessionManager) emitSSEEvent(sess *session, eventType string, data []by
 	}
 
 	logrus.
-		WithFields(sess.LogFields()).
+		WithFields(sess.logFields()).
 		WithFields(logrus.Fields{
 			"method":    event.Method,
 			"host":      event.Host,
@@ -530,7 +540,7 @@ func parseChunkedBody(data []byte) (body []byte, isComplete bool) {
 // processHTTPSSEResponse processes SSE events from chunked data incrementally
 func (s *SessionManager) processHTTPSSEResponse(sess *session) {
 	if !sess.request.isComplete {
-		logrus.WithFields(sess.LogFields()).Debug("HTTP request is not complete when SSE chunks are processed. Expect missing data.")
+		logrus.WithFields(sess.logFields()).Debug("HTTP request is not complete when SSE chunks are processed. Expect missing data.")
 	}
 
 	rawData := sess.responseBuf.Bytes()
