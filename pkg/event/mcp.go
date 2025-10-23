@@ -1,6 +1,10 @@
 package event
 
-import "time"
+import (
+	"time"
+
+	"github.com/sirupsen/logrus"
+)
 
 // JSONRPCMessageType represents the type of JSON-RPC message
 type JSONRPCMessageType string
@@ -45,6 +49,22 @@ type JSONRPCMessage struct {
 	Error       JSONRPCError           `json:"error,omitempty"`
 }
 
+func (m *JSONRPCMessage) LogFields() logrus.Fields {
+	fields := logrus.Fields{
+		"msg_type": m.MessageType,
+		"id":       m.ID,
+		"method":   m.Method,
+	}
+
+	// Include error information if present
+	if m.Error.Code != 0 || m.Error.Message != "" {
+		fields["error_code"] = m.Error.Code
+		fields["error"] = m.Error.Message
+	}
+
+	return fields
+}
+
 // JSONRPCError represents a JSON-RPC error
 type JSONRPCError struct {
 	Code    int         `json:"code,omitempty"`
@@ -65,6 +85,25 @@ type MCPEvent struct {
 }
 
 func (e *MCPEvent) Type() EventType { return EventTypeMCPMessage }
+func (e *MCPEvent) LogFields() logrus.Fields {
+	fields := e.JSONRPCMessage.LogFields()
+	fields["transport"] = e.TransportType
+
+	if e.StdioTransport != nil {
+		fields["from_pid"] = e.StdioTransport.FromPID
+		fields["from_comm"] = e.StdioTransport.FromComm
+		fields["to_pid"] = e.StdioTransport.ToPID
+		fields["to_comm"] = e.StdioTransport.ToComm
+	}
+	if e.HttpTransport != nil {
+		fields["pid"] = e.HttpTransport.PID
+		fields["comm"] = e.HttpTransport.Comm
+		fields["host"] = e.HttpTransport.Host
+		fields["is_request"] = e.HttpTransport.IsRequest
+	}
+
+	return fields
+}
 
 // ExtractToolName attempts to extract tool name from a tools/call request
 func (msg *MCPEvent) ExtractToolName() string {

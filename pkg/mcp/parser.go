@@ -146,14 +146,7 @@ func (p *Parser) ParseDataStdio(e event.Event) {
 		return
 	}
 
-	eventFields := logrus.Fields{
-		"pid":   stdioEvent.PID,
-		"comm":  stdioEvent.Comm(),
-		"size":  len(buf),
-		"event": e.Type(),
-	}
-
-	logrus.WithFields(eventFields).Trace("Parsing STDIO data for MCP")
+	logrus.WithFields(e.LogFields()).Trace("Parsing STDIO data for MCP")
 
 	// Use JSON decoder to handle multi-line JSON properly
 	decoder := json.NewDecoder(bytes.NewReader(buf))
@@ -163,7 +156,7 @@ func (p *Parser) ParseDataStdio(e event.Event) {
 			if err == io.EOF {
 				break
 			}
-			logrus.WithFields(eventFields).WithError(err).Debug("Failed to decode JSON")
+			logrus.WithFields(e.LogFields()).WithError(err).Debug("Failed to decode JSON")
 			return
 		}
 
@@ -180,12 +173,12 @@ func (p *Parser) ParseDataStdio(e event.Event) {
 		// Part 2 & 3: Parse JSON-RPC and validate MCP
 		jsonRpcMsg, err := p.parseJSONRPC(jsonData)
 		if err != nil {
-			logrus.WithFields(eventFields).WithError(err).Debug("Failed to parse JSON-RPC")
+			logrus.WithFields(e.LogFields()).WithError(err).Debug("Failed to parse JSON-RPC")
 			return
 		}
 
 		if ok, err := p.validateMCPMessage(jsonRpcMsg); !ok {
-			logrus.WithFields(eventFields).WithError(err).Debug("Invalid MCP message")
+			logrus.WithFields(e.LogFields()).WithError(err).Debug("Invalid MCP message")
 			return
 		}
 
@@ -193,8 +186,8 @@ func (p *Parser) ParseDataStdio(e event.Event) {
 		if !p.handleRequestResponseCorrelation(jsonRpcMsg) {
 			// Drop responses without matching request IDs
 			logrus.
-				WithFields(eventFields).
-				WithFields(logrus.Fields{"id": jsonRpcMsg.ID, "method": jsonRpcMsg.Method}).
+				WithFields(e.LogFields()).
+				WithFields(jsonRpcMsg.LogFields()).
 				Debug("Dropping response without matching request ID")
 			continue
 		}
@@ -213,14 +206,7 @@ func (p *Parser) ParseDataStdio(e event.Event) {
 			JSONRPCMessage: jsonRpcMsg,
 		}
 
-		logrus.WithFields(logrus.Fields{
-			"from_pid":     stdioEvent.FromPID,
-			"to_pid":       stdioEvent.ToPID,
-			"transport":    msg.TransportType,
-			"message_type": msg.MessageType,
-			"method":       msg.Method,
-			"id":           msg.ID,
-		}).Trace(fmt.Sprintf("event#%s", msg.Type().String()))
+		logrus.WithFields(msg.LogFields()).Trace(fmt.Sprintf("event#%s", msg.Type().String()))
 
 		p.eventBus.Publish(msg)
 	}
@@ -260,15 +246,7 @@ func (p *Parser) ParseDataHttp(e event.Event) {
 		return
 	}
 
-	eventFields := logrus.Fields{
-		"pid":   pid,
-		"comm":  comm,
-		"host":  host,
-		"size":  len(buf),
-		"event": e.Type(),
-	}
-
-	logrus.WithFields(eventFields).Trace("Parsing HTTP data for MCP")
+	logrus.WithFields(e.LogFields()).Trace("Parsing HTTP data for MCP")
 
 	// Use JSON decoder to handle multi-line JSON properly
 	decoder := json.NewDecoder(bytes.NewReader(buf))
@@ -278,7 +256,7 @@ func (p *Parser) ParseDataHttp(e event.Event) {
 			if err == io.EOF {
 				break
 			}
-			logrus.WithError(err).Debug("Failed to decode JSON")
+			logrus.WithFields(e.LogFields()).WithError(err).Debug("Failed to decode JSON")
 			return
 		}
 
@@ -289,12 +267,12 @@ func (p *Parser) ParseDataHttp(e event.Event) {
 		// Parse the message
 		jsonRpcMsg, err := p.parseJSONRPC(jsonData)
 		if err != nil {
-			logrus.WithFields(eventFields).WithError(err).Debug("Failed to parse JSON-RPC")
+			logrus.WithFields(e.LogFields()).WithError(err).Debug("Failed to parse JSON-RPC")
 			return
 		}
 
 		if ok, err := p.validateMCPMessage(jsonRpcMsg); !ok {
-			logrus.WithFields(eventFields).WithError(err).Debug("Invalid MCP message")
+			logrus.WithFields(e.LogFields()).WithError(err).Debug("Invalid MCP message")
 			return
 		}
 
@@ -302,8 +280,8 @@ func (p *Parser) ParseDataHttp(e event.Event) {
 		if !p.handleRequestResponseCorrelation(jsonRpcMsg) {
 			// Drop responses without matching request IDs
 			logrus.
-				WithFields(eventFields).
-				WithFields(logrus.Fields{"id": jsonRpcMsg.ID, "method": jsonRpcMsg.Method}).
+				WithFields(e.LogFields()).
+				WithFields(jsonRpcMsg.LogFields()).
 				Debug("Dropping response without matching request ID")
 			continue
 		}
@@ -322,15 +300,7 @@ func (p *Parser) ParseDataHttp(e event.Event) {
 			JSONRPCMessage: jsonRpcMsg,
 		}
 
-		logrus.WithFields(logrus.Fields{
-			"pid":          pid,
-			"comm":         comm,
-			"transport":    msg.TransportType,
-			"message_type": msg.MessageType,
-			"method":       msg.Method,
-			"id":           msg.ID,
-			"host":         host,
-		}).Trace(fmt.Sprintf("event#%s", msg.Type().String()))
+		logrus.WithFields(msg.LogFields()).Trace(fmt.Sprintf("event#%s", msg.Type().String()))
 
 		p.eventBus.Publish(msg)
 	}

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/alex-ilgayev/mcpspy/pkg/event"
+	"github.com/sirupsen/logrus"
 )
 
 // testEvent is a simple event implementation for testing
@@ -16,6 +17,13 @@ type testEvent struct {
 
 func (e *testEvent) Type() event.EventType {
 	return e.eventType
+}
+
+func (e *testEvent) LogFields() logrus.Fields {
+	return logrus.Fields{
+		"event_type": e.eventType,
+		"payload":    e.payload,
+	}
 }
 
 func TestEventBus_PublishSubscribe(t *testing.T) {
