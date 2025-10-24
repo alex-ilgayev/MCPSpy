@@ -71,7 +71,7 @@ func (s *SessionManager) handleFSEvent(e event.Event) {
 	}
 
 	if err := s.ProcessFSEvent(fsEvent); err != nil {
-		logrus.WithError(err).Debug("Failed to process FS event")
+		logrus.WithFields(e.LogFields()).WithError(err).Debug("Failed to process FS event")
 	}
 }
 
@@ -190,12 +190,7 @@ func (s *SessionManager) emitJsonEvent(sess *session, key sessionKey, payload []
 		payload,
 	)
 
-	logrus.WithFields(logrus.Fields{
-		"pid":      evt.PID,
-		"comm":     evt.Comm(),
-		"size":     len(evt.Payload),
-		"file_ptr": evt.FilePtr,
-	}).Trace(fmt.Sprintf("event#%s", evt.Type().String()))
+	logrus.WithFields(evt.LogFields()).Trace(fmt.Sprintf("event#%s", evt.Type().String()))
 
 	s.eventBus.Publish(evt)
 	return nil

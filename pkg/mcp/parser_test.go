@@ -22,9 +22,10 @@ func createFSAggregatedEvent(data []byte, eventType event.EventType, fromPID uin
 
 	// Map raw event types to aggregated event types
 	aggregatedType := eventType
-	if eventType == event.EventTypeFSRead {
+	switch eventType {
+	case event.EventTypeFSRead:
 		aggregatedType = event.EventTypeFSAggregatedRead
-	} else if eventType == event.EventTypeFSWrite {
+	case event.EventTypeFSWrite:
 		aggregatedType = event.EventTypeFSAggregatedWrite
 	}
 
@@ -1685,9 +1686,15 @@ func TestParseDataHttp_HttpTransportFields(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// Cache request ID for responses
+			// Cache request for responses
 			if tt.eventType == event.EventTypeHttpResponse {
-				parser.cacheRequestID(int64(1))
+				// Create a mock request message to cache
+				mockRequest := &event.JSONRPCMessage{
+					MessageType: event.JSONRPCMessageTypeRequest,
+					ID:          int64(1),
+					Method:      "tools/list",
+				}
+				parser.cacheRequestMessage(mockRequest)
 			}
 
 			var httpEvent event.Event
@@ -2261,10 +2268,22 @@ func TestValidateResponseID(t *testing.T) {
 		t.Fatalf("Failed to create parser: %v", err)
 	}
 
-	// Cache some request IDs
-	parser.cacheRequestID(int64(1))
-	parser.cacheRequestID("test-123")
-	parser.cacheRequestID(int64(42))
+	// Cache some request messages
+	parser.cacheRequestMessage(&event.JSONRPCMessage{
+		MessageType: event.JSONRPCMessageTypeRequest,
+		ID:          int64(1),
+		Method:      "tools/list",
+	})
+	parser.cacheRequestMessage(&event.JSONRPCMessage{
+		MessageType: event.JSONRPCMessageTypeRequest,
+		ID:          "test-123",
+		Method:      "initialize",
+	})
+	parser.cacheRequestMessage(&event.JSONRPCMessage{
+		MessageType: event.JSONRPCMessageTypeRequest,
+		ID:          int64(42),
+		Method:      "resources/list",
+	})
 
 	tests := []struct {
 		name     string
@@ -2310,9 +2329,9 @@ func TestValidateResponseID(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := parser.validateResponseID(tt.id)
-			if result != tt.expected {
-				t.Errorf("Expected validation result %v, got %v", tt.expected, result)
+			_, exists := parser.getRequestByID(tt.id)
+			if exists != tt.expected {
+				t.Errorf("Expected validation result %v, got %v", tt.expected, exists)
 			}
 		})
 	}

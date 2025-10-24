@@ -1,6 +1,10 @@
 package event
 
-import "time"
+import (
+	"time"
+
+	"github.com/sirupsen/logrus"
+)
 
 // JSONRPCMessageType represents the type of JSON-RPC message
 type JSONRPCMessageType string
@@ -43,6 +47,27 @@ type JSONRPCMessage struct {
 	Params      map[string]interface{} `json:"params,omitempty"`
 	Result      interface{}            `json:"result,omitempty"`
 	Error       JSONRPCError           `json:"error,omitempty"`
+
+	// Request holds the original request message for response messages.
+	// This field is nil for request and notification messages.
+	// For response messages, it contains the corresponding request that triggered this response.
+	Request *JSONRPCMessage `json:"request,omitempty"`
+}
+
+func (m *JSONRPCMessage) LogFields() logrus.Fields {
+	fields := logrus.Fields{
+		"msg_type": m.MessageType,
+		"id":       m.ID,
+		"method":   m.Method,
+	}
+
+	// Include error information if present
+	if m.Error.Code != 0 || m.Error.Message != "" {
+		fields["error_code"] = m.Error.Code
+		fields["error"] = m.Error.Message
+	}
+
+	return fields
 }
 
 // JSONRPCError represents a JSON-RPC error
@@ -65,6 +90,25 @@ type MCPEvent struct {
 }
 
 func (e *MCPEvent) Type() EventType { return EventTypeMCPMessage }
+func (e *MCPEvent) LogFields() logrus.Fields {
+	fields := e.JSONRPCMessage.LogFields()
+	fields["transport"] = e.TransportType
+
+	if e.StdioTransport != nil {
+		fields["from_pid"] = e.StdioTransport.FromPID
+		fields["from_comm"] = e.StdioTransport.FromComm
+		fields["to_pid"] = e.StdioTransport.ToPID
+		fields["to_comm"] = e.StdioTransport.ToComm
+	}
+	if e.HttpTransport != nil {
+		fields["pid"] = e.HttpTransport.PID
+		fields["comm"] = e.HttpTransport.Comm
+		fields["host"] = e.HttpTransport.Host
+		fields["is_request"] = e.HttpTransport.IsRequest
+	}
+
+	return fields
+}
 
 // ExtractToolName attempts to extract tool name from a tools/call request
 func (msg *MCPEvent) ExtractToolName() string {

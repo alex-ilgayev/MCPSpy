@@ -114,17 +114,12 @@ func (s *SessionManager) ProcessTlsEvent(e event.Event) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	eventLogFields := logrus.Fields{
-		"ssl_ctx": tlsEvent.SSLContext,
-		"type":    tlsEvent.EventType.String(),
-	}
-
-	logrus.WithFields(eventLogFields).Trace("Processing TLS event")
+	logrus.WithFields(e.LogFields()).Trace("Processing TLS event")
 
 	// Get or create session
 	sess, exists := s.sessions[tlsEvent.SSLContext]
 	if !exists {
-		logrus.WithFields(eventLogFields).Trace("Creating new session")
+		logrus.WithFields(e.LogFields()).Trace("Creating new session")
 		sess = &session{
 			pid:         tlsEvent.PID,
 			comm:        tlsEvent.CommBytes,
@@ -136,7 +131,7 @@ func (s *SessionManager) ProcessTlsEvent(e event.Event) {
 		}
 		s.sessions[tlsEvent.SSLContext] = sess
 	} else {
-		logrus.WithFields(eventLogFields).Trace("Using existing session")
+		logrus.WithFields(e.LogFields()).Trace("Using existing session")
 	}
 
 	// Append data based on direction and parse
@@ -212,13 +207,7 @@ func (s *SessionManager) emitHttpRequestEvent(sess *session) {
 		RequestPayload: sess.request.body,
 	}
 
-	logrus.
-		WithFields(sess.logFields()).
-		WithFields(logrus.Fields{
-			"method": event.Method,
-			"host":   event.Host,
-			"path":   event.Path,
-		}).Trace(fmt.Sprintf("event#%s", event.Type().String()))
+	logrus.WithFields(event.LogFields()).Trace(fmt.Sprintf("event#%s", event.Type().String()))
 
 	s.eventBus.Publish(event)
 }
@@ -255,15 +244,7 @@ func (s *SessionManager) emitHttpResponseEvent(sess *session) {
 		ResponsePayload: sess.response.body,
 	}
 
-	logrus.
-		WithFields(sess.logFields()).
-		WithFields(logrus.Fields{
-			"method":     event.Method,
-			"host":       event.Host,
-			"path":       event.Path,
-			"code":       event.Code,
-			"is_chunked": event.IsChunked,
-		}).Trace(fmt.Sprintf("event#%s", event.Type().String()))
+	logrus.WithFields(event.LogFields()).Trace(fmt.Sprintf("event#%s", event.Type().String()))
 
 	s.eventBus.Publish(event)
 }
@@ -294,15 +275,7 @@ func (s *SessionManager) emitSSEEvent(sess *session, eventType string, data []by
 		Data:         data,
 	}
 
-	logrus.
-		WithFields(sess.logFields()).
-		WithFields(logrus.Fields{
-			"method":    event.Method,
-			"host":      event.Host,
-			"path":      event.Path,
-			"sse_event": event.SSEEventType,
-			"data_size": len(data),
-		}).Trace(fmt.Sprintf("event#%s", event.Type().String()))
+	logrus.WithFields(event.LogFields()).Trace(fmt.Sprintf("event#%s", event.Type().String()))
 
 	s.eventBus.Publish(event)
 }

@@ -81,9 +81,9 @@ var allowedMCPMethods = map[string]string{
 // - EventTypeMCPMessage
 type Parser struct {
 	// Cache for correlating requests and responses by ID.
-	// Stores request IDs to validate that responses correspond to actual requests.
+	// Stores full request messages to enable pairing with their responses.
 	// Thread-safe.
-	requestIDCache *expirable.LRU[string, struct{}]
+	requestIDCache *expirable.LRU[string, *event.JSONRPCMessage]
 
 	// Cache for detecting duplicate messages.
 	// Once we see a hash, we don't emit it again (first one wins).
@@ -97,7 +97,7 @@ type Parser struct {
 // NewParser creates a new MCP parser
 func NewParser(eventBus bus.EventBus) (*Parser, error) {
 	p := &Parser{
-		requestIDCache: expirable.NewLRU[string, struct{}](requestIDCacheSize, nil, requestIDCacheTTL),
+		requestIDCache: expirable.NewLRU[string, *event.JSONRPCMessage](requestIDCacheSize, nil, requestIDCacheTTL),
 		seenHashCache:  expirable.NewLRU[string, struct{}](seenHashCacheSize, nil, seenHashCacheTTL),
 		eventBus:       eventBus,
 	}
@@ -146,14 +146,7 @@ func (p *Parser) ParseDataStdio(e event.Event) {
 		return
 	}
 
-	eventFields := logrus.Fields{
-		"pid":   stdioEvent.PID,
-		"comm":  stdioEvent.Comm(),
-		"size":  len(buf),
-		"event": e.Type(),
-	}
-
-	logrus.WithFields(eventFields).Trace("Parsing STDIO data for MCP")
+	logrus.WithFields(e.LogFields()).Trace("Parsing STDIO data for MCP")
 
 	// Use JSON decoder to handle multi-line JSON properly
 	decoder := json.NewDecoder(bytes.NewReader(buf))
@@ -163,7 +156,7 @@ func (p *Parser) ParseDataStdio(e event.Event) {
 			if err == io.EOF {
 				break
 			}
-			logrus.WithFields(eventFields).WithError(err).Debug("Failed to decode JSON")
+			logrus.WithFields(e.LogFields()).WithError(err).Debug("Failed to decode JSON")
 			return
 		}
 
@@ -180,23 +173,27 @@ func (p *Parser) ParseDataStdio(e event.Event) {
 		// Part 2 & 3: Parse JSON-RPC and validate MCP
 		jsonRpcMsg, err := p.parseJSONRPC(jsonData)
 		if err != nil {
-			logrus.WithFields(eventFields).WithError(err).Debug("Failed to parse JSON-RPC")
+			logrus.WithFields(e.LogFields()).WithError(err).Debug("Failed to parse JSON-RPC")
 			return
 		}
 
-		if ok, err := p.validateMCPMessage(jsonRpcMsg); !ok {
-			logrus.WithFields(eventFields).WithError(err).Debug("Invalid MCP message")
+		if err := p.validateMCPMessage(jsonRpcMsg); err != nil {
+			logrus.
+				WithFields(e.LogFields()).
+				WithFields(jsonRpcMsg.LogFields()).
+				WithError(err).
+				Debug("Invalid MCP message")
 			return
 		}
 
 		// Part 4: Handle request/response correlation
-		if !p.handleRequestResponseCorrelation(jsonRpcMsg) {
+		if err := p.handleRequestResponseCorrelation(&jsonRpcMsg); err != nil {
 			// Drop responses without matching request IDs
 			logrus.
-				WithFields(eventFields).
-				WithFields(logrus.Fields{"id": jsonRpcMsg.ID, "method": jsonRpcMsg.Method}).
+				WithFields(e.LogFields()).
+				WithFields(jsonRpcMsg.LogFields()).
 				Debug("Dropping response without matching request ID")
-			continue
+			return
 		}
 
 		// Create message with kernel-provided correlation
@@ -213,14 +210,7 @@ func (p *Parser) ParseDataStdio(e event.Event) {
 			JSONRPCMessage: jsonRpcMsg,
 		}
 
-		logrus.WithFields(logrus.Fields{
-			"from_pid":     stdioEvent.FromPID,
-			"to_pid":       stdioEvent.ToPID,
-			"transport":    msg.TransportType,
-			"message_type": msg.MessageType,
-			"method":       msg.Method,
-			"id":           msg.ID,
-		}).Trace(fmt.Sprintf("event#%s", msg.Type().String()))
+		logrus.WithFields(msg.LogFields()).Trace(fmt.Sprintf("event#%s", msg.Type().String()))
 
 		p.eventBus.Publish(msg)
 	}
@@ -260,15 +250,7 @@ func (p *Parser) ParseDataHttp(e event.Event) {
 		return
 	}
 
-	eventFields := logrus.Fields{
-		"pid":   pid,
-		"comm":  comm,
-		"host":  host,
-		"size":  len(buf),
-		"event": e.Type(),
-	}
-
-	logrus.WithFields(eventFields).Trace("Parsing HTTP data for MCP")
+	logrus.WithFields(e.LogFields()).Trace("Parsing HTTP data for MCP")
 
 	// Use JSON decoder to handle multi-line JSON properly
 	decoder := json.NewDecoder(bytes.NewReader(buf))
@@ -278,7 +260,7 @@ func (p *Parser) ParseDataHttp(e event.Event) {
 			if err == io.EOF {
 				break
 			}
-			logrus.WithError(err).Debug("Failed to decode JSON")
+			logrus.WithFields(e.LogFields()).WithError(err).Debug("Failed to decode JSON")
 			return
 		}
 
@@ -289,21 +271,24 @@ func (p *Parser) ParseDataHttp(e event.Event) {
 		// Parse the message
 		jsonRpcMsg, err := p.parseJSONRPC(jsonData)
 		if err != nil {
-			logrus.WithFields(eventFields).WithError(err).Debug("Failed to parse JSON-RPC")
+			logrus.WithFields(e.LogFields()).WithError(err).Debug("Failed to parse JSON-RPC")
 			return
 		}
 
-		if ok, err := p.validateMCPMessage(jsonRpcMsg); !ok {
-			logrus.WithFields(eventFields).WithError(err).Debug("Invalid MCP message")
+		if err := p.validateMCPMessage(jsonRpcMsg); err != nil {
+			logrus.
+				WithFields(e.LogFields()).
+				WithFields(jsonRpcMsg.LogFields()).
+				WithError(err).Debug("Invalid MCP message")
 			return
 		}
 
 		// Handle request/response correlation
-		if !p.handleRequestResponseCorrelation(jsonRpcMsg) {
+		if err := p.handleRequestResponseCorrelation(&jsonRpcMsg); err != nil {
 			// Drop responses without matching request IDs
 			logrus.
-				WithFields(eventFields).
-				WithFields(logrus.Fields{"id": jsonRpcMsg.ID, "method": jsonRpcMsg.Method}).
+				WithFields(e.LogFields()).
+				WithFields(jsonRpcMsg.LogFields()).
 				Debug("Dropping response without matching request ID")
 			continue
 		}
@@ -322,15 +307,7 @@ func (p *Parser) ParseDataHttp(e event.Event) {
 			JSONRPCMessage: jsonRpcMsg,
 		}
 
-		logrus.WithFields(logrus.Fields{
-			"pid":          pid,
-			"comm":         comm,
-			"transport":    msg.TransportType,
-			"message_type": msg.MessageType,
-			"method":       msg.Method,
-			"id":           msg.ID,
-			"host":         host,
-		}).Trace(fmt.Sprintf("event#%s", msg.Type().String()))
+		logrus.WithFields(msg.LogFields()).Trace(fmt.Sprintf("event#%s", msg.Type().String()))
 
 		p.eventBus.Publish(msg)
 	}
@@ -398,37 +375,37 @@ func (p *Parser) parseJSONRPC(data []byte) (event.JSONRPCMessage, error) {
 // validateMCPMessage validates that the message is a valid MCP message.
 // Currently, we only validate the method.
 // TODO: Validate that responses are valid (with matching id for requests).
-func (p *Parser) validateMCPMessage(msg event.JSONRPCMessage) (bool, error) {
+func (p *Parser) validateMCPMessage(msg event.JSONRPCMessage) error {
 	switch msg.MessageType {
 	case event.JSONRPCMessageTypeRequest:
 		if _, ok := allowedMCPMethods[msg.Method]; !ok {
-			return false, fmt.Errorf("unknown MCP method: %s", msg.Method)
+			return fmt.Errorf("unknown MCP method: %s", msg.Method)
 		}
 
 		if msg.ID == nil {
-			return false, fmt.Errorf("request message has no id")
+			return fmt.Errorf("request message has no id")
 		}
 
-		return true, nil
+		return nil
 	case event.JSONRPCMessageTypeResponse:
 		if msg.ID == nil {
-			return false, fmt.Errorf("response message has no id")
+			return fmt.Errorf("response message has no id")
 		}
 
-		return true, nil
+		return nil
 	case event.JSONRPCMessageTypeNotification:
 		if _, ok := allowedMCPMethods[msg.Method]; !ok {
-			return false, fmt.Errorf("unknown MCP method: %s", msg.Method)
+			return fmt.Errorf("unknown MCP method: %s", msg.Method)
 		}
 
 		if msg.ID != nil {
-			return false, fmt.Errorf("notification message has id")
+			return fmt.Errorf("notification message has id")
 		}
 
-		return true, nil
+		return nil
 	}
 
-	return false, fmt.Errorf("unknown JSON-RPC message type: %s", msg.MessageType)
+	return fmt.Errorf("unknown JSON-RPC message type: %s", msg.MessageType)
 }
 
 // calculateHash creates a hash of the buffer content for duplicate detection
@@ -449,39 +426,54 @@ func (p *Parser) idToCacheKey(id interface{}) string {
 	}
 }
 
-// cacheRequestID stores a request ID for future response correlation
-func (p *Parser) cacheRequestID(id interface{}) {
-	if id == nil {
-		return
+// cacheRequestMessage stores a request message for future response correlation
+func (p *Parser) cacheRequestMessage(msg *event.JSONRPCMessage) error {
+	if msg == nil || msg.ID == nil {
+		return fmt.Errorf("invalid message")
 	}
-	key := p.idToCacheKey(id)
-	p.requestIDCache.Add(key, struct{}{})
+	if msg.Request != nil {
+		// This shouldn't happen. Only responses should have Request field set.
+		return fmt.Errorf("message already has Request field set")
+	}
+	key := p.idToCacheKey(msg.ID)
+	p.requestIDCache.Add(key, msg)
+
+	return nil
 }
 
-// validateResponseID checks if a response ID has a corresponding cached request
-func (p *Parser) validateResponseID(id interface{}) bool {
+// getRequestByID retrieves a cached request message by its ID
+// Returns the request message and true if found, nil and false otherwise
+func (p *Parser) getRequestByID(id interface{}) (*event.JSONRPCMessage, bool) {
 	if id == nil {
-		return false
+		return nil, false
 	}
 	key := p.idToCacheKey(id)
-	_, exists := p.requestIDCache.Get(key)
-	return exists
+	req, exists := p.requestIDCache.Get(key)
+	return req, exists
 }
 
-// handleRequestResponseCorrelation handles caching request IDs and validating response IDs.
+// handleRequestResponseCorrelation handles caching request messages and pairing responses with their requests.
+// For request messages, it caches the full message for future correlation.
+// For response messages, it looks up and attaches the corresponding request.
 // Returns true if the message should be kept, false if it should be dropped.
-func (p *Parser) handleRequestResponseCorrelation(msg event.JSONRPCMessage) bool {
+func (p *Parser) handleRequestResponseCorrelation(msg *event.JSONRPCMessage) error {
 	switch msg.MessageType {
 	case event.JSONRPCMessageTypeRequest:
-		// Cache request ID for future response validation
-		p.cacheRequestID(msg.ID)
-		return true
+		// Cache the full request message for future response pairing
+		return p.cacheRequestMessage(msg)
 	case event.JSONRPCMessageTypeResponse:
-		// Validate that this response corresponds to a known request
-		return p.validateResponseID(msg.ID)
+		// Look up the corresponding request and attach it to the response
+		req, exists := p.getRequestByID(msg.ID)
+		if !exists {
+			// Drop responses without matching requests
+			return fmt.Errorf("response without matching request ID")
+		}
+		// Attach the request to the response
+		msg.Request = req
+		return nil
 	}
 	// Notifications don't have IDs, always keep them
-	return true
+	return nil
 }
 
 // isDuplicate checks if we've seen this hash before and marks it as seen.

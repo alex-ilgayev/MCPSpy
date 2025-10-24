@@ -81,23 +81,19 @@ func (lm *LibraryManager) ProcessLibraryEvent(e event.Event) {
 
 	// Check if already hooked
 	if hookedPath, ok := lm.hookedLibs[inode]; ok {
-		logrus.WithFields(logrus.Fields{
-			"inode":         inode,
-			"path":          path,
-			"hooked_path":   hookedPath,
-			"target_mnt_ns": targetMountNS,
-		}).Trace("Library already hooked")
+		logrus.
+			WithFields(e.LogFields()).
+			WithField("hooked_path", hookedPath).
+			Trace("Library already hooked")
 		return
 	}
 
 	// Check if previously failed and error is not retryable
 	if err, ok := lm.failedLibs[inode]; ok && !isRetryableError(err) {
-		logrus.WithFields(logrus.Fields{
-			"inode":         inode,
-			"path":          path,
-			"error":         err,
-			"target_mnt_ns": targetMountNS,
-		}).Trace("Library previously failed to hook with non-retryable error, skipping")
+		logrus.
+			WithFields(e.LogFields()).
+			WithError(err).
+			Trace("Library previously failed to hook with non-retryable error, skipping")
 		return
 	}
 
@@ -110,11 +106,7 @@ func (lm *LibraryManager) ProcessLibraryEvent(e event.Event) {
 		modifiedPath, err = namespace.GetPathInMountNamespace(path, targetMountNS)
 		if err != nil {
 			lm.failedLibs[inode] = err
-			logrus.WithFields(logrus.Fields{
-				"inode":         inode,
-				"path":          path,
-				"target_mnt_ns": targetMountNS,
-			}).Warn("Failed to get path in mount namespace")
+			logrus.WithFields(e.LogFields()).Warn("Failed to get path in mount namespace")
 			return
 		}
 	} else {
@@ -124,22 +116,14 @@ func (lm *LibraryManager) ProcessLibraryEvent(e event.Event) {
 
 	if err := lm.attacher.AttachSSLProbes(modifiedPath); err != nil {
 		lm.failedLibs[inode] = err
-		logrus.WithFields(logrus.Fields{
-			"inode":         inode,
-			"path":          path,
-			"target_mnt_ns": targetMountNS,
-		}).Warn("Failed to attach SSL probes")
+		logrus.WithFields(e.LogFields()).Warn("Failed to attach SSL probes")
 		return
 	}
 
 	// Successfully attached - remove from failed libs if it was there
 	delete(lm.failedLibs, inode)
 	lm.hookedLibs[inode] = path
-	logrus.WithFields(logrus.Fields{
-		"inode":         inode,
-		"path":          path,
-		"target_mnt_ns": targetMountNS,
-	}).Debug("Successfully attached SSL probes to library")
+	logrus.WithFields(e.LogFields()).Debug("Successfully attached SSL probes to library")
 }
 
 // Stats returns statistics about hooked and failed libraries

@@ -2,6 +2,7 @@ package event
 
 import (
 	"github.com/alex-ilgayev/mcpspy/pkg/encoder"
+	"github.com/sirupsen/logrus"
 )
 
 type EventType uint8
@@ -84,6 +85,9 @@ func (e EventType) String() string {
 // Event is the interface for all events
 type Event interface {
 	Type() EventType
+
+	// Helper for logging
+	LogFields() logrus.Fields
 }
 
 // EventHeader represents the common header for all events
@@ -132,6 +136,14 @@ func (e *FSDataEvent) Type() EventType { return e.EventType }
 func (e *FSDataEvent) Buffer() []byte {
 	return e.Buf[:e.BufSize]
 }
+func (e *FSDataEvent) LogFields() logrus.Fields {
+	return logrus.Fields{
+		"pid":      e.PID,
+		"comm":     e.Comm(),
+		"size":     e.Size,
+		"buf_size": e.BufSize,
+	}
+}
 
 // FSAggregatedEvent represents a complete JSON message aggregated from
 // multiple raw FS events in userspace
@@ -142,6 +154,13 @@ type FSAggregatedEvent struct {
 }
 
 func (e *FSAggregatedEvent) Type() EventType { return e.EventType }
+func (e *FSAggregatedEvent) LogFields() logrus.Fields {
+	return logrus.Fields{
+		"pid":  e.PID,
+		"comm": e.Comm(),
+		"size": len(e.Payload),
+	}
+}
 
 // NewFSAggregatedEvent creates a new FSAggregatedEvent for usermode-aggregated JSON
 func NewFSAggregatedEvent(
@@ -190,6 +209,15 @@ func (e *LibraryEvent) Path() string {
 func (e *LibraryEvent) MountNamespaceID() uint32 {
 	return e.MntNSID
 }
+func (e *LibraryEvent) LogFields() logrus.Fields {
+	return logrus.Fields{
+		"pid":      e.PID,
+		"comm":     e.Comm(),
+		"inode":    e.Inode,
+		"path":     e.Path(),
+		"mnt_nsid": e.MntNSID,
+	}
+}
 
 // Even though it's similar to DataEvent,
 // we need to treat it differently, as it consist
@@ -208,6 +236,16 @@ func (e *TlsPayloadEvent) Type() EventType { return e.EventType }
 func (e *TlsPayloadEvent) Buffer() []byte {
 	return e.Buf[:e.BufSize]
 }
+func (e *TlsPayloadEvent) LogFields() logrus.Fields {
+	return logrus.Fields{
+		"pid":      e.PID,
+		"comm":     e.Comm(),
+		"ssl_ctx":  e.SSLContext,
+		"size":     e.Size,
+		"buf_size": e.BufSize,
+		"version":  e.HttpVersion.String(),
+	}
+}
 
 type TlsFreeEvent struct {
 	EventHeader
@@ -216,6 +254,13 @@ type TlsFreeEvent struct {
 }
 
 func (e *TlsFreeEvent) Type() EventType { return e.EventType }
+func (e *TlsFreeEvent) LogFields() logrus.Fields {
+	return logrus.Fields{
+		"pid":     e.PID,
+		"comm":    e.Comm(),
+		"ssl_ctx": e.SSLContext,
+	}
+}
 
 // HttpRequestEvent is generated after aggregating TLS events for a request.
 // (not generated from eBPF program)
@@ -232,6 +277,16 @@ type HttpRequestEvent struct {
 }
 
 func (e *HttpRequestEvent) Type() EventType { return e.EventType }
+func (e *HttpRequestEvent) LogFields() logrus.Fields {
+	return logrus.Fields{
+		"pid":     e.PID,
+		"comm":    e.Comm(),
+		"ssl_ctx": e.SSLContext,
+		"method":  e.Method,
+		"host":    e.Host,
+		"path":    e.Path,
+	}
+}
 
 // HttpResponseEvent is generated after aggregating TLS events for a response.
 // (not generated from eBPF program)
@@ -249,6 +304,18 @@ type HttpResponseEvent struct {
 }
 
 func (e *HttpResponseEvent) Type() EventType { return e.EventType }
+func (e *HttpResponseEvent) LogFields() logrus.Fields {
+	return logrus.Fields{
+		"pid":        e.PID,
+		"comm":       e.Comm(),
+		"ssl_ctx":    e.SSLContext,
+		"method":     e.Method,
+		"host":       e.Host,
+		"path":       e.Path,
+		"code":       e.Code,
+		"is_chunked": e.IsChunked,
+	}
+}
 
 // SSEEvent represents Server-Sent Events received through an HTTP connection
 // Will create EventTypeHttpSSE
@@ -265,3 +332,14 @@ type SSEEvent struct {
 }
 
 func (e *SSEEvent) Type() EventType { return e.EventType }
+func (e *SSEEvent) LogFields() logrus.Fields {
+	return logrus.Fields{
+		"pid":       e.PID,
+		"comm":      e.Comm(),
+		"ssl_ctx":   e.SSLContext,
+		"method":    e.Method,
+		"host":      e.Host,
+		"path":      e.Path,
+		"sse_event": e.SSEEventType,
+	}
+}
