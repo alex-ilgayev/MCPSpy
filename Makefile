@@ -176,27 +176,23 @@ test-e2e-setup: ## Setup Python e2e test environment
 	@$(PYTHON) -m venv tests/venv || true
 	tests/venv/bin/pip install -r tests/requirements.txt
 
-# Run MCP client (without MCPSpy) with simulated traffic - stdio transport
+# Run e2e scenarios without MCPSpy (traffic generation only) - stdio transport
 .PHONY: test-e2e-mcp-stdio
-test-e2e-mcp-stdio: test-e2e-setup ## Run MCP client with stdio transport
-	@echo "Running MCP client with stdio transport..."
-	tests/venv/bin/python tests/mcp_client.py --server "tests/venv/bin/python tests/mcp_server.py"
+test-e2e-mcp-stdio: test-e2e-setup ## Run e2e test without MCPSpy for stdio transport
+	@echo "Running e2e test without MCPSpy for stdio transport..."
+	tests/venv/bin/python tests/e2e_test.py \
+		--config tests/e2e_config.yaml \
+		--scenario stdio-fastmcp \
+		--skip-mcpspy
 
-# Run MCP client (without MCPSpy) with simulated traffic - HTTPS transport
+# Run e2e scenarios without MCPSpy (traffic generation only) - HTTPS transport
 .PHONY: test-e2e-mcp-https
-test-e2e-mcp-https: test-e2e-setup ## Run MCP client with HTTPS transport
-	@echo "Running MCP client with HTTPS transport..."
-	@echo "Starting HTTPS server in background..."
-	tests/venv/bin/python -m uvicorn tests.mcp_server:app \
-		--host 0.0.0.0 --port 12345 \
-		--ssl-keyfile=tests/server.key --ssl-certfile=tests/server.crt \
-		--log-level=error & \
-	SERVER_PID=$$!; \
-	sleep 3; \
-	tests/venv/bin/python tests/mcp_client.py \
-		--transport http \
-		--url https://127.0.0.1:12345/mcp || true; \
-	kill $$SERVER_PID 2>/dev/null || true
+test-e2e-mcp-https: test-e2e-setup ## Run e2e test without MCPSpy for HTTPS transport
+	@echo "Running e2e test without MCPSpy for HTTPS transport..."
+	tests/venv/bin/python tests/e2e_test.py \
+		--config tests/e2e_config.yaml \
+		--scenario http-fastmcp \
+		--skip-mcpspy
 
 # Run end-to-end test for stdio transport
 .PHONY: test-e2e-stdio
@@ -204,9 +200,8 @@ test-e2e-stdio: build test-e2e-setup ## Run end-to-end test for stdio transport
 	@echo "Running end-to-end test for stdio transport..."
 	@echo "Note: MCPSpy requires root privileges for eBPF operations"
 	sudo -E tests/venv/bin/python tests/e2e_test.py \
-		--mcpspy $(BUILD_DIR)/$(BINARY_NAME)-$(PLATFORM) \
-		--transport stdio \
-		--mcpspy-flags --log-level trace
+		--config tests/e2e_config.yaml \
+		--scenario stdio-fastmcp
 
 # Run end-to-end test for HTTP transport
 .PHONY: test-e2e-https
@@ -214,15 +209,16 @@ test-e2e-https: build test-e2e-setup ## Run end-to-end test for HTTP transport
 	@echo "Running end-to-end test for HTTP transport..."
 	@echo "Note: MCPSpy requires root privileges for eBPF operations"
 	sudo -E tests/venv/bin/python tests/e2e_test.py \
-		--mcpspy $(BUILD_DIR)/$(BINARY_NAME)-$(PLATFORM) \
-		--transport http \
-		--mcpspy-flags --log-level trace
+		--config tests/e2e_config.yaml \
+		--scenario http-fastmcp
 
 # Run end-to-end tests for all transports
 .PHONY: test-e2e
-test-e2e: test-e2e-stdio test-e2e-https ## Run end-to-end tests for all transports
-	@echo ""
-	@echo "=== All transport tests completed ====="
+test-e2e: build test-e2e-setup ## Run end-to-end tests for all transports
+	@echo "Running all end-to-end test scenarios..."
+	@echo "Note: MCPSpy requires root privileges for eBPF operations"
+	sudo -E tests/venv/bin/python tests/e2e_test.py \
+		--config tests/e2e_config.yaml
 
 # Update expected output files for stdio transport
 .PHONY: test-e2e-update-stdio
@@ -230,8 +226,8 @@ test-e2e-update-stdio: build test-e2e-setup ## Update expected output files for 
 	@echo "Updating expected output for stdio transport..."
 	@echo "Note: MCPSpy requires root privileges for eBPF operations"
 	sudo -E tests/venv/bin/python tests/e2e_test.py \
-		--mcpspy $(BUILD_DIR)/$(BINARY_NAME)-$(PLATFORM) \
-		--transport stdio \
+		--config tests/e2e_config.yaml \
+		--scenario stdio-fastmcp \
 		--update-expected
 
 # Update expected output files for HTTP transport
@@ -240,15 +236,18 @@ test-e2e-update-https: build test-e2e-setup ## Update expected output files for 
 	@echo "Updating expected output for HTTP transport..."
 	@echo "Note: MCPSpy requires root privileges for eBPF operations"
 	sudo -E tests/venv/bin/python tests/e2e_test.py \
-		--mcpspy $(BUILD_DIR)/$(BINARY_NAME)-$(PLATFORM) \
-		--transport http \
+		--config tests/e2e_config.yaml \
+		--scenario http-fastmcp \
 		--update-expected
 
 # Update expected output files for all transports
 .PHONY: test-e2e-update
-test-e2e-update: test-e2e-update-stdio test-e2e-update-https ## Update expected output files for all transports
-	@echo ""
-	@echo "=== All expected output files updated ====="
+test-e2e-update: build test-e2e-setup ## Update expected output files for all transports
+	@echo "Updating expected output for all scenarios..."
+	@echo "Note: MCPSpy requires root privileges for eBPF operations"
+	sudo -E tests/venv/bin/python tests/e2e_test.py \
+		--config tests/e2e_config.yaml \
+		--update-expected
 
 .PHONY: test-smoke
 test-smoke: ## Run smoke test (basic startup/shutdown test)

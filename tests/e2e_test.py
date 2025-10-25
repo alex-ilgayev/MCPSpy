@@ -3,14 +3,21 @@
 End-to-End Test Utility for MCPSpy
 ================================
 
-This utility tests MCPSpy by:
-1. Running MCPSpy in the background to capture traffic
-2. Invoking make targets to generate MCP traffic (test-e2e-mcp-stdio or test-e2e-mcp-https)
-3. Validating the captured JSONL output against expected test cases
+YAML-driven test framework for MCPSpy that supports:
+1. Multiple test scenarios in a single configuration
+2. Pre/post command hooks for setup and teardown
+3. Flexible traffic generation via command execution
+4. Configurable validation against expected JSONL output
 
-Supports multiple transport layers:
-- stdio: Direct stdio communication (default)
-- http: HTTP-based communication
+Usage:
+    # Run all scenarios
+    python e2e_test.py --config tests/e2e_config.yaml
+
+    # Run specific scenario
+    python e2e_test.py --config tests/e2e_config.yaml --scenario stdio-fastmcp
+
+    # Update expected output for scenario
+    python e2e_test.py --config tests/e2e_config.yaml --scenario stdio-fastmcp --update-expected
 """
 
 import argparse
@@ -23,214 +30,299 @@ import sys
 import tempfile
 import time
 from pathlib import Path
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Any, Optional, Tuple
+
 from deepdiff import DeepDiff
 
+from e2e_config_schema import (
+    TestConfig,
+    Scenario,
+    CommandConfig,
+    ValidationConfig,
+)
 
-class MCPSpyE2ETest:
-    """End-to-end test runner for MCPSpy."""
 
-    def __init__(
-        self,
-        mcpspy_path: str = "../mcpspy",
-        transport: str = "stdio",
-        update_expected: bool = False,
-        mcpspy_flags: Optional[List[str]] = None,
-    ):
-        self.mcpspy_path = mcpspy_path
-        self.transport = transport
-        self.update_expected = update_expected
-        self.mcpspy_flags = mcpspy_flags or []
-        self.mcpspy_process: Optional[subprocess.Popen] = None
-        self.output_file: Optional[str] = None
-        self.log_file: Optional[str] = None
+class CommandExecutor:
+    """Executes commands with lifecycle management."""
 
-    def run_test(self) -> bool:
-        """Run the complete end-to-end test. Returns True if all tests pass."""
+    def __init__(self, verbose: bool = False):
+        self.verbose = verbose
+        self.background_processes: List[subprocess.Popen] = []
+        self.background_log_files: Dict[int, str] = {}  # Track log files for debugging
+
+    def execute_foreground(
+        self, cmd_config: CommandConfig, capture_output: bool = True
+    ) -> Tuple[int, str, str]:
+        """
+        Execute a foreground command and wait for completion.
+
+        Returns:
+            Tuple of (returncode, stdout, stderr)
+        """
+        self._log(f"Executing command: {' '.join(cmd_config.command)}")
+
+        env = os.environ.copy()
+        if cmd_config.environment:
+            env.update(cmd_config.environment)
+
+        cwd = cmd_config.working_directory
+        if cwd:
+            self._log(f"Working directory: {cwd}")
+
         try:
-            print(f"Starting end-to-end test with {self.transport} transport")
+            if capture_output:
+                result = subprocess.run(
+                    cmd_config.command,
+                    cwd=cwd,
+                    env=env,
+                    timeout=cmd_config.timeout_seconds,
+                    capture_output=True,
+                    text=True,
+                )
+                return result.returncode, result.stdout, result.stderr
+            else:
+                result = subprocess.run(
+                    cmd_config.command,
+                    cwd=cwd,
+                    env=env,
+                    timeout=cmd_config.timeout_seconds,
+                )
+                return result.returncode, "", ""
 
-            # Create temporary output file
-            with tempfile.NamedTemporaryFile(
-                mode="w", suffix=".jsonl", delete=False
-            ) as f:
-                self.output_file = f.name
+        except subprocess.TimeoutExpired as e:
+            self._log(f"Command timed out after {cmd_config.timeout_seconds}s")
+            raise RuntimeError(
+                f"Command timed out: {' '.join(cmd_config.command)}"
+            ) from e
 
-            # Create temporary log file for mcpspy stderr/stdout
-            with tempfile.NamedTemporaryFile(
-                mode="w", suffix=".log", delete=False
-            ) as f:
-                self.log_file = f.name
+    def execute_background(self, cmd_config: CommandConfig) -> subprocess.Popen:
+        """
+        Execute a background command and return process handle.
 
-            print(f"Output file: {self.output_file}")
-            print(f"Log file: {self.log_file}")
+        The process is tracked for cleanup.
+        """
+        self._log(f"Starting background command: {' '.join(cmd_config.command)}")
 
-            # Start MCPSpy in background
-            self._start_mcpspy()
+        env = os.environ.copy()
+        if cmd_config.environment:
+            env.update(cmd_config.environment)
 
-            # Wait for eBPF initialization
-            print("Waiting for eBPF initialization...")
-            time.sleep(2)
+        cwd = cmd_config.working_directory
 
-            # Run MCP traffic generation via make target
-            self._run_mcp_traffic()
+        # Create temporary log file for background process
+        log_file = tempfile.NamedTemporaryFile(mode="w", suffix=".log", delete=False)
+        log_file_path = log_file.name
+        log_file.close()
 
-            # Stop MCPSpy
-            self._stop_mcpspy()
+        self._log(f"Background process logs: {log_file_path}")
 
-            # Validate output
-            return self._validate_output()
-
-        except Exception as e:
-            print(f"Test failed with error: {e}")
-            self._print_logs_on_failure()
-            return False
-        finally:
-            self._cleanup()
-
-    def _start_mcpspy(self) -> None:
-        """Start MCPSpy process in background."""
-        cmd = ["sudo", "-n", self.mcpspy_path, "--output", self.output_file]
-        # Append any additional mcpspy flags
-        cmd.extend(self.mcpspy_flags)
-        print(f"Starting MCPSpy: {' '.join(cmd)}")
-
-        # Open log file for writing stderr and stdout
-        with open(self.log_file, "w") as log_f:
-            self.mcpspy_process = subprocess.Popen(
-                cmd,
+        with open(log_file_path, "w") as log_f:
+            process = subprocess.Popen(
+                cmd_config.command,
+                cwd=cwd,
+                env=env,
                 stdout=log_f,
                 stderr=subprocess.STDOUT,
                 preexec_fn=os.setsid,
             )
 
-    def _stop_mcpspy(self) -> None:
-        """Stop MCPSpy process."""
-        if self.mcpspy_process:
-            print("Stopping MCPSpy...")
-            try:
-                # Send SIGINT to the process group
-                os.killpg(os.getpgid(self.mcpspy_process.pid), signal.SIGINT)
-                self.mcpspy_process.wait(timeout=5)
-            except (subprocess.TimeoutExpired, ProcessLookupError):
-                # Force kill if it doesn't respond
+        self.background_processes.append(process)
+        self.background_log_files[process.pid] = log_file_path
+
+        if cmd_config.wait_seconds > 0:
+            self._log(f"Waiting {cmd_config.wait_seconds}s for process to start...")
+            time.sleep(cmd_config.wait_seconds)
+
+        return process
+
+    def cleanup_background_processes(self) -> None:
+        """Stop all background processes."""
+        for process in self.background_processes:
+            if process.poll() is None:  # Still running
                 try:
-                    os.killpg(os.getpgid(self.mcpspy_process.pid), signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
+                    os.killpg(os.getpgid(process.pid), signal.SIGTERM)
+                    process.wait(timeout=5)
+                except (subprocess.TimeoutExpired, ProcessLookupError):
+                    try:
+                        os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
 
-    def _run_mcp_traffic(self) -> None:
-        """Run MCP traffic generation using make targets."""
-        # Map transport types to make targets
-        make_targets = {
-            "stdio": "test-e2e-mcp-stdio",
-            "http": "test-e2e-mcp-https",
-        }
+        self.background_processes.clear()
 
-        target = make_targets.get(self.transport)
-        if not target:
-            raise ValueError(f"No make target defined for transport: {self.transport}")
+    def _log(self, message: str) -> None:
+        """Log message if verbose mode is enabled."""
+        if self.verbose:
+            print(f"[CommandExecutor] {message}")
 
-        cmd = ["make", target]
-        print(f"Running MCP traffic generation: {' '.join(cmd)}")
 
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=30,
-            cwd=Path(__file__).parent.parent,  # Run from project root
+class TrafficGenerator:
+    """Orchestrates MCP traffic generation."""
+
+    def __init__(self, executor: CommandExecutor):
+        self.executor = executor
+
+    def generate_traffic(
+        self, traffic_config: Any
+    ) -> Tuple[bool, Optional[str], Optional[str]]:
+        """
+        Generate MCP traffic by executing the configured command.
+
+        Returns:
+            Tuple of (success, stdout, stderr)
+        """
+        cmd_config = CommandConfig(
+            command=traffic_config.command,
+            working_directory=traffic_config.working_directory,
+            environment=traffic_config.environment,
+            timeout_seconds=traffic_config.timeout_seconds,
         )
 
-        if result.returncode != 0:
-            print(f"Make target stderr: {result.stderr}")
-            print(f"Make target stdout: {result.stdout}")
-            raise RuntimeError(
-                f"Make target {target} failed with code {result.returncode}"
-            )
+        try:
+            returncode, stdout, stderr = self.executor.execute_foreground(cmd_config)
 
-        print(f"MCP traffic generation completed successfully")
+            if returncode != 0:
+                print(f"❌ Traffic generation failed with exit code {returncode}")
+                if stderr:
+                    print(f"\n📋 stderr:\n{stderr}")
+                if stdout:
+                    print(f"\n📋 stdout:\n{stdout}")
+                return False, stdout, stderr
 
-    def _validate_output(self) -> bool:
-        """Validate the JSONL output against expected test cases using deepdiff."""
+            return True, stdout, stderr
 
-        # Captured data
-        if not os.path.exists(self.output_file):
-            print("Output file does not exist")
-            self._print_logs_on_failure()
+        except Exception as e:
+            print(f"❌ Traffic generation error: {e}")
+            return False, None, str(e)
+
+
+class ValidationEngine:
+    """Validates captured output against expected results."""
+
+    def __init__(self, verbose: bool = False):
+        self.verbose = verbose
+
+    def validate(
+        self,
+        output_file: str,
+        validation_config: ValidationConfig,
+        update_expected: bool = False,
+    ) -> bool:
+        """
+        Validate captured output against expected results.
+
+        Returns:
+            True if validation passes, False otherwise
+        """
+        # Read captured output
+        if not os.path.exists(output_file):
+            print(f"❌ Output file does not exist: {output_file}")
             return False
 
-        captured_messages = self._read_jsonl_file(self.output_file)
+        captured_messages = self._read_jsonl_file(output_file)
         if not captured_messages:
-            print("No messages captured")
-            self._print_logs_on_failure()
+            print("❌ No messages captured - MCPSpy may have failed to start or capture traffic")
             return False
 
-        print(f"Captured {len(captured_messages)} messages")
+        print(f"📊 Captured {len(captured_messages)} messages")
 
-        # Expected data - look for transport-specific expected files first
-        expected_file = (
-            Path(__file__).parent / f"expected_output_{self.transport}.jsonl"
-        )
-        if not expected_file.exists():
-            # Fall back to generic expected output
-            expected_file = Path(__file__).parent / "expected_output.jsonl"
+        # Resolve expected output file path
+        expected_file = Path(validation_config.expected_output_file)
+        if not expected_file.is_absolute():
+            # Relative to tests directory
+            expected_file = Path(__file__).parent / expected_file
 
-        # If update_expected flag is set, write captured messages to expected file
-        if self.update_expected:
+        # Update expected output mode
+        if update_expected:
             self._write_jsonl_file(expected_file, captured_messages)
-            print(f"Updated expected output file: {expected_file}")
+            print(f"✅ Updated expected output file: {expected_file}")
             return True
 
-        # Validation mode (default behavior)
+        # Validation mode
         if not expected_file.exists():
-            print(f"Expected output file not found: {expected_file}")
+            print(f"❌ Expected output file not found: {expected_file}")
             return False
 
-        expected_patterns = self._read_jsonl_file(expected_file)
-        if not expected_patterns:
-            print("No expected patterns found")
+        expected_messages = self._read_jsonl_file(expected_file)
+        if not expected_messages:
+            print("❌ No expected messages found")
             return False
 
-        print(f"Expected {len(expected_patterns)} patterns")
+        print(f"📋 Expected {len(expected_messages)} messages")
 
-        # Ignoring dynamic fields, like timestamp, and pid.
-        exclude_regex_paths = [
-            r"root\[\d+\]\['timestamp'\]",
-            r"root\[\d+\]\['stdio_transport'\]\['from_pid'\]",
-            r"root\[\d+\]\['stdio_transport'\]\['to_pid'\]",
-            r"root\[\d+\]\['http_transport'\]\['pid'\]",
-        ]
+        # Validate message count
+        if validation_config.message_count:
+            if not self._validate_message_count(
+                len(captured_messages), validation_config.message_count
+            ):
+                return False
 
-        # Ignoring version fields.
-        # This is temporary until we'll be able to provide
-        # a version field in the MCP server.
-        exclude_regex_paths.append(
-            r"root\[\d+\]\['result'\]\['serverInfo'\]\['version'\]"
+        # Validate using DeepDiff
+        return self._validate_deepdiff(
+            expected_messages, captured_messages, validation_config
         )
-        exclude_regex_paths.append(r"root\[\d+\]\['raw'\]")
+
+    def _validate_message_count(self, actual_count: int, count_config: Any) -> bool:
+        """Validate message count against constraints."""
+        if count_config.exact is not None:
+            if actual_count != count_config.exact:
+                print(
+                    f"❌ Message count mismatch: expected exactly {count_config.exact}, got {actual_count}"
+                )
+                return False
+            print(f"✅ Message count matches: {actual_count}")
+            return True
+
+        if count_config.min is not None and actual_count < count_config.min:
+            print(
+                f"❌ Too few messages: expected at least {count_config.min}, got {actual_count}"
+            )
+            return False
+
+        if count_config.max is not None and actual_count > count_config.max:
+            print(
+                f"❌ Too many messages: expected at most {count_config.max}, got {actual_count}"
+            )
+            return False
+
+        print(f"✅ Message count within range: {actual_count}")
+        return True
+
+    def _validate_deepdiff(
+        self,
+        expected: List[Dict[str, Any]],
+        actual: List[Dict[str, Any]],
+        validation_config: ValidationConfig,
+    ) -> bool:
+        """Validate messages using DeepDiff."""
+        deepdiff_config = validation_config.deepdiff
+
+        if not deepdiff_config:
+            print("⚠️  No DeepDiff configuration provided, skipping comparison")
+            return True
+
+        exclude_regex_paths = deepdiff_config.exclude_regex_paths or []
 
         diff = DeepDiff(
-            expected_patterns,
-            captured_messages,
-            ignore_order=True,
+            expected,
+            actual,
+            ignore_order=deepdiff_config.ignore_order,
             exclude_regex_paths=exclude_regex_paths,
         )
+
         if not diff:
-            print("All messages match expected output!")
+            print("✅ All messages match expected output!")
             return True
         else:
-            print("Output differs from expected:")
+            print("❌ Output differs from expected:")
             print("\n=== Comparison Results ===")
             print(diff.pretty())
 
-            # Show detailed message comparison for better debugging
-            self._show_detailed_diff(expected_patterns, captured_messages, diff)
+            # Show detailed message comparison
+            self._show_detailed_diff(expected, actual, diff)
 
             # Print JSONL format comparison
-            self._print_jsonl_comparison(expected_patterns, captured_messages)
-
-            self._print_logs_on_failure()
+            self._print_jsonl_comparison(expected, actual)
 
             return False
 
@@ -272,7 +364,7 @@ class MCPSpyE2ETest:
         """Show detailed comparison of differing messages."""
         print("\n=== Detailed Message Comparison ===")
 
-        # If message counts differ, show which messages are missing
+        # If message counts differ
         if len(expected) != len(actual):
             print(
                 f"\n⚠️  Message count mismatch: expected {len(expected)}, got {len(actual)}"
@@ -282,21 +374,18 @@ class MCPSpyE2ETest:
                 print(f"\n📍 Missing {len(expected) - len(actual)} message(s):")
                 for idx in range(len(actual), len(expected)):
                     print(f"\n--- Missing message at index {idx} ---")
-                    self._print_message_summary(expected[idx])
+                    print(json.dumps(expected[idx], indent=2))
                     print("-" * 60)
             else:
                 print(f"\n📍 Extra {len(actual) - len(expected)} message(s):")
                 for idx in range(len(expected), len(actual)):
                     print(f"\n--- Extra message at index {idx} ---")
-                    self._print_message_summary(actual[idx])
+                    print(json.dumps(actual[idx], indent=2))
                     print("-" * 60)
             return
 
-        # Only show detailed per-message diff if counts match
         # Extract indices of messages that have differences
         affected_indices = set()
-
-        # Parse DeepDiff to find affected message indices
         for change_type in [
             "values_changed",
             "dictionary_item_added",
@@ -305,8 +394,7 @@ class MCPSpyE2ETest:
         ]:
             if change_type in diff:
                 for path in diff[change_type]:
-                    # Extract index from path like "root[2]['method']"
-                    match = re.search(r"root\[(\d+)\]", str(path))
+                    match = re.search(r"root\\[(\\d+)\\]", str(path))
                     if match:
                         affected_indices.add(int(match.group(1)))
 
@@ -317,34 +405,20 @@ class MCPSpyE2ETest:
         # Show affected messages
         for idx in sorted(affected_indices):
             print(f"\n--- Message at index {idx} differs ---")
-
-            # Show expected
             if idx < len(expected):
                 print("\n[EXPECTED]")
-                self._print_message_summary(expected[idx])
-            else:
-                print("\n[EXPECTED] (index out of bounds)")
-
-            # Show actual
+                print(json.dumps(expected[idx], indent=2))
             if idx < len(actual):
                 print("\n[ACTUAL]")
-                self._print_message_summary(actual[idx])
-            else:
-                print("\n[ACTUAL] (index out of bounds)")
-
+                print(json.dumps(actual[idx], indent=2))
             print("-" * 60)
-
-    def _print_message_summary(self, message: Dict[str, Any]) -> None:
-        """Print a message for debugging."""
-        # Print the full message in a readable format
-        print(json.dumps(message, indent=2))
 
     def _print_jsonl_comparison(
         self,
         expected: List[Dict[str, Any]],
         actual: List[Dict[str, Any]],
     ) -> None:
-        """Print expected and actual data in JSONL format for easy comparison."""
+        """Print expected and actual data in JSONL format."""
         print("\n=== JSONL Format Comparison ===")
 
         print("\n[EXPECTED - JSONL]")
@@ -355,79 +429,438 @@ class MCPSpyE2ETest:
         for message in actual:
             print(json.dumps(message))
 
+
+class ScenarioRunner:
+    """Executes individual test scenarios."""
+
+    def __init__(
+        self,
+        scenario: Scenario,
+        executor: CommandExecutor,
+        traffic_generator: TrafficGenerator,
+        validation_engine: ValidationEngine,
+        verbose: bool = False,
+        skip_mcpspy: bool = False,
+    ):
+        self.scenario = scenario
+        self.executor = executor
+        self.traffic_generator = traffic_generator
+        self.validation_engine = validation_engine
+        self.verbose = verbose
+        self.skip_mcpspy = skip_mcpspy
+
+        self.mcpspy_process: Optional[subprocess.Popen] = None
+        self.output_file: Optional[str] = None
+        self.log_file: Optional[str] = None
+        self.pre_processes: List[subprocess.Popen] = []
+        self.pre_process_log_files: Dict[int, str] = {}  # pid -> log_file mapping
+
+    def run(self, update_expected: bool = False) -> bool:
+        """
+        Run the complete scenario.
+
+        Returns:
+            True if scenario passes, False otherwise
+        """
+        try:
+            self._log(f"🚀 Running scenario: {self.scenario.name}")
+            if self.scenario.description:
+                self._log(f"   {self.scenario.description}")
+
+            # Create temporary files
+            self._create_temp_files()
+
+            # Run pre-commands
+            if not self._run_pre_commands():
+                return False
+
+            # Skip MCPSpy if requested (traffic generation only mode)
+            if self.skip_mcpspy:
+                self._log("Skipping MCPSpy - running traffic generation only")
+                success, stdout, stderr = self.traffic_generator.generate_traffic(
+                    self.scenario.traffic
+                )
+                if not success:
+                    print("⚠️  Traffic generation produced no output")
+                    if stderr:
+                        print(f"Traffic stderr:\n{stderr}")
+                    if stdout:
+                        print(f"Traffic stdout:\n{stdout}")
+                    return False
+                print("✅ Traffic generated successfully (no MCPSpy validation)")
+                return True
+
+            # Start MCPSpy
+            self._start_mcpspy()
+
+            # Wait for eBPF initialization
+            time.sleep(self.scenario.mcpspy.startup_wait_seconds)
+
+            # Generate traffic
+            self._log(f"Generating traffic via: {' '.join(self.scenario.traffic.command)}")
+            success, stdout, stderr = self.traffic_generator.generate_traffic(
+                self.scenario.traffic
+            )
+            if not success:
+                print("⚠️  Traffic generation produced no output")
+                if stderr:
+                    print(f"Traffic stderr:\n{stderr}")
+                if stdout:
+                    print(f"Traffic stdout:\n{stdout}")
+                self._print_logs_on_failure()
+                return False
+
+            # Stop MCPSpy
+            self._stop_mcpspy()
+
+            # Validate output
+            result = self.validation_engine.validate(
+                self.output_file, self.scenario.validation, update_expected
+            )
+
+            if not result:
+                self._print_logs_on_failure()
+
+            return result
+
+        except Exception as e:
+            print(f"❌ Scenario failed with error: {e}")
+            self._print_logs_on_failure()
+            return False
+        finally:
+            self._cleanup()
+
+    def _create_temp_files(self) -> None:
+        """Create temporary output and log files."""
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".jsonl", delete=False) as f:
+            self.output_file = f.name
+
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".log", delete=False) as f:
+            self.log_file = f.name
+
+        self._log(f"Output file: {self.output_file}")
+        self._log(f"Log file: {self.log_file}")
+
+    def _run_pre_commands(self) -> bool:
+        """Run pre-commands (setup)."""
+        if not self.scenario.pre_commands:
+            return True
+
+        self._log("Running pre-commands...")
+        for i, cmd_config in enumerate(self.scenario.pre_commands, 1):
+            try:
+                cmd_str = " ".join(cmd_config.command)
+                if cmd_config.background:
+                    self._log(f"[{i}] Starting background: {cmd_str}")
+                    process = self.executor.execute_background(cmd_config)
+                    self.pre_processes.append(process)
+                    print(f"✅ Pre-command {i} started (background)")
+                else:
+                    self._log(f"[{i}] Running foreground: {cmd_str}")
+                    returncode, stdout, stderr = self.executor.execute_foreground(
+                        cmd_config
+                    )
+                    if returncode != 0:
+                        print(f"❌ Pre-command {i} failed with exit code {returncode}")
+                        if stderr:
+                            print(f"stderr: {stderr}")
+                        if stdout:
+                            print(f"stdout: {stdout}")
+                        return False
+                    print(f"✅ Pre-command {i} completed successfully")
+            except Exception as e:
+                print(f"❌ Pre-command {i} failed: {e}")
+                return False
+
+        return True
+
+    def _run_post_commands(self) -> None:
+        """Run post-commands (cleanup)."""
+        if not self.scenario.post_commands:
+            return
+
+        self._log("Running post-commands...")
+        for cmd_config in self.scenario.post_commands:
+            try:
+                if cmd_config.background:
+                    self.executor.execute_background(cmd_config)
+                else:
+                    self.executor.execute_foreground(cmd_config)
+            except Exception as e:
+                print(f"⚠️  Post-command failed: {e}")
+
+    def _start_mcpspy(self) -> None:
+        """Start MCPSpy process in background."""
+        cmd = [
+            "sudo",
+            "-n",
+            self.scenario.mcpspy.binary_path,
+            "--output",
+            self.output_file,
+        ]
+        cmd.extend(self.scenario.mcpspy.flags)
+
+        self._log(f"Starting MCPSpy: {' '.join(cmd)}")
+
+        with open(self.log_file, "w") as log_f:
+            self.mcpspy_process = subprocess.Popen(
+                cmd,
+                stdout=log_f,
+                stderr=subprocess.STDOUT,
+                preexec_fn=os.setsid,
+            )
+
+    def _stop_mcpspy(self) -> None:
+        """Stop MCPSpy process gracefully."""
+        if self.mcpspy_process:
+            self._log("Stopping MCPSpy...")
+            try:
+                os.killpg(os.getpgid(self.mcpspy_process.pid), signal.SIGINT)
+                self.mcpspy_process.wait(
+                    timeout=self.scenario.mcpspy.shutdown_timeout_seconds
+                )
+            except (subprocess.TimeoutExpired, ProcessLookupError):
+                try:
+                    os.killpg(os.getpgid(self.mcpspy_process.pid), signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+
     def _print_logs_on_failure(self) -> None:
-        """Print mcpspy logs from temporary log file on test failure."""
+        """Print MCPSpy logs and pre-command process logs on failure."""
+        # Print pre-command process logs if they exist
+        for i, process in enumerate(self.pre_processes, 1):
+            log_path = self.executor.background_log_files.get(process.pid)
+            if log_path and os.path.exists(log_path):
+                print(f"\n" + "=" * 70)
+                print(f"📋 Pre-command {i} Process Logs")
+                print("=" * 70)
+                try:
+                    with open(log_path, "r") as f:
+                        content = f.read()
+                        if content.strip():
+                            print(content)
+                        else:
+                            print("(No output)")
+                    print("=" * 70)
+                except IOError as e:
+                    print(f"Failed to read pre-command log: {e}")
+
+            # Check if process exited
+            if process.poll() is not None:  # Process has exited
+                print(f"⚠️  Pre-command {i} exited with code: {process.returncode}")
+
         if self.log_file and os.path.exists(self.log_file):
-            print("\n" + "=" * 60)
-            print(f"MCPSpy logs saved to: {self.log_file}")
-            print("=" * 60)
+            print("\n" + "=" * 70)
+            print("📋 MCPSpy Debug Logs")
+            print("=" * 70)
             try:
                 with open(self.log_file, "r") as f:
                     content = f.read()
                     if content.strip():
                         print(content)
                     else:
-                        print("(No log output captured)")
+                        print("(Empty - MCPSpy may not have started)")
+                print("=" * 70)
             except IOError as e:
-                print(f"Failed to read log file: {e}")
+                print(f"❌ Failed to read log file: {e}")
 
     def _cleanup(self) -> None:
-        """Clean up temporary files and processes."""
+        """Clean up resources."""
+        # Stop MCPSpy if still running
         if self.mcpspy_process:
             self._stop_mcpspy()
 
+        # Run post-commands
+        self._run_post_commands()
+
+        # Clean up pre-command processes
+        for process in self.pre_processes:
+            if process.poll() is None:
+                try:
+                    os.killpg(os.getpgid(process.pid), signal.SIGTERM)
+                    process.wait(timeout=5)
+                except (subprocess.TimeoutExpired, ProcessLookupError):
+                    try:
+                        os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+
+        # Clean up background processes from executor
+        self.executor.cleanup_background_processes()
+
+        # Clean up temporary files
         if self.output_file and os.path.exists(self.output_file):
             try:
                 os.unlink(self.output_file)
-                print(f"Cleaned up output file: {self.output_file}")
+                self._log(f"Cleaned up output file: {self.output_file}")
             except OSError:
                 pass
 
+    def _log(self, message: str) -> None:
+        """Log message if verbose mode is enabled."""
+        if self.verbose:
+            print(f"[Scenario: {self.scenario.name}] {message}")
+
+
+class TestSuite:
+    """Orchestrates multiple test scenarios."""
+
+    def __init__(self, config: TestConfig, verbose: bool = False, skip_mcpspy: bool = False):
+        self.config = config
+        self.verbose = verbose
+        self.skip_mcpspy = skip_mcpspy
+        self.executor = CommandExecutor(verbose=verbose)
+        self.traffic_generator = TrafficGenerator(self.executor)
+        self.validation_engine = ValidationEngine(verbose=verbose)
+
+    def run_all(self, update_expected: bool = False) -> bool:
+        """
+        Run all scenarios sequentially.
+
+        Returns:
+            True if all scenarios pass, False otherwise
+        """
+        results = {}
+
+        print("\n" + "=" * 60)
+        print(f"🧪 Running {len(self.config.scenarios)} scenarios")
+        if self.skip_mcpspy:
+            print("⚠️  Running without MCPSpy (traffic generation only)")
+        print("=" * 60)
+
+        for scenario in self.config.scenarios:
+            # Merge defaults into scenario
+            scenario = self.config.merge_defaults_for_scenario(scenario)
+
+            runner = ScenarioRunner(
+                scenario,
+                self.executor,
+                self.traffic_generator,
+                self.validation_engine,
+                verbose=self.verbose,
+                skip_mcpspy=self.skip_mcpspy,
+            )
+
+            result = runner.run(update_expected)
+            results[scenario.name] = result
+
+            if result:
+                print(f"\n✅ Scenario '{scenario.name}' PASSED\n")
+            else:
+                print(f"\n❌ Scenario '{scenario.name}' FAILED\n")
+
+        # Print summary
+        self._print_summary(results)
+
+        return all(results.values())
+
+    def run_scenario(self, scenario_name: str, update_expected: bool = False) -> bool:
+        """
+        Run a specific scenario by name.
+
+        Returns:
+            True if scenario passes, False otherwise
+        """
+        scenario = self.config.get_scenario(scenario_name)
+        if not scenario:
+            print(f"❌ Scenario not found: {scenario_name}")
+            print("\nAvailable scenarios:")
+            for s in self.config.scenarios:
+                print(f"  • {s.name}")
+            return False
+
+        # Merge defaults into scenario
+        scenario = self.config.merge_defaults_for_scenario(scenario)
+
+        runner = ScenarioRunner(
+            scenario,
+            self.executor,
+            self.traffic_generator,
+            self.validation_engine,
+            verbose=self.verbose,
+            skip_mcpspy=self.skip_mcpspy,
+        )
+
+        result = runner.run(update_expected)
+
+        if result:
+            print(f"\n✅ Scenario '{scenario.name}' PASSED")
+        else:
+            print(f"\n❌ Scenario '{scenario.name}' FAILED")
+
+        return result
+
+    def _print_summary(self, results: Dict[str, bool]) -> None:
+        """Print test summary."""
+        print("\n" + "=" * 60)
+        print("📊 Test Summary")
+        print("=" * 60)
+
+        passed = sum(1 for r in results.values() if r)
+        failed = sum(1 for r in results.values() if not r)
+
+        for name, result in results.items():
+            status = "✅ PASSED" if result else "❌ FAILED"
+            print(f"  {status}: {name}")
+
+        print("\n" + "=" * 60)
+        print(f"Total: {len(results)} | Passed: {passed} | Failed: {failed}")
+        print("=" * 60)
+
 
 def main():
-    # Default mcpspy path: one folder above the tests directory
-    default_mcpspy_path = str(Path(__file__).parent.parent / "mcpspy")
-
-    parser = argparse.ArgumentParser(description="End-to-end test for MCPSpy")
-    parser.add_argument(
-        "--mcpspy",
-        default=default_mcpspy_path,
-        help=f"Path to MCPSpy binary (default: {default_mcpspy_path})",
+    """Main function."""
+    parser = argparse.ArgumentParser(
+        description="YAML-driven E2E test framework for MCPSpy"
     )
     parser.add_argument(
-        "--transport",
-        choices=["stdio", "http"],
-        default="stdio",
-        help="Transport layer to test (default: stdio)",
+        "--config",
+        required=True,
+        type=Path,
+        help="Path to YAML configuration file",
+    )
+    parser.add_argument(
+        "--scenario",
+        help="Run specific scenario by name (default: run all)",
     )
     parser.add_argument(
         "--update-expected",
         action="store_true",
-        help="Update expected output files with captured messages instead of validating",
+        help="Update expected output files instead of validating",
     )
     parser.add_argument(
-        "--mcpspy-flags",
-        nargs=argparse.REMAINDER,
-        default=[],
-        help="Additional flags to pass to mcpspy (e.g., --mcpspy-flags --verbose --log-level debug)",
+        "--verbose",
+        "-v",
+        action="store_true",
+        help="Enable verbose output",
+    )
+    parser.add_argument(
+        "--skip-mcpspy",
+        action="store_true",
+        help="Skip MCPSpy monitoring - only run traffic generation and pre/post commands (useful for debugging MCP implementations)",
     )
 
     args = parser.parse_args()
 
-    if not os.path.exists(args.mcpspy):
-        print(f"Error: MCPSpy binary not found: {args.mcpspy}")
-        print("Build it first with: make build")
+    # Load configuration
+    if not args.config.exists():
+        print(f"❌ Configuration file not found: {args.config}")
         sys.exit(1)
 
-    test = MCPSpyE2ETest(
-        args.mcpspy, args.transport, args.update_expected, args.mcpspy_flags
-    )
-    success = test.run_test()
+    try:
+        config = TestConfig.from_yaml_file(args.config)
+    except Exception as e:
+        print(f"❌ Failed to load configuration: {e}")
+        sys.exit(1)
 
-    if success:
-        print(f"✅ {args.transport} transport test passed!")
+    # Create test suite
+    suite = TestSuite(config, verbose=args.verbose, skip_mcpspy=args.skip_mcpspy)
+
+    # Run scenarios
+    if args.scenario:
+        success = suite.run_scenario(args.scenario, args.update_expected)
     else:
-        print(f"🚫 {args.transport} transport test failed!")
+        success = suite.run_all(args.update_expected)
 
     sys.exit(0 if success else 1)
 

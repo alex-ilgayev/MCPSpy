@@ -1,0 +1,73 @@
+# MCPSpy E2E Test Configuration
+# ================================
+# YAML-driven test configuration for MCPSpy end-to-end testing.
+# This file defines test scenarios, their execution, and validation rules.
+
+version: "1.0"
+
+# Default settings applied to all scenarios
+defaults:
+  mcpspy:
+    # Binary path relative to project root (where make is run)
+    # Update this path if your platform is different (e.g., build/mcpspy-linux-arm64)
+    binary_path: "build/mcpspy-linux-amd64"
+    flags: ["--log-level", "trace"]
+    startup_wait_seconds: 2.0
+    shutdown_timeout_seconds: 5.0
+
+  validation:
+    deepdiff:
+      ignore_order: true
+      exclude_regex_paths:
+        # Exclude dynamic fields that change between runs
+        - "root\\[\\d+\\]\\['timestamp'\\]"
+        - "root\\[\\d+\\]\\['stdio_transport'\\]\\['from_pid'\\]"
+        - "root\\[\\d+\\]\\['stdio_transport'\\]\\['to_pid'\\]"
+        - "root\\[\\d+\\]\\['http_transport'\\]\\['pid'\\]"
+        # Exclude version field (temporary until MCP server provides consistent versioning)
+        - "root\\[\\d+\\]\\['result'\\]\\['serverInfo'\\]\\['version'\\]"
+        # Exclude raw JSON field
+        - "root\\[\\d+\\]\\['raw'\\]"
+
+# Test scenarios
+scenarios:
+  # Stdio transport scenario
+  - name: "stdio-fastmcp"
+    description: "Test stdio transport with FastMCP Python server"
+
+    # No pre_commands needed - client spawns server automatically
+
+    traffic:
+      command: ["bash", "-c", "tests/venv/bin/python tests/mcp_client.py --server 'tests/venv/bin/python tests/mcp_server.py'"]
+      working_directory: "."
+      timeout_seconds: 30
+
+    validation:
+      expected_output_file: "expected_output_stdio.jsonl"
+      message_count:
+        min: 20
+        max: 30
+
+  # HTTP transport scenario
+  - name: "http-fastmcp"
+    description: "Test HTTP transport with FastMCP Python server (HTTPS with self-signed certs)"
+
+    # Start HTTPS server before MCPSpy
+    pre_commands:
+      - command: ["tests/venv/bin/python", "-m", "uvicorn", "tests.mcp_server:app", "--host", "0.0.0.0", "--port", "12345", "--ssl-keyfile=tests/server.key", "--ssl-certfile=tests/server.crt", "--log-level", "error"]
+        background: true
+        wait_seconds: 3.0
+
+    traffic:
+      command: ["tests/venv/bin/python", "tests/mcp_client.py", "--transport", "http", "--url", "https://127.0.0.1:12345/mcp"]
+      timeout_seconds: 30
+
+    # Stop HTTP server after test completes
+    post_commands:
+      - command: ["pkill", "-f", "mcp_server.py"]
+
+    validation:
+      expected_output_file: "expected_output_http.jsonl"
+      message_count:
+        min: 20
+        max: 30
