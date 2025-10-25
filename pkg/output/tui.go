@@ -43,25 +43,27 @@ const (
 
 // model is the Bubbletea model for the TUI
 type model struct {
-	messages         []*event.MCPEvent
-	selectedIndex    int
-	scrollOffset     int
-	paused           bool
-	viewMode         viewMode
-	prettyJSON       bool
-	detailScroll     int
-	width            int
-	height           int
-	autoScroll       bool
-	stats            map[string]int
-	bannerCollapsed  bool
-	searchQuery      string
-	searchResults    []int
-	currentSearchIdx int
-	filterTransport  string // "ALL", "HTTP", "STDIO"
-	filterType       string // "ALL", "REQ", "RESP", "NOTIFY", "ERROR"
-	jsonWrap         bool
-	density          densityMode
+	messages          []*event.MCPEvent
+	selectedIndex     int
+	scrollOffset      int
+	paused            bool
+	viewMode          viewMode
+	prettyJSON        bool
+	detailScroll      int
+	width             int
+	height            int
+	autoScroll        bool
+	stats             map[string]int
+	bannerCollapsed   bool
+	searchQuery       string
+	searchResults     []int
+	currentSearchIdx  int
+	filterTransport   string // "ALL", "HTTP", "STDIO"
+	filterType        string // "ALL", "REQ", "RESP", "NOTIFY", "ERROR"
+	jsonWrap          bool
+	density           densityMode
+	requestToResponse map[string]*event.MCPEvent // Maps request key to response message
+	detailViewTab     string                     // "request" or "response"
 }
 
 // Bubbletea message types
@@ -74,20 +76,22 @@ type tickMsg time.Time
 // NewTUIDisplay creates a new TUI display handler
 func NewTUIDisplay(eventBus bus.EventBus) (*TUIDisplay, error) {
 	m := &model{
-		messages:         make([]*event.MCPEvent, 0, maxMessages),
-		autoScroll:       true,
-		prettyJSON:       true,
-		stats:            make(map[string]int),
-		width:            80,
-		height:           24,
-		bannerCollapsed:  false,
-		searchQuery:      "",
-		searchResults:    []int{},
-		currentSearchIdx: -1,
-		filterTransport:  "ALL",
-		filterType:       "ALL",
-		jsonWrap:         true,
-		density:          densityComfort,
+		messages:          make([]*event.MCPEvent, 0, maxMessages),
+		autoScroll:        true,
+		prettyJSON:        true,
+		stats:             make(map[string]int),
+		width:             80,
+		height:            24,
+		bannerCollapsed:   false,
+		searchQuery:       "",
+		searchResults:     []int{},
+		currentSearchIdx:  -1,
+		filterTransport:   "ALL",
+		filterType:        "ALL",
+		jsonWrap:          true,
+		density:           densityComfort,
+		requestToResponse: make(map[string]*event.MCPEvent),
+		detailViewTab:     "request",
 	}
 
 	d := &TUIDisplay{
@@ -190,6 +194,19 @@ func (m *model) handleKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case "enter":
 			// Show detail view for selected message
 			if len(m.getFilteredMessages()) > 0 {
+				filteredMsgs := m.getFilteredMessages()
+				selectedMsg := filteredMsgs[m.selectedIndex]
+
+				// Set default tab based on message type
+				if selectedMsg.MessageType == event.JSONRPCMessageTypeRequest {
+					m.detailViewTab = "request"
+				} else if selectedMsg.MessageType == event.JSONRPCMessageTypeResponse {
+					m.detailViewTab = "response"
+				} else {
+					// Notifications don't have tabs
+					m.detailViewTab = "request"
+				}
+
 				m.viewMode = viewModeDetail
 				m.detailScroll = 0
 			}
@@ -296,6 +313,27 @@ func (m *model) handleKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			// Toggle wrap
 			m.jsonWrap = !m.jsonWrap
 			m.detailScroll = 0
+
+		case "r":
+			// Switch between request and response tabs
+			filteredMsgs := m.getFilteredMessages()
+			if len(filteredMsgs) > 0 {
+				selectedMsg := filteredMsgs[m.selectedIndex]
+				// Don't switch for notifications
+				if selectedMsg.MessageType != event.JSONRPCMessageTypeNotification {
+					if m.detailViewTab == "request" {
+						// Check if response exists
+						paired := m.findPairedMessage(selectedMsg)
+						if paired != nil || selectedMsg.MessageType == event.JSONRPCMessageTypeResponse {
+							m.detailViewTab = "response"
+							m.detailScroll = 0
+						}
+					} else {
+						m.detailViewTab = "request"
+						m.detailScroll = 0
+					}
+				}
+			}
 		}
 	}
 
@@ -350,6 +388,14 @@ func (m *model) getMessageTypeString(msg *event.MCPEvent) string {
 func (m *model) addMessage(msg *event.MCPEvent) {
 	m.messages = append(m.messages, msg)
 
+	// Update request-response mapping for responses
+	if msg.MessageType == event.JSONRPCMessageTypeResponse {
+		pairingKey := getPairingKey(msg)
+		if pairingKey != "" {
+			m.requestToResponse[pairingKey] = msg
+		}
+	}
+
 	// Update statistics
 	if msg.MessageType == event.JSONRPCMessageTypeRequest || msg.MessageType == event.JSONRPCMessageTypeNotification {
 		m.stats[msg.Method]++
@@ -357,6 +403,15 @@ func (m *model) addMessage(msg *event.MCPEvent) {
 
 	// Circular buffer: remove oldest if over limit
 	if len(m.messages) > maxMessages {
+		oldestMsg := m.messages[0]
+		// Clean up request-response mapping if removing a response
+		if oldestMsg.MessageType == event.JSONRPCMessageTypeResponse && oldestMsg.ID != nil {
+			pairingKey := getPairingKey(oldestMsg)
+			if pairingKey != "" {
+				delete(m.requestToResponse, pairingKey)
+			}
+		}
+
 		m.messages = m.messages[1:]
 		if m.scrollOffset > 0 {
 			m.scrollOffset--
@@ -658,7 +713,7 @@ func (m *model) renderTableHeader() string {
 
 	// Pad each field, then concatenate
 	var b strings.Builder
-	b.WriteString("  ") // Prefix to match message rows
+	b.WriteString("  ") // Prefix (2) to match message rows
 	b.WriteString(padStringRight("TIME", timeW))
 	b.WriteString(" ")
 	b.WriteString(padString("TRANSPORT", transportW))
@@ -699,15 +754,18 @@ func (m *model) renderMessages() string {
 
 // renderMessageLine renders a single message line
 func (m *model) renderMessageLine(msg *event.MCPEvent, selected bool) string {
+	// Check if this message's pair is selected (for subtle highlighting)
+	isPairHighlighted := m.isPairHighlighted(msg)
+
 	// Get dynamic column widths
 	timeW, transportW, typeW, idW, fromW, toW, _ := m.getColumnWidths()
 
 	// Colorblind-safe palette
-	// Time - dimmed gray, right-aligned
-	timeStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#6C6C6C"))
+	// Time - same as transport for better visibility on gray background
+	timeStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#9E9E9E"))
 	timeStr := padStringRight(msg.Timestamp.Format("15:04:05.000"), timeW)
 
-	// Transport - neutral gray with slight tint
+	// Transport - neutral gray
 	var transportStyle lipgloss.Style
 	var transportStr string
 	if msg.TransportType == event.TransportTypeHTTP {
@@ -740,8 +798,8 @@ func (m *model) renderMessageLine(msg *event.MCPEvent, selected bool) string {
 		typeStr = padString("NOTIFY", typeW)
 	}
 
-	// ID - very dim (low value)
-	idStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#4E4E4E"))
+	// ID - same as transport for better visibility on gray background
+	idStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#9E9E9E"))
 	idStr := fmt.Sprintf("%v", msg.ID)
 	if msg.MessageType == event.JSONRPCMessageTypeNotification {
 		idStr = "-"
@@ -793,11 +851,17 @@ func (m *model) renderMessageLine(msg *event.MCPEvent, selected bool) string {
 	}
 
 	// Calculate remaining space for details (to prevent overflow)
-	// prefix(2) + timeW + transport + typeW + idW + fromW + arrow(3) + toW + spaces(7)
-	usedWidth := 2 + timeW + 1 + transportW + 1 + typeW + 1 + idW + 1 + fromW + 1 + 1 + 1 + toW + 1
+	// prefix(2) + timeW + transport + typeW + idW + fromW + arrow + toW + spaces(7)
+	// Note: arrow "→" is 3 bytes in UTF-8 but displays as 1 character width
+	arrowWidth := 1 // Display width of arrow
+	usedWidth := 2 + timeW + 1 + transportW + 1 + typeW + 1 + idW + 1 + fromW + 1 + arrowWidth + 1 + toW + 1
 	remainingWidth := m.width - usedWidth
 	if len(detailsStr) > remainingWidth && remainingWidth > 3 {
 		detailsStr = detailsStr[:remainingWidth-3] + "..."
+	}
+	// Ensure detailsStr is padded to remainingWidth for consistent row width
+	if len(detailsStr) < remainingWidth {
+		detailsStr = padString(detailsStr, remainingWidth)
 	}
 
 	// Selection marker or error gutter
@@ -843,6 +907,51 @@ func (m *model) renderMessageLine(msg *event.MCPEvent, selected bool) string {
 			Foreground(lipgloss.Color("#FFFFFF")).
 			Bold(true)
 		return selectedStyle.Render(b.String())
+	}
+
+	// For pair-highlighted rows, apply individual color styles with background
+	if isPairHighlighted {
+		bgColor := lipgloss.Color("#505050") // Light gray, lighter than main cursor
+		gutterStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#FF0000")).Background(bgColor)
+		arrowStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#808080")).Background(bgColor)
+
+		// Apply background to all styles
+		timeStyleBg := timeStyle.Background(bgColor)
+		transportStyleBg := transportStyle.Background(bgColor)
+		typeStyleBg := typeStyle.Background(bgColor)
+		idStyleBg := idStyle.Background(bgColor)
+		processNameStyleBg := processNameStyle.Background(bgColor)
+		methodStyleBg := methodStyle.Background(bgColor)
+
+		if isError {
+			b.WriteString(gutterStyle.Render(prefix))
+		} else {
+			b.WriteString(lipgloss.NewStyle().Background(bgColor).Render(prefix))
+		}
+		b.WriteString(timeStyleBg.Render(timeStr))
+		b.WriteString(lipgloss.NewStyle().Background(bgColor).Render(" "))
+		b.WriteString(transportStyleBg.Render(transportStr))
+		b.WriteString(lipgloss.NewStyle().Background(bgColor).Render(" "))
+		b.WriteString(typeStyleBg.Render(typeStr))
+		b.WriteString(lipgloss.NewStyle().Background(bgColor).Render(" "))
+		b.WriteString(idStyleBg.Render(idStr))
+		b.WriteString(lipgloss.NewStyle().Background(bgColor).Render(" "))
+		b.WriteString(processNameStyleBg.Render(fromStr))
+		b.WriteString(lipgloss.NewStyle().Background(bgColor).Render(" "))
+		b.WriteString(arrowStyle.Render("→"))
+		b.WriteString(lipgloss.NewStyle().Background(bgColor).Render(" "))
+		b.WriteString(processNameStyleBg.Render(toStr))
+		b.WriteString(lipgloss.NewStyle().Background(bgColor).Render(" "))
+		b.WriteString(methodStyleBg.Render(detailsStr))
+
+		// Pad to full width with background
+		currentLen := len(prefix) + len(timeStr) + 1 + len(transportStr) + 1 + len(typeStr) + 1 +
+			len(idStr) + 1 + len(fromStr) + 1 + 1 + 1 + len(toStr) + 1 + len(detailsStr)
+		if currentLen < m.width {
+			b.WriteString(lipgloss.NewStyle().Background(bgColor).Render(strings.Repeat(" ", m.width-currentLen)))
+		}
+
+		return b.String()
 	}
 
 	// For non-selected rows, apply individual color styles
@@ -992,6 +1101,71 @@ func (m *model) renderFooter() string {
 	return line1
 }
 
+// renderTabBar renders the tab navigation bar for request/response switching
+func (m *model) renderTabBar(msg *event.MCPEvent) string {
+	// Don't show tabs for notifications
+	if msg.MessageType == event.JSONRPCMessageTypeNotification {
+		return ""
+	}
+
+	var b strings.Builder
+
+	// Styles - no padding to avoid height glitches
+	activeTabStyle := lipgloss.NewStyle().
+		Background(lipgloss.Color("#4A4A4A")).
+		Foreground(lipgloss.Color("#FFFFFF"))
+
+	inactiveTabStyle := lipgloss.NewStyle().
+		Background(lipgloss.Color("#2E2E2E")).
+		Foreground(lipgloss.Color("#9E9E9E"))
+
+	disabledTabStyle := lipgloss.NewStyle().
+		Background(lipgloss.Color("#1E1E1E")).
+		Foreground(lipgloss.Color("#6C6C6C"))
+
+	// Determine which tabs are available
+	hasResponse := false
+	responseLabel := "Response"
+
+	paired := m.findPairedMessage(msg)
+	if msg.MessageType == event.JSONRPCMessageTypeResponse {
+		hasResponse = true
+		if msg.Error.Message != "" {
+			responseLabel = "Response (error)"
+		}
+	} else if msg.MessageType == event.JSONRPCMessageTypeRequest {
+		if paired != nil {
+			hasResponse = true
+			// Check if response is an error
+			if paired.Error.Message != "" {
+				responseLabel = "Response (error)"
+			}
+		} else {
+			responseLabel = "Response (pending)"
+		}
+	}
+
+	// Render request tab (with manual padding)
+	if m.detailViewTab == "request" {
+		b.WriteString(activeTabStyle.Render(" Request "))
+	} else {
+		b.WriteString(inactiveTabStyle.Render(" Request "))
+	}
+
+	b.WriteString(" ")
+
+	// Render response tab (with manual padding)
+	if !hasResponse {
+		b.WriteString(disabledTabStyle.Render(" " + responseLabel + " "))
+	} else if m.detailViewTab == "response" {
+		b.WriteString(activeTabStyle.Render(" " + responseLabel + " "))
+	} else {
+		b.WriteString(inactiveTabStyle.Render(" " + responseLabel + " "))
+	}
+
+	return b.String()
+}
+
 // renderDetailView renders the detail view for a selected message
 func (m *model) renderDetailView() string {
 	filteredMsgs := m.getFilteredMessages()
@@ -1016,6 +1190,15 @@ func (m *model) renderDetailView() string {
 	b.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#9E9E9E")).Render(strings.Repeat("━", m.width)))
 	b.WriteString("\n")
 
+	// Tab bar (if applicable)
+	tabBar := m.renderTabBar(msg)
+	if tabBar != "" {
+		b.WriteString(tabBar)
+		b.WriteString("\n")
+		b.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#4E4E4E")).Render(strings.Repeat("─", m.width)))
+		b.WriteString("\n")
+	}
+
 	// Overview section
 	b.WriteString(m.renderOverview(msg))
 	b.WriteString("\n")
@@ -1030,9 +1213,22 @@ func (m *model) renderDetailView() string {
 	// Footer
 	keyStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#00D7FF"))
 
-	footer := fmt.Sprintf("%s  %s",
-		keyStyle.Render("Tab:Toggle Format"),
-		keyStyle.Render("Esc:Back"))
+	// Show 'r' keybind only for messages with pairs (not notifications)
+	var footer string
+	if msg.MessageType != event.JSONRPCMessageTypeNotification {
+		footer = fmt.Sprintf("%s  %s  %s  %s  %s",
+			keyStyle.Render("Tab:Format"),
+			keyStyle.Render("r:Switch"),
+			keyStyle.Render("w:Wrap"),
+			keyStyle.Render("↑↓:Scroll"),
+			keyStyle.Render("Esc:Back"))
+	} else {
+		footer = fmt.Sprintf("%s  %s  %s  %s",
+			keyStyle.Render("Tab:Format"),
+			keyStyle.Render("w:Wrap"),
+			keyStyle.Render("↑↓:Scroll"),
+			keyStyle.Render("Esc:Back"))
+	}
 	b.WriteString(footer)
 
 	return b.String()
@@ -1060,47 +1256,98 @@ func (m *model) renderOverview(msg *event.MCPEvent) string {
 		b.WriteString("\n")
 	}
 
+	// Determine which message to show based on active tab (same logic as renderRawJSON)
+	var displayMsg *event.MCPEvent
+
+	if msg.MessageType == event.JSONRPCMessageTypeNotification {
+		displayMsg = msg
+	} else {
+		// For request-response pairs, show content based on active tab
+		if m.detailViewTab == "request" {
+			if msg.MessageType == event.JSONRPCMessageTypeRequest {
+				displayMsg = msg
+			} else if msg.MessageType == event.JSONRPCMessageTypeResponse {
+				// Show the paired request
+				paired := m.findPairedMessage(msg)
+				if paired != nil {
+					displayMsg = paired
+				} else if msg.Request != nil {
+					// Create a temporary message from embedded request for display
+					displayMsg = &event.MCPEvent{
+						Timestamp:      msg.Timestamp, // Use response timestamp as fallback
+						TransportType:  msg.TransportType,
+						StdioTransport: msg.StdioTransport,
+						HttpTransport:  msg.HttpTransport,
+						JSONRPCMessage: *msg.Request,
+						Raw:            "",
+					}
+				} else {
+					displayMsg = msg // Fallback
+				}
+			}
+		} else {
+			// Show response
+			if msg.MessageType == event.JSONRPCMessageTypeResponse {
+				displayMsg = msg
+			} else if msg.MessageType == event.JSONRPCMessageTypeRequest {
+				// Show the paired response
+				paired := m.findPairedMessage(msg)
+				if paired != nil {
+					displayMsg = paired
+				} else {
+					displayMsg = nil // No response yet
+				}
+			}
+		}
+	}
+
+	// If no message to display (e.g., pending response)
+	if displayMsg == nil {
+		renderField("Status:        ", "(Response pending)")
+		return b.String()
+	}
+
 	// Timestamp
-	renderField("Timestamp:     ", msg.Timestamp.Format("2006-01-02 15:04:05.000"))
+	renderField("Timestamp:     ", displayMsg.Timestamp.Format("2006-01-02 15:04:05.000"))
 
 	// Transport
-	renderField("Transport:     ", string(msg.TransportType))
+	renderField("Transport:     ", string(displayMsg.TransportType))
 
 	// Message Type
-	renderField("Message Type:  ", string(msg.MessageType))
+	renderField("Message Type:  ", string(displayMsg.MessageType))
 
 	// Message ID
-	idStr := fmt.Sprintf("%v", msg.ID)
-	if msg.MessageType == event.JSONRPCMessageTypeNotification {
+	idStr := fmt.Sprintf("%v", displayMsg.ID)
+	if displayMsg.MessageType == event.JSONRPCMessageTypeNotification {
 		idStr = "-"
 	}
 	renderField("Message ID:    ", idStr)
 
 	// Status
-	if msg.MessageType == event.JSONRPCMessageTypeResponse {
+	if displayMsg.MessageType == event.JSONRPCMessageTypeResponse {
 		status := "OK"
-		if msg.Error.Message != "" {
-			status = fmt.Sprintf("Error: %s", msg.Error.Message)
+		if displayMsg.Error.Message != "" {
+			status = fmt.Sprintf("Error: %s", displayMsg.Error.Message)
 		}
 		renderField("Status:        ", status)
 	}
 
 	// From/To Process
-	switch msg.TransportType {
+	switch displayMsg.TransportType {
 	case event.TransportTypeStdio:
-		fromStr := fmt.Sprintf("%s (PID: %d)", msg.FromComm, msg.FromPID)
+		fromStr := fmt.Sprintf("%s (PID: %d)", displayMsg.FromComm, displayMsg.FromPID)
 		renderField("From Process:  ", fromStr)
 
-		toStr := fmt.Sprintf("%s (PID: %d)", msg.ToComm, msg.ToPID)
+		toStr := fmt.Sprintf("%s (PID: %d)", displayMsg.ToComm, displayMsg.ToPID)
 		renderField("To Process:    ", toStr)
 	case event.TransportTypeHTTP:
-		if msg.HttpTransport.IsRequest {
-			fromStr := fmt.Sprintf("%s (PID: %d)", msg.HttpTransport.Comm, msg.HttpTransport.PID)
+		if displayMsg.HttpTransport.IsRequest {
+			fromStr := fmt.Sprintf("%s (PID: %d)", displayMsg.HttpTransport.Comm, displayMsg.HttpTransport.PID)
 			renderField("From Process:  ", fromStr)
-			renderField("To Host:       ", msg.HttpTransport.Host)
+			renderField("To Host:       ", displayMsg.HttpTransport.Host)
 		} else {
-			renderField("From Host:     ", msg.HttpTransport.Host)
-			toStr := fmt.Sprintf("%s (PID: %d)", msg.HttpTransport.Comm, msg.HttpTransport.PID)
+			renderField("From Host:     ", displayMsg.HttpTransport.Host)
+			toStr := fmt.Sprintf("%s (PID: %d)", displayMsg.HttpTransport.Comm, displayMsg.HttpTransport.PID)
 			renderField("To Process:    ", toStr)
 		}
 	}
@@ -1116,34 +1363,94 @@ func (m *model) renderRawJSON(msg *event.MCPEvent) string {
 	sepStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#4E4E4E"))
 	hintStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#00D7FF"))
 
+	// Determine which message to show based on active tab
+	var displayMsg *event.MCPEvent
+	var contentLabel string
+
+	if msg.MessageType == event.JSONRPCMessageTypeNotification {
+		// Notifications don't have tabs
+		displayMsg = msg
+		contentLabel = "RAW JSON"
+	} else {
+		// For request-response pairs, show content based on active tab
+		if m.detailViewTab == "request" {
+			if msg.MessageType == event.JSONRPCMessageTypeRequest {
+				displayMsg = msg
+			} else if msg.MessageType == event.JSONRPCMessageTypeResponse {
+				// Show the paired request
+				paired := m.findPairedMessage(msg)
+				if paired != nil {
+					displayMsg = paired
+				} else if msg.Request != nil {
+					// Create a temporary message from embedded request for display
+					displayMsg = &event.MCPEvent{
+						JSONRPCMessage: *msg.Request,
+						Raw:            "", // We'll generate this
+					}
+					// Generate raw JSON for embedded request
+					if rawBytes, err := json.Marshal(msg.Request); err == nil {
+						displayMsg.Raw = string(rawBytes)
+					}
+				} else {
+					displayMsg = msg // Fallback
+				}
+			}
+			contentLabel = "REQUEST JSON"
+		} else {
+			// Show response
+			if msg.MessageType == event.JSONRPCMessageTypeResponse {
+				displayMsg = msg
+			} else if msg.MessageType == event.JSONRPCMessageTypeRequest {
+				// Show the paired response
+				paired := m.findPairedMessage(msg)
+				if paired != nil {
+					displayMsg = paired
+				} else {
+					displayMsg = nil // No response yet
+				}
+			}
+			contentLabel = "RESPONSE JSON"
+		}
+	}
+
 	// Simple header with hints
 	wrapStatus := "OFF"
 	if m.jsonWrap {
 		wrapStatus = "ON"
 	}
-	header := fmt.Sprintf("RAW JSON  %s  %s",
+	headerLabel := labelStyle.Bold(true).Render(contentLabel)
+	header := fmt.Sprintf("%s  %s  %s",
+		headerLabel,
 		hintStyle.Render("[Tab:Format]"),
 		hintStyle.Render(fmt.Sprintf("[w:Wrap=%s]", wrapStatus)))
-	b.WriteString(labelStyle.Bold(true).Render(header))
+	b.WriteString(header)
 	b.WriteString("\n")
 	b.WriteString(sepStyle.Render(strings.Repeat("─", m.width)))
 	b.WriteString("\n")
+
+	// If no message to display (e.g., pending response)
+	if displayMsg == nil {
+		b.WriteString("  ")
+		b.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#9E9E9E")).Render("(Response pending)"))
+		b.WriteString("\n")
+		return b.String()
+	}
 
 	// Format JSON
 	var jsonStr string
 	if m.prettyJSON {
 		var jsonObj interface{}
-		if err := json.Unmarshal([]byte(msg.Raw), &jsonObj); err == nil {
+		if err := json.Unmarshal([]byte(displayMsg.Raw), &jsonObj); err == nil {
 			if prettyBytes, err := json.MarshalIndent(jsonObj, "", "  "); err == nil {
 				jsonStr = string(prettyBytes)
 			} else {
-				jsonStr = msg.Raw
+				jsonStr = displayMsg.Raw
 			}
 		} else {
-			jsonStr = msg.Raw
+			jsonStr = displayMsg.Raw
 		}
 	} else {
-		jsonStr = msg.Raw
+		jsonStr = displayMsg.Raw
 	}
 
 	// Split into lines and apply scrolling
@@ -1194,27 +1501,70 @@ func (m *model) renderRawJSON(msg *event.MCPEvent) string {
 
 // getMaxDetailScroll calculates the maximum scroll position for the detail view
 func (m *model) getMaxDetailScroll() int {
-	if len(m.messages) == 0 {
+	filteredMsgs := m.getFilteredMessages()
+	if len(filteredMsgs) == 0 {
 		return 0
 	}
 
-	msg := m.messages[m.selectedIndex]
+	msg := filteredMsgs[m.selectedIndex]
+
+	// Determine which message to show based on active tab (same logic as renderRawJSON)
+	var displayMsg *event.MCPEvent
+
+	if msg.MessageType == event.JSONRPCMessageTypeNotification {
+		displayMsg = msg
+	} else {
+		if m.detailViewTab == "request" {
+			if msg.MessageType == event.JSONRPCMessageTypeRequest {
+				displayMsg = msg
+			} else if msg.MessageType == event.JSONRPCMessageTypeResponse {
+				paired := m.findPairedMessage(msg)
+				if paired != nil {
+					displayMsg = paired
+				} else if msg.Request != nil {
+					displayMsg = &event.MCPEvent{
+						JSONRPCMessage: *msg.Request,
+					}
+					if rawBytes, err := json.Marshal(msg.Request); err == nil {
+						displayMsg.Raw = string(rawBytes)
+					}
+				} else {
+					displayMsg = msg
+				}
+			}
+		} else {
+			if msg.MessageType == event.JSONRPCMessageTypeResponse {
+				displayMsg = msg
+			} else if msg.MessageType == event.JSONRPCMessageTypeRequest {
+				paired := m.findPairedMessage(msg)
+				if paired != nil {
+					displayMsg = paired
+				} else {
+					return 0 // No response yet
+				}
+			}
+		}
+	}
+
+	if displayMsg == nil {
+		return 0
+	}
 
 	// Format JSON the same way as renderRawJSON
 	var jsonStr string
 	if m.prettyJSON {
 		var jsonObj interface{}
-		if err := json.Unmarshal([]byte(msg.Raw), &jsonObj); err == nil {
+		if err := json.Unmarshal([]byte(displayMsg.Raw), &jsonObj); err == nil {
 			if prettyBytes, err := json.MarshalIndent(jsonObj, "", "  "); err == nil {
 				jsonStr = string(prettyBytes)
 			} else {
-				jsonStr = msg.Raw
+				jsonStr = displayMsg.Raw
 			}
 		} else {
-			jsonStr = msg.Raw
+			jsonStr = displayMsg.Raw
 		}
 	} else {
-		jsonStr = msg.Raw
+		jsonStr = displayMsg.Raw
 	}
 
 	// Count lines
@@ -1367,4 +1717,79 @@ func max(a, b int) int {
 		return a
 	}
 	return b
+}
+
+// getPairingKey generates a unique key for request-response pairing
+// The key includes transport type and session info to avoid cross-pairing
+func getPairingKey(msg *event.MCPEvent) string {
+	if msg.ID == nil {
+		return ""
+	}
+
+	idStr := fmt.Sprintf("%v", msg.ID)
+
+	switch msg.TransportType {
+	case event.TransportTypeStdio:
+		// For STDIO, create a bidirectional session key by sorting PIDs
+		// This ensures request (A→B) and response (B→A) have the same key
+		pid1, pid2 := msg.FromPID, msg.ToPID
+		if pid1 > pid2 {
+			pid1, pid2 = pid2, pid1
+		}
+		return fmt.Sprintf("stdio:%d:%d:%s", pid1, pid2, idStr)
+	case event.TransportTypeHTTP:
+		// For HTTP, include host and PID to identify the session
+		if msg.HttpTransport != nil {
+			return fmt.Sprintf("http:%s:%d:%s", msg.HttpTransport.Host, msg.HttpTransport.PID, idStr)
+		}
+		return fmt.Sprintf("http:unknown:%s", idStr)
+	default:
+		return fmt.Sprintf("%s:%s", msg.TransportType, idStr)
+	}
+}
+
+// findPairedMessage finds the paired message (request for response, response for request)
+func (m *model) findPairedMessage(msg *event.MCPEvent) *event.MCPEvent {
+	if msg.MessageType == event.JSONRPCMessageTypeNotification {
+		return nil // Notifications have no pairs
+	}
+
+	pairingKey := getPairingKey(msg)
+	if pairingKey == "" {
+		return nil
+	}
+
+	if msg.MessageType == event.JSONRPCMessageTypeResponse {
+		// For responses, find the request with matching pairing key
+		for _, m := range m.messages {
+			if m.MessageType == event.JSONRPCMessageTypeRequest {
+				if getPairingKey(m) == pairingKey {
+					return m
+				}
+			}
+		}
+		return nil
+	}
+
+	// For requests, look up response in the map using the pairing key
+	if response, ok := m.requestToResponse[pairingKey]; ok {
+		return response
+	}
+	return nil
+}
+
+// isPairHighlighted checks if this message's pair is currently selected
+func (m *model) isPairHighlighted(msg *event.MCPEvent) bool {
+	paired := m.findPairedMessage(msg)
+	if paired == nil {
+		return false
+	}
+
+	// Check if paired message is the currently selected one
+	filteredMsgs := m.getFilteredMessages()
+	if m.selectedIndex >= 0 && m.selectedIndex < len(filteredMsgs) {
+		selectedMsg := filteredMsgs[m.selectedIndex]
+		return selectedMsg == paired
+	}
+	return false
 }
