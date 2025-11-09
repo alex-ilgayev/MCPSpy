@@ -10,6 +10,7 @@ import (
 
 	"github.com/alex-ilgayev/mcpspy/pkg/bus"
 	"github.com/alex-ilgayev/mcpspy/pkg/event"
+	"github.com/alex-ilgayev/mcpspy/pkg/session"
 	"github.com/hashicorp/golang-lru/v2/expirable"
 	"github.com/sirupsen/logrus"
 	"github.com/tidwall/gjson"
@@ -196,6 +197,17 @@ func (p *Parser) ParseDataStdio(e event.Event) {
 			return
 		}
 
+		// Generate session ID for stdio transport
+		stdioSession := session.NewFromHeuristic(
+			session.GenerateDeterministicID(
+				stdioEvent.FromPID,
+				stdioEvent.FromCommStr(),
+				stdioEvent.ToPID,
+				stdioEvent.ToCommStr(),
+				stdioEvent.FilePtr,
+			),
+		)
+
 		// Create message with kernel-provided correlation
 		msg := &event.MCPEvent{
 			Timestamp:     time.Now(),
@@ -207,6 +219,7 @@ func (p *Parser) ParseDataStdio(e event.Event) {
 				ToPID:    stdioEvent.ToPID,
 				ToComm:   stdioEvent.ToCommStr(),
 			},
+			Session:        stdioSession,
 			JSONRPCMessage: jsonRpcMsg,
 		}
 
@@ -226,6 +239,7 @@ func (p *Parser) ParseDataHttp(e event.Event) {
 	var comm string
 	var host string
 	var isRequest bool
+	var mcpSession *session.Session
 
 	switch event := e.(type) {
 	case *event.HttpRequestEvent:
@@ -234,18 +248,21 @@ func (p *Parser) ParseDataHttp(e event.Event) {
 		comm = event.Comm()
 		host = event.Host
 		isRequest = true
+		mcpSession = event.MCPSession
 	case *event.HttpResponseEvent:
 		buf = event.ResponsePayload
 		pid = event.PID
 		comm = event.Comm()
 		host = event.Host
 		isRequest = false
+		mcpSession = event.MCPSession
 	case *event.SSEEvent:
 		buf = event.Data
 		pid = event.PID
 		comm = event.Comm()
 		host = event.Host
 		isRequest = false
+		mcpSession = event.MCPSession
 	default:
 		return
 	}
@@ -293,6 +310,15 @@ func (p *Parser) ParseDataHttp(e event.Event) {
 			continue
 		}
 
+		// Validate session ID is present (mandatory field)
+		if mcpSession == nil {
+			logrus.
+				WithFields(e.LogFields()).
+				WithFields(jsonRpcMsg.LogFields()).
+				Error("MCP session is nil, dropping event gracefully")
+			continue
+		}
+
 		// Create http transport info from correlated events
 		msg := &event.MCPEvent{
 			Timestamp:     time.Now(),
@@ -304,6 +330,7 @@ func (p *Parser) ParseDataHttp(e event.Event) {
 				Host:      host,
 				IsRequest: isRequest,
 			},
+			Session:        mcpSession,
 			JSONRPCMessage: jsonRpcMsg,
 		}
 

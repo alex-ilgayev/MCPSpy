@@ -8,6 +8,7 @@ import (
 
 	"github.com/alex-ilgayev/mcpspy/pkg/bus"
 	"github.com/alex-ilgayev/mcpspy/pkg/event"
+	"github.com/alex-ilgayev/mcpspy/pkg/session"
 	"github.com/sirupsen/logrus"
 )
 
@@ -33,8 +34,8 @@ type httpResponse struct {
 	isSSE      bool
 }
 
-// session tracks HTTP communication for a single SSL context
-type session struct {
+// httpSession tracks HTTP communication for a single SSL context
+type httpSession struct {
 	sslContext uint64
 
 	pid  uint32
@@ -53,14 +54,65 @@ type session struct {
 	// SSE tracking
 	isSSE         bool
 	sseEventsSent int // Track how many SSE events we've already sent
+
+	// Session identification
+	mcpSession *session.Session
 }
 
-func (s *session) logFields() logrus.Fields {
+func (s *httpSession) logFields() logrus.Fields {
 	return logrus.Fields{
 		"ssl_ctx": s.sslContext,
 		"pid":     s.pid,
 		"comm":    strings.TrimRight(string(s.comm[:]), "\x00"),
 	}
+}
+
+// extractOrGenerateSession extracts MCP session ID from headers or generates one heuristically
+func (s *httpSession) extractOrGenerateSession() *session.Session {
+	if s.mcpSession != nil {
+		return s.mcpSession
+	}
+
+	// Try to extract Mcp-Session-Id from headers
+	var protocolSessionID string
+
+	// Check request headers first
+	if s.request != nil && s.request.headers != nil {
+		for k, v := range s.request.headers {
+			if strings.EqualFold(k, "Mcp-Session-Id") {
+				protocolSessionID = v
+				break
+			}
+		}
+	}
+
+	// If not found in request, check response headers
+	if protocolSessionID == "" && s.response != nil && s.response.headers != nil {
+		for k, v := range s.response.headers {
+			if strings.EqualFold(k, "Mcp-Session-Id") {
+				protocolSessionID = v
+				break
+			}
+		}
+	}
+
+	// Generate deterministic internal ID based on session characteristics
+	comm := strings.TrimRight(string(s.comm[:]), "\x00")
+	host := ""
+	if s.request != nil {
+		host = s.request.host
+	}
+
+	internalID := session.GenerateDeterministicID(s.sslContext, s.pid, comm, host)
+
+	// Create session object
+	if protocolSessionID != "" {
+		s.mcpSession = session.NewFromProtocol(protocolSessionID, internalID)
+	} else {
+		s.mcpSession = session.NewFromHeuristic(internalID)
+	}
+
+	return s.mcpSession
 }
 
 // SessionManager manages HTTP sessions over SSL contexts
@@ -74,13 +126,13 @@ func (s *session) logFields() logrus.Fields {
 // - SSEEvent
 type SessionManager struct {
 	mu       sync.Mutex
-	sessions map[uint64]*session // key is SSL context
+	sessions map[uint64]*httpSession // key is SSL context
 	eventBus bus.EventBus
 }
 
 func NewSessionManager(eventBus bus.EventBus) (*SessionManager, error) {
 	sm := &SessionManager{
-		sessions: make(map[uint64]*session),
+		sessions: make(map[uint64]*httpSession),
 		eventBus: eventBus,
 	}
 
@@ -120,7 +172,7 @@ func (s *SessionManager) ProcessTlsEvent(e event.Event) {
 	sess, exists := s.sessions[tlsEvent.SSLContext]
 	if !exists {
 		logrus.WithFields(e.LogFields()).Trace("Creating new session")
-		sess = &session{
+		sess = &httpSession{
 			pid:         tlsEvent.PID,
 			comm:        tlsEvent.CommBytes,
 			sslContext:  tlsEvent.SSLContext,
@@ -191,7 +243,7 @@ func (s *SessionManager) ProcessTlsFreeEvent(e event.Event) {
 	delete(s.sessions, tlsFreeEvent.SSLContext)
 }
 
-func (s *SessionManager) emitHttpRequestEvent(sess *session) {
+func (s *SessionManager) emitHttpRequestEvent(sess *httpSession) {
 	// Build request event
 	event := &event.HttpRequestEvent{
 		EventHeader: event.EventHeader{
@@ -205,6 +257,7 @@ func (s *SessionManager) emitHttpRequestEvent(sess *session) {
 		Path:           sess.request.path,
 		RequestHeaders: sess.request.headers,
 		RequestPayload: sess.request.body,
+		MCPSession:     sess.extractOrGenerateSession(),
 	}
 
 	logrus.WithFields(event.LogFields()).Trace(fmt.Sprintf("event#%s", event.Type().String()))
@@ -212,10 +265,12 @@ func (s *SessionManager) emitHttpRequestEvent(sess *session) {
 	s.eventBus.Publish(event)
 }
 
-func (s *SessionManager) emitHttpResponseEvent(sess *session) {
+func (s *SessionManager) emitHttpResponseEvent(sess *httpSession) {
 	if !sess.request.isComplete {
 		logrus.WithFields(sess.logFields()).Debug("HTTP request is not complete when HTTP response event is emitted. Expect missing data.")
 	}
+
+	mcpSession := sess.extractOrGenerateSession()
 
 	// Build response event - includes request info for context
 	event := &event.HttpResponseEvent{
@@ -237,11 +292,13 @@ func (s *SessionManager) emitHttpResponseEvent(sess *session) {
 			Path:           sess.request.path,
 			RequestHeaders: sess.request.headers,
 			RequestPayload: sess.request.body,
+			MCPSession:     mcpSession,
 		},
 		Code:            sess.response.statusCode,
 		IsChunked:       sess.response.isChunked,
 		ResponseHeaders: sess.response.headers,
 		ResponsePayload: sess.response.body,
+		MCPSession:      mcpSession,
 	}
 
 	logrus.WithFields(event.LogFields()).Trace(fmt.Sprintf("event#%s", event.Type().String()))
@@ -249,7 +306,9 @@ func (s *SessionManager) emitHttpResponseEvent(sess *session) {
 	s.eventBus.Publish(event)
 }
 
-func (s *SessionManager) emitSSEEvent(sess *session, eventType string, data []byte) {
+func (s *SessionManager) emitSSEEvent(sess *httpSession, eventType string, data []byte) {
+	mcpSession := sess.extractOrGenerateSession()
+
 	// Build SSE event - include request and response context
 	event := &event.SSEEvent{
 		EventHeader: event.EventHeader{
@@ -270,9 +329,11 @@ func (s *SessionManager) emitSSEEvent(sess *session, eventType string, data []by
 			Path:           sess.request.path,
 			RequestHeaders: sess.request.headers,
 			RequestPayload: sess.request.body,
+			MCPSession:     mcpSession,
 		},
 		SSEEventType: eventType,
 		Data:         data,
+		MCPSession:   mcpSession,
 	}
 
 	logrus.WithFields(event.LogFields()).Trace(fmt.Sprintf("event#%s", event.Type().String()))
@@ -511,7 +572,7 @@ func parseChunkedBody(data []byte) (body []byte, isComplete bool) {
 }
 
 // processHTTPSSEResponse processes SSE events from chunked data incrementally
-func (s *SessionManager) processHTTPSSEResponse(sess *session) {
+func (s *SessionManager) processHTTPSSEResponse(sess *httpSession) {
 	if !sess.request.isComplete {
 		logrus.WithFields(sess.logFields()).Debug("HTTP request is not complete when SSE chunks are processed. Expect missing data.")
 	}

@@ -7,6 +7,7 @@ import (
 
 	tu "github.com/alex-ilgayev/mcpspy/internal/testing"
 	"github.com/alex-ilgayev/mcpspy/pkg/event"
+	"github.com/alex-ilgayev/mcpspy/pkg/session"
 )
 
 // Helper function to create FSAggregatedEvent for stdio tests
@@ -45,6 +46,9 @@ func createFSAggregatedEvent(data []byte, eventType event.EventType, fromPID uin
 
 // Helper function to create HttpRequestEvent for HTTP tests
 func createHttpRequestEvent(data []byte, pid uint32, comm string, host string) *event.HttpRequestEvent {
+	// Create a mock session for testing
+	mcpSession := session.NewFromHeuristic(session.GenerateUUID())
+
 	e := &event.HttpRequestEvent{
 		EventHeader: event.EventHeader{
 			EventType: event.EventTypeHttpRequest,
@@ -52,6 +56,7 @@ func createHttpRequestEvent(data []byte, pid uint32, comm string, host string) *
 		},
 		Host:           host,
 		RequestPayload: data,
+		MCPSession:     mcpSession,
 	}
 	copy(e.CommBytes[:], []byte(comm))
 	return e
@@ -59,15 +64,20 @@ func createHttpRequestEvent(data []byte, pid uint32, comm string, host string) *
 
 // Helper function to create HttpResponseEvent for HTTP tests
 func createHttpResponseEvent(data []byte, pid uint32, comm string, host string) *event.HttpResponseEvent {
+	// Create a mock session for testing
+	mcpSession := session.NewFromHeuristic(session.GenerateUUID())
+
 	e := &event.HttpResponseEvent{
 		EventHeader: event.EventHeader{
 			EventType: event.EventTypeHttpResponse,
 			PID:       pid,
 		},
 		HttpRequestEvent: event.HttpRequestEvent{
-			Host: host,
+			Host:       host,
+			MCPSession: mcpSession,
 		},
 		ResponsePayload: data,
+		MCPSession:      mcpSession,
 	}
 	copy(e.CommBytes[:], []byte(comm))
 	return e
@@ -75,15 +85,20 @@ func createHttpResponseEvent(data []byte, pid uint32, comm string, host string) 
 
 // Helper function to create SSEEvent for HTTP SSE tests
 func createSSEEvent(data []byte, pid uint32, comm string, host string) *event.SSEEvent {
+	// Create a mock session for testing
+	mcpSession := session.NewFromHeuristic(session.GenerateUUID())
+
 	e := &event.SSEEvent{
 		EventHeader: event.EventHeader{
 			EventType: event.EventTypeHttpSSE,
 			PID:       pid,
 		},
 		HttpRequestEvent: event.HttpRequestEvent{
-			Host: host,
+			Host:       host,
+			MCPSession: mcpSession,
 		},
-		Data: data,
+		Data:       data,
+		MCPSession: mcpSession,
 	}
 	copy(e.CommBytes[:], []byte(comm))
 	return e
@@ -1697,6 +1712,9 @@ func TestParseDataHttp_HttpTransportFields(t *testing.T) {
 				parser.cacheRequestMessage(mockRequest)
 			}
 
+			// Create a mock session for testing
+			mcpSession := session.NewFromHeuristic(session.GenerateUUID())
+
 			var httpEvent event.Event
 			switch tt.eventType {
 			case event.EventTypeHttpRequest:
@@ -1707,6 +1725,7 @@ func TestParseDataHttp_HttpTransportFields(t *testing.T) {
 					},
 					Host:           tt.host,
 					RequestPayload: tt.data,
+					MCPSession:     mcpSession,
 				}
 				copy(e.CommBytes[:], []byte(tt.comm))
 				httpEvent = e
@@ -1717,9 +1736,11 @@ func TestParseDataHttp_HttpTransportFields(t *testing.T) {
 						PID:       tt.pid,
 					},
 					HttpRequestEvent: event.HttpRequestEvent{
-						Host: tt.host,
+						Host:       tt.host,
+						MCPSession: mcpSession,
 					},
 					ResponsePayload: tt.data,
+					MCPSession:      mcpSession,
 				}
 				copy(e.CommBytes[:], []byte(tt.comm))
 				httpEvent = e
@@ -1730,9 +1751,11 @@ func TestParseDataHttp_HttpTransportFields(t *testing.T) {
 						PID:       tt.pid,
 					},
 					HttpRequestEvent: event.HttpRequestEvent{
-						Host: tt.host,
+						Host:       tt.host,
+						MCPSession: mcpSession,
 					},
-					Data: tt.data,
+					Data:       tt.data,
+					MCPSession: mcpSession,
 				}
 				copy(e.CommBytes[:], []byte(tt.comm))
 				httpEvent = e

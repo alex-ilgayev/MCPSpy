@@ -3,6 +3,7 @@ package event
 import (
 	"time"
 
+	"github.com/alex-ilgayev/mcpspy/pkg/session"
 	"github.com/sirupsen/logrus"
 )
 
@@ -84,6 +85,9 @@ type MCPEvent struct {
 	*StdioTransport `json:"stdio_transport,omitempty"`
 	*HttpTransport  `json:"http_transport,omitempty"`
 
+	// Session contains the session identification information for this message
+	Session *session.Session `json:"session"`
+
 	JSONRPCMessage
 
 	Raw string `json:"raw"`
@@ -93,6 +97,11 @@ func (e *MCPEvent) Type() EventType { return EventTypeMCPMessage }
 func (e *MCPEvent) LogFields() logrus.Fields {
 	fields := e.JSONRPCMessage.LogFields()
 	fields["transport"] = e.TransportType
+
+	if e.Session != nil {
+		fields["session_id"] = e.Session.ID()
+		fields["session_type"] = e.Session.Type
+	}
 
 	if e.StdioTransport != nil {
 		fields["from_pid"] = e.StdioTransport.FromPID

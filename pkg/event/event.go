@@ -2,6 +2,7 @@ package event
 
 import (
 	"github.com/alex-ilgayev/mcpspy/pkg/encoder"
+	"github.com/alex-ilgayev/mcpspy/pkg/session"
 	"github.com/sirupsen/logrus"
 )
 
@@ -274,6 +275,9 @@ type HttpRequestEvent struct {
 	Path           string
 	RequestHeaders map[string]string
 	RequestPayload []byte
+
+	// MCP Session identification
+	MCPSession *session.Session
 }
 
 func (e *HttpRequestEvent) Type() EventType { return e.EventType }
@@ -301,6 +305,9 @@ type HttpResponseEvent struct {
 	Code            int
 	IsChunked       bool
 	ResponsePayload []byte
+
+	// MCP Session identification (overrides embedded HttpRequestEvent.MCPSession if different)
+	MCPSession *session.Session
 }
 
 func (e *HttpResponseEvent) Type() EventType { return e.EventType }
@@ -329,6 +336,9 @@ type SSEEvent struct {
 	SSEEventType string
 	// SSE data
 	Data []byte
+
+	// MCP Session identification (overrides embedded HttpRequestEvent.MCPSession if different)
+	MCPSession *session.Session
 }
 
 func (e *SSEEvent) Type() EventType { return e.EventType }
