@@ -1694,7 +1694,7 @@ func TestParseDataHttp_HttpTransportFields(t *testing.T) {
 					ID:          int64(1),
 					Method:      "tools/list",
 				}
-				parser.cacheRequestMessage(mockRequest)
+				parser.cacheRequestMessage(mockRequest, nil)
 			}
 
 			var httpEvent event.Event
@@ -2254,7 +2254,7 @@ func TestIDToCacheKey(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := parser.idToCacheKey(tt.id)
+			result := parser.idToCacheKey(tt.id, nil)
 			if result != tt.expected {
 				t.Errorf("Expected cache key '%s', got '%s'", tt.expected, result)
 			}
@@ -2273,17 +2273,17 @@ func TestValidateResponseID(t *testing.T) {
 		MessageType: event.JSONRPCMessageTypeRequest,
 		ID:          int64(1),
 		Method:      "tools/list",
-	})
+	}, nil)
 	parser.cacheRequestMessage(&event.JSONRPCMessage{
 		MessageType: event.JSONRPCMessageTypeRequest,
 		ID:          "test-123",
 		Method:      "initialize",
-	})
+	}, nil)
 	parser.cacheRequestMessage(&event.JSONRPCMessage{
 		MessageType: event.JSONRPCMessageTypeRequest,
 		ID:          int64(42),
 		Method:      "resources/list",
-	})
+	}, nil)
 
 	tests := []struct {
 		name     string
@@ -2329,7 +2329,7 @@ func TestValidateResponseID(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, exists := parser.getRequestByID(tt.id)
+			_, exists := parser.getRequestByID(tt.id, nil)
 			if exists != tt.expected {
 				t.Errorf("Expected validation result %v, got %v", tt.expected, exists)
 			}

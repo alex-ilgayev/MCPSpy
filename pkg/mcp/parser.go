@@ -22,6 +22,20 @@ var (
 	seenHashCacheTTL   = 2 * time.Second
 )
 
+// messageMetadata holds metadata about a seen message including its process chain.
+// This allows us to track all processes a message has traveled through,
+// which is critical for Docker-based MCP servers with intermediate processes.
+type messageMetadata struct {
+	// contentHash is the SHA1 hash of the JSON content (used for detecting same logical message)
+	contentHash string
+
+	// processChain tracks all process hops this message has traveled through
+	processChain *event.ProcessChain
+
+	// firstSeen is when we first encountered this message
+	firstSeen time.Time
+}
+
 // Protocol resources:
 // - Spec: https://modelcontextprotocol.io/specification/2025-06-18
 // - Schema: https://github.com/modelcontextprotocol/modelcontextprotocol/blob/main/schema/2025-06-18/schema.ts
@@ -85,11 +99,12 @@ type Parser struct {
 	// Thread-safe.
 	requestIDCache *expirable.LRU[string, *event.JSONRPCMessage]
 
-	// Cache for detecting duplicate messages.
-	// Once we see a hash, we don't emit it again (first one wins).
-	// Relevant for docker-based MCPs which may emit duplicates.
+	// Cache for tracking seen messages with their process chains.
+	// Instead of just dropping duplicates, we aggregate process hops
+	// to build a complete picture of message flow through intermediate processes.
+	// This is critical for Docker-based MCP servers.
 	// Thread-safe.
-	seenHashCache *expirable.LRU[string, struct{}]
+	seenHashCache *expirable.LRU[string, *messageMetadata]
 
 	eventBus bus.EventBus
 }
@@ -98,7 +113,7 @@ type Parser struct {
 func NewParser(eventBus bus.EventBus) (*Parser, error) {
 	p := &Parser{
 		requestIDCache: expirable.NewLRU[string, *event.JSONRPCMessage](requestIDCacheSize, nil, requestIDCacheTTL),
-		seenHashCache:  expirable.NewLRU[string, struct{}](seenHashCacheSize, nil, seenHashCacheTTL),
+		seenHashCache:  expirable.NewLRU[string, *messageMetadata](seenHashCacheSize, nil, seenHashCacheTTL),
 		eventBus:       eventBus,
 	}
 
@@ -127,10 +142,10 @@ func NewParser(eventBus bus.EventBus) (*Parser, error) {
 
 // ParseDataStdio attempts to parse MCP messages from aggregated Stdio data.
 // The parsing flow is split into several parts:
-// 1. Duplicate detection (drop duplicates, first one wins)
+// 1. Process chain tracking and aggregation (handles multi-hop messages)
 // 2. JSON-RPC parsing
 // 3. MCP validation
-// 4. Request/response correlation (by JSON-RPC ID)
+// 4. Request/response correlation (by JSON-RPC ID + process chain)
 //
 // Note: Write/read correlation is done in kernel-mode via inode tracking
 // and JSON aggregation is done in userspace by the FS session manager.
@@ -164,10 +179,30 @@ func (p *Parser) ParseDataStdio(e event.Event) {
 			continue
 		}
 
-		// Part 1: Duplicate detection
+		// Part 1: Process chain tracking and aggregation
+		// Create a process hop from this event
+		hop := event.ProcessHop{
+			FromPID:   stdioEvent.FromPID,
+			FromComm:  stdioEvent.FromCommStr(),
+			ToPID:     stdioEvent.ToPID,
+			ToComm:    stdioEvent.ToCommStr(),
+			Timestamp: time.Now(),
+		}
+
+		// Get or create metadata for this message
 		hash := p.calculateHash(jsonData)
-		if p.isDuplicate(hash) {
-			continue // Skip duplicates, first one wins
+		metadata, isNew := p.getOrCreateMessageMetadata(hash, hop)
+
+		// If this is a duplicate hop (we've seen this exact message before),
+		// skip processing but the hop has been added to the chain
+		if !isNew {
+			logrus.WithFields(logrus.Fields{
+				"hash":      hash,
+				"from_pid":  hop.FromPID,
+				"to_pid":    hop.ToPID,
+				"chain_sig": metadata.processChain.Signature(),
+			}).Trace("Skipping duplicate message (hop added to chain)")
+			continue // Skip duplicates, first one wins for emission
 		}
 
 		// Part 2 & 3: Parse JSON-RPC and validate MCP
@@ -186,17 +221,20 @@ func (p *Parser) ParseDataStdio(e event.Event) {
 			return
 		}
 
-		// Part 4: Handle request/response correlation
-		if err := p.handleRequestResponseCorrelation(&jsonRpcMsg); err != nil {
+		// Part 4: Handle request/response correlation with process chain (STDIO transport)
+		if err := p.handleRequestResponseCorrelation(&jsonRpcMsg, metadata.processChain, false); err != nil {
 			// Drop responses without matching request IDs
 			logrus.
 				WithFields(e.LogFields()).
 				WithFields(jsonRpcMsg.LogFields()).
+				WithFields(logrus.Fields{
+					"chain_sig": metadata.processChain.Signature(),
+				}).
 				Debug("Dropping response without matching request ID")
 			return
 		}
 
-		// Create message with kernel-provided correlation
+		// Create message with full process chain information
 		msg := &event.MCPEvent{
 			Timestamp:     time.Now(),
 			Raw:           string(jsonData),
@@ -207,6 +245,7 @@ func (p *Parser) ParseDataStdio(e event.Event) {
 				ToPID:    stdioEvent.ToPID,
 				ToComm:   stdioEvent.ToCommStr(),
 			},
+			ProcessChain:   metadata.processChain,
 			JSONRPCMessage: jsonRpcMsg,
 		}
 
@@ -268,6 +307,30 @@ func (p *Parser) ParseDataHttp(e event.Event) {
 			continue
 		}
 
+		// For HTTP transport, create a simple process hop
+		// (HTTP typically doesn't have intermediate processes like Docker proxies)
+		hop := event.ProcessHop{
+			FromPID:   pid,
+			FromComm:  comm,
+			ToPID:     pid,
+			ToComm:    comm,
+			Timestamp: time.Now(),
+		}
+
+		// Get or create metadata for this message
+		hash := p.calculateHash(jsonData)
+		metadata, isNew := p.getOrCreateMessageMetadata(hash, hop)
+
+		// Skip duplicates (though less common in HTTP transport)
+		if !isNew {
+			logrus.WithFields(logrus.Fields{
+				"hash":      hash,
+				"pid":       pid,
+				"chain_sig": metadata.processChain.Signature(),
+			}).Trace("Skipping duplicate HTTP message")
+			continue
+		}
+
 		// Parse the message
 		jsonRpcMsg, err := p.parseJSONRPC(jsonData)
 		if err != nil {
@@ -283,12 +346,15 @@ func (p *Parser) ParseDataHttp(e event.Event) {
 			return
 		}
 
-		// Handle request/response correlation
-		if err := p.handleRequestResponseCorrelation(&jsonRpcMsg); err != nil {
+		// Handle request/response correlation (HTTP doesn't use process chains for correlation)
+		if err := p.handleRequestResponseCorrelation(&jsonRpcMsg, metadata.processChain, true); err != nil {
 			// Drop responses without matching request IDs
 			logrus.
 				WithFields(e.LogFields()).
 				WithFields(jsonRpcMsg.LogFields()).
+				WithFields(logrus.Fields{
+					"chain_sig": metadata.processChain.Signature(),
+				}).
 				Debug("Dropping response without matching request ID")
 			continue
 		}
@@ -304,6 +370,7 @@ func (p *Parser) ParseDataHttp(e event.Event) {
 				Host:      host,
 				IsRequest: isRequest,
 			},
+			ProcessChain:   metadata.processChain,
 			JSONRPCMessage: jsonRpcMsg,
 		}
 
@@ -414,20 +481,36 @@ func (p *Parser) calculateHash(buf []byte) string {
 	return fmt.Sprintf("%x", hash)
 }
 
-// idToCacheKey converts a request/response ID to a cache key string
-// According to parseID, ID can only be int64 or string
-func (p *Parser) idToCacheKey(id interface{}) string {
+// idToCacheKey converts a request/response ID to a cache key string.
+// The key now includes process chain information to prevent cross-process correlation issues.
+// Format: "i:<id>|<corr_sig>" for integer IDs, "s:<id>|<corr_sig>" for string IDs
+// where corr_sig is the normalized correlation signature (e.g., "100<->200")
+// The correlation signature is direction-independent to match requests and responses.
+func (p *Parser) idToCacheKey(id interface{}, processChain *event.ProcessChain) string {
+	var baseKey string
 	switch v := id.(type) {
 	case int64:
-		return fmt.Sprintf("i:%d", v)
+		baseKey = fmt.Sprintf("i:%d", v)
 	default:
 		// String (or any other type treated as string)
-		return fmt.Sprintf("s:%v", v)
+		baseKey = fmt.Sprintf("s:%v", v)
 	}
+
+	// Add process chain correlation signature to make the key unique per process pair
+	// Use CorrelationSignature (not Signature) to ensure request/response pairing works
+	if processChain != nil {
+		corrSig := processChain.CorrelationSignature()
+		if corrSig != "" {
+			return fmt.Sprintf("%s|%s", baseKey, corrSig)
+		}
+	}
+
+	return baseKey
 }
 
-// cacheRequestMessage stores a request message for future response correlation
-func (p *Parser) cacheRequestMessage(msg *event.JSONRPCMessage) error {
+// cacheRequestMessage stores a request message for future response correlation.
+// The cache key includes the process chain signature to prevent cross-process correlation issues.
+func (p *Parser) cacheRequestMessage(msg *event.JSONRPCMessage, processChain *event.ProcessChain) error {
 	if msg == nil || msg.ID == nil {
 		return fmt.Errorf("invalid message")
 	}
@@ -435,35 +518,55 @@ func (p *Parser) cacheRequestMessage(msg *event.JSONRPCMessage) error {
 		// This shouldn't happen. Only responses should have Request field set.
 		return fmt.Errorf("message already has Request field set")
 	}
-	key := p.idToCacheKey(msg.ID)
+	key := p.idToCacheKey(msg.ID, processChain)
 	p.requestIDCache.Add(key, msg)
+
+	logrus.WithFields(logrus.Fields{
+		"id":        msg.ID,
+		"cache_key": key,
+		"method":    msg.Method,
+	}).Trace("Cached request message for correlation")
 
 	return nil
 }
 
-// getRequestByID retrieves a cached request message by its ID
-// Returns the request message and true if found, nil and false otherwise
-func (p *Parser) getRequestByID(id interface{}) (*event.JSONRPCMessage, bool) {
+// getRequestByID retrieves a cached request message by its ID and process chain.
+// Returns the request message and true if found, nil and false otherwise.
+func (p *Parser) getRequestByID(id interface{}, processChain *event.ProcessChain) (*event.JSONRPCMessage, bool) {
 	if id == nil {
 		return nil, false
 	}
-	key := p.idToCacheKey(id)
+	key := p.idToCacheKey(id, processChain)
 	req, exists := p.requestIDCache.Get(key)
+
+	logrus.WithFields(logrus.Fields{
+		"id":        id,
+		"cache_key": key,
+		"found":     exists,
+	}).Trace("Looked up request message for correlation")
+
 	return req, exists
 }
 
 // handleRequestResponseCorrelation handles caching request messages and pairing responses with their requests.
 // For request messages, it caches the full message for future correlation.
 // For response messages, it looks up and attaches the corresponding request.
-// Returns true if the message should be kept, false if it should be dropped.
-func (p *Parser) handleRequestResponseCorrelation(msg *event.JSONRPCMessage) error {
+// The process chain is used to ensure correlation happens within the same process context (STDIO only).
+// For HTTP transport, we don't use process chains because requests and responses come from different PIDs.
+func (p *Parser) handleRequestResponseCorrelation(msg *event.JSONRPCMessage, processChain *event.ProcessChain, isHTTP bool) error {
+	// For HTTP, ignore process chain (requests and responses come from different PIDs)
+	chainForCorrelation := processChain
+	if isHTTP {
+		chainForCorrelation = nil
+	}
+
 	switch msg.MessageType {
 	case event.JSONRPCMessageTypeRequest:
 		// Cache the full request message for future response pairing
-		return p.cacheRequestMessage(msg)
+		return p.cacheRequestMessage(msg, chainForCorrelation)
 	case event.JSONRPCMessageTypeResponse:
 		// Look up the corresponding request and attach it to the response
-		req, exists := p.getRequestByID(msg.ID)
+		req, exists := p.getRequestByID(msg.ID, chainForCorrelation)
 		if !exists {
 			// Drop responses without matching requests
 			return fmt.Errorf("response without matching request ID")
@@ -476,16 +579,46 @@ func (p *Parser) handleRequestResponseCorrelation(msg *event.JSONRPCMessage) err
 	return nil
 }
 
-// isDuplicate checks if we've seen this hash before and marks it as seen.
-// Returns true if it's a duplicate (already seen).
-func (p *Parser) isDuplicate(hash string) bool {
-	_, exists := p.seenHashCache.Get(hash)
+// getOrCreateMessageMetadata retrieves or creates metadata for a message.
+// If this is the first time we see this content hash, it creates new metadata.
+// If we've seen it before, it adds the new process hop to the existing chain.
+// Returns the metadata and a boolean indicating if this is a new unique message (true) or a duplicate hop (false).
+func (p *Parser) getOrCreateMessageMetadata(hash string, hop event.ProcessHop) (*messageMetadata, bool) {
+	metadata, exists := p.seenHashCache.Get(hash)
 	if exists {
-		return true // Duplicate - we've seen this before
+		// We've seen this message before - add the new hop to the chain
+		added := metadata.processChain.AddHop(hop)
+		if added {
+			logrus.WithFields(logrus.Fields{
+				"hash":      hash,
+				"from_pid":  hop.FromPID,
+				"to_pid":    hop.ToPID,
+				"chain_sig": metadata.processChain.Signature(),
+			}).Trace("Added new hop to existing message chain")
+		}
+		// Return false to indicate this is a duplicate (we've seen this content before)
+		return metadata, false
 	}
-	// Mark as seen
-	p.seenHashCache.Add(hash, struct{}{})
-	return false
+
+	// First time seeing this message - create new metadata
+	metadata = &messageMetadata{
+		contentHash: hash,
+		processChain: &event.ProcessChain{
+			Hops: []event.ProcessHop{hop},
+		},
+		firstSeen: time.Now(),
+	}
+	p.seenHashCache.Add(hash, metadata)
+
+	logrus.WithFields(logrus.Fields{
+		"hash":      hash,
+		"from_pid":  hop.FromPID,
+		"to_pid":    hop.ToPID,
+		"chain_sig": metadata.processChain.Signature(),
+	}).Trace("Created new message metadata with first hop")
+
+	// Return true to indicate this is a new unique message
+	return metadata, true
 }
 
 func (p *Parser) Close() {
