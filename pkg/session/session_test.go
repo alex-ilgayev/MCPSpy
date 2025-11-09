@@ -13,28 +13,25 @@ func TestSession_ID(t *testing.T) {
 		expectedID string
 	}{
 		{
-			name: "protocol ID takes precedence",
+			name: "external ID takes precedence",
 			session: &Session{
-				ProtocolID: "protocol-123",
+				ExternalID: "external-123",
 				InternalID: "internal-456",
-				Type:       SessionIDTypeProtocol,
 			},
-			expectedID: "protocol-123",
+			expectedID: "external-123",
 		},
 		{
-			name: "internal ID when no protocol ID",
+			name: "internal ID when no external ID",
 			session: &Session{
 				InternalID: "internal-456",
-				Type:       SessionIDTypeHeuristic,
 			},
 			expectedID: "internal-456",
 		},
 		{
-			name: "internal ID when protocol ID is empty",
+			name: "internal ID when external ID is empty",
 			session: &Session{
-				ProtocolID: "",
+				ExternalID: "",
 				InternalID: "internal-789",
-				Type:       SessionIDTypeHeuristic,
 			},
 			expectedID: "internal-789",
 		},
@@ -48,16 +45,15 @@ func TestSession_ID(t *testing.T) {
 }
 
 func TestNewFromProtocol(t *testing.T) {
-	protocolID := "test-protocol-id"
+	externalID := "test-external-id"
 	internalID := "test-internal-id"
 
-	session := NewFromProtocol(protocolID, internalID)
+	session := NewFromProtocol(externalID, internalID)
 
 	assert.NotNil(t, session)
-	assert.Equal(t, protocolID, session.ProtocolID)
+	assert.Equal(t, externalID, session.ExternalID)
 	assert.Equal(t, internalID, session.InternalID)
-	assert.Equal(t, SessionIDTypeProtocol, session.Type)
-	assert.Equal(t, protocolID, session.ID())
+	assert.Equal(t, externalID, session.ID())
 }
 
 func TestNewFromHeuristic(t *testing.T) {
@@ -66,9 +62,8 @@ func TestNewFromHeuristic(t *testing.T) {
 	session := NewFromHeuristic(internalID)
 
 	assert.NotNil(t, session)
-	assert.Empty(t, session.ProtocolID)
+	assert.Empty(t, session.ExternalID)
 	assert.Equal(t, internalID, session.InternalID)
-	assert.Equal(t, SessionIDTypeHeuristic, session.Type)
 	assert.Equal(t, internalID, session.ID())
 }
 

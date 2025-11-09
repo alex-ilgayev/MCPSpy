@@ -1323,11 +1323,12 @@ func (m *model) renderOverview(msg *event.MCPEvent) string {
 	}
 	renderField("Message ID:    ", idStr)
 
-	// Session ID
+	// Session IDs
 	if displayMsg.Session != nil {
-		sessionIDStr := displayMsg.Session.ID()
-		sessionType := string(displayMsg.Session.Type)
-		renderField("Session ID:    ", fmt.Sprintf("%s (%s)", sessionIDStr, sessionType))
+		if displayMsg.Session.ExternalID != "" {
+			renderField("External ID:   ", displayMsg.Session.ExternalID)
+		}
+		renderField("Internal ID:   ", displayMsg.Session.InternalID)
 	}
 
 	// Status

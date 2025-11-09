@@ -100,7 +100,10 @@ func (e *MCPEvent) LogFields() logrus.Fields {
 
 	if e.Session != nil {
 		fields["session_id"] = e.Session.ID()
-		fields["session_type"] = e.Session.Type
+		if e.Session.ExternalID != "" {
+			fields["external_session_id"] = e.Session.ExternalID
+		}
+		fields["internal_session_id"] = e.Session.InternalID
 	}
 
 	if e.StdioTransport != nil {
