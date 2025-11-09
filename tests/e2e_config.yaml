@@ -25,6 +25,8 @@ defaults:
         - "root\\[\\d+\\]\\['stdio_transport'\\]\\['from_pid'\\]"
         - "root\\[\\d+\\]\\['stdio_transport'\\]\\['to_pid'\\]"
         - "root\\[\\d+\\]\\['http_transport'\\]\\['pid'\\]"
+        # Exclude process chain (contains dynamic PIDs and timestamps)
+        - "root\\[\\d+\\]\\['process_chain'\\]"
         # Exclude version field (temporary until MCP server provides consistent versioning)
         - "root\\[\\d+\\]\\['result'\\]\\['serverInfo'\\]\\['version'\\]"
         # Exclude raw JSON field
