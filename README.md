@@ -165,21 +165,33 @@ For detailed instructions and real-world examples of monitoring AI services in K
 ### Basic Usage
 
 ```bash
-# Start monitoring MCP communication
+# Start monitoring MCP communication (TUI mode is default)
 sudo mcpspy
 
-# Start monitoring with raw message buffers
-sudo mcpspy -b
+# Start monitoring with static console output (disable TUI)
+sudo mcpspy --tui=false
 
 # Start monitoring and save output to JSONL file
 sudo mcpspy -o output.jsonl
 
-# Stop monitoring with Ctrl+C
+# Stop monitoring with Ctrl+C (or 'q' in TUI mode)
 ```
 
 ### Output Format
 
-#### Console Output
+#### TUI Mode (Default)
+
+MCPSpy runs in interactive Terminal UI mode by default. The TUI provides:
+
+- Interactive table view with scrolling
+- Detailed message inspection (press Enter)
+- Filtering by transport, type, and actor
+- Multiple density modes for different screen sizes
+- Real-time statistics
+
+#### Static Console Output
+
+When running with `--tui=false`:
 
 ```
 
@@ -189,6 +201,8 @@ sudo mcpspy -o output.jsonl
 ```
 
 #### JSONL Output
+
+**Stdio Transport - Request:**
 
 ```json
 {
@@ -207,22 +221,105 @@ sudo mcpspy -o output.jsonl
     "name": "get_weather",
     "arguments": { "city": "New York" }
   },
+  "error": {},
   "raw": "{...}"
 }
 ```
 
-For HTTP/HTTPS transport:
+**Stdio Transport - Response:**
+
+```json
+{
+  "timestamp": "2024-01-15T12:34:56.890Z",
+  "transport_type": "stdio",
+  "stdio_transport": {
+    "from_pid": 12346,
+    "from_comm": "python",
+    "to_pid": 12345,
+    "to_comm": "python"
+  },
+  "type": "response",
+  "id": 7,
+  "result": {
+    "content": [
+      {
+        "type": "text",
+        "text": "Weather in New York: 20°C"
+      }
+    ],
+    "isError": false
+  },
+  "error": {},
+  "request": {
+    "type": "request",
+    "id": 7,
+    "method": "tools/call",
+    "params": {
+      "name": "get_weather",
+      "arguments": { "city": "New York" }
+    },
+    "error": {}
+  },
+  "raw": "{...}"
+}
+```
+
+**HTTP/HTTPS Transport - Request:**
 
 ```json
 {
   "timestamp": "2024-01-15T12:34:56.789Z",
   "transport_type": "http",
+  "http_transport": {
+    "pid": 47837,
+    "comm": "python",
+    "host": "127.0.0.1:12345",
+    "is_request": true
+  },
   "type": "request",
   "id": 7,
   "method": "tools/call",
   "params": {
     "name": "get_weather",
     "arguments": { "city": "New York" }
+  },
+  "error": {},
+  "raw": "{...}"
+}
+```
+
+**HTTP/HTTPS Transport - Response:**
+
+```json
+{
+  "timestamp": "2024-01-15T12:34:56.890Z",
+  "transport_type": "http",
+  "http_transport": {
+    "pid": 47837,
+    "comm": "python",
+    "host": "127.0.0.1:12345"
+  },
+  "type": "response",
+  "id": 7,
+  "result": {
+    "content": [
+      {
+        "type": "text",
+        "text": "Weather in New York: 20°C"
+      }
+    ],
+    "isError": false
+  },
+  "error": {},
+  "request": {
+    "type": "request",
+    "id": 7,
+    "method": "tools/call",
+    "params": {
+      "name": "get_weather",
+      "arguments": { "city": "New York" }
+    },
+    "error": {}
   },
   "raw": "{...}"
 }

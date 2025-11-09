@@ -67,9 +67,14 @@ make build
 ## Running
 
 ```bash
+# Run with TUI mode (default)
 sudo ./mcpspy
 
+# Run with static console output (for testing/debugging)
+sudo ./mcpspy --tui=false
+
 # It is must be stopped by sending SIGINT (Ctrl+C) or SIGTERM.
+# In TUI mode, you can also press 'q' to quit.
 ```
 
 ## Testing
@@ -102,3 +107,5 @@ Running solely the mcp e2e tests (without mcpspy):
 make test-e2e-mcp-stdio
 make test-e2e-mcp-https
 ```
+
+**Note:** E2E tests automatically run MCPSpy in static mode (`--tui=false`) to capture output for validation. The test configuration is in `tests/e2e_config.yaml`.

@@ -18,7 +18,7 @@ fi
 echo "Starting MCPSpy smoke test..."
 
 # Start MCPSpy in background and capture output
-"$MCPSPY_PATH" > mcpspy.out 2> mcpspy.err &
+"$MCPSPY_PATH" --tui=false > mcpspy.out 2> mcpspy.err &
 MCPSPY_PID=$!
 
 # Wait a moment to check if process is still running

@@ -6,23 +6,13 @@ The output package provides display handlers for MCP messages. All handlers subs
 
 ## Output Modes
 
-### Console (`console.go`)
-
-**Streaming text output with colors**
-
-Enable: Default mode (when `--tui` is not specified)
-
-Capabilities:
-
-- Real-time streaming of messages to stdout
-- Optional raw JSON buffers with `--buffers` or `-b` flag (static mode only)
-- Statistics table on exit
-
 ### TUI (`tui.go`)
 
 **Interactive terminal UI built with Bubbletea**
 
-Enable: `--tui` flag
+Enable: **Default mode** (enabled by default)
+
+Disable: Use `--tui=false` flag to switch to static console output
 
 Capabilities:
 
@@ -34,6 +24,18 @@ Capabilities:
 - Circular buffer (1000 messages max)
 
 Keys: ↑↓/jk=navigate, Enter=details, p=pause, t=transport, y=type, a=actor, f=follow, d=density, b=banner, q=quit
+
+### Console (`console.go`)
+
+**Streaming text output with colors**
+
+Enable: `--tui=false` flag
+
+Capabilities:
+
+- Real-time streaming of messages to stdout
+- Optional raw JSON buffers with `--buffers` or `-b` flag (static mode only)
+- Statistics table on exit
 
 ### File Output (`jsonl.go`)
 

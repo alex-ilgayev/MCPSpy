@@ -48,7 +48,7 @@ communication by tracking stdio operations and analyzing JSON-RPC 2.0 messages.`
 	rootCmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "Enable verbose logging (debug level)")
 	rootCmd.Flags().StringVarP(&outputFile, "output", "o", "", "Output file (JSONL format will be written to file)")
 	rootCmd.Flags().StringVarP(&logLevel, "log-level", "l", "info", "Set log level (trace, debug, info, warn, error, fatal, panic)")
-	rootCmd.Flags().BoolVar(&tui, "tui", false, "Enable TUI (Terminal UI) mode")
+	rootCmd.Flags().BoolVar(&tui, "tui", true, "Enable TUI (Terminal UI) mode. Use --tui=false to disable and use static console output")
 
 	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)

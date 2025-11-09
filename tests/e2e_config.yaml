@@ -11,7 +11,8 @@ defaults:
     # Binary path relative to project root (where make is run)
     # Update this path if your platform is different (e.g., build/mcpspy-linux-arm64)
     binary_path: "build/mcpspy-linux-amd64"
-    flags: ["--log-level", "trace"]
+    # Use --tui=false to disable TUI mode for tests (TUI is now the default)
+    flags: ["--tui=false", "--log-level", "trace"]
     startup_wait_seconds: 2.0
     shutdown_timeout_seconds: 5.0
 
