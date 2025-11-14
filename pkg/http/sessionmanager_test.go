@@ -1,6 +1,7 @@
 package http
 
 import (
+	"fmt"
 	"reflect"
 	"testing"
 	"time"
@@ -1645,17 +1646,171 @@ func TestParseSSEEvents(t *testing.T) {
 
 func TestParseSSEEvents_WithoutTerminatingNewline(t *testing.T) {
 	// Test event without terminating double newline
+	// After fix for issue #83, incomplete events should NOT be returned
+	// They will remain buffered and be returned once complete
 	input := "data: incomplete event"
 	result := parseSSEEvents([]byte(input))
 
-	expected := []string{"data: incomplete event"}
-	var resultStrings []string
-	for _, event := range result {
-		resultStrings = append(resultStrings, string(event))
+	// Incomplete events should not be returned
+	if len(result) != 0 {
+		t.Errorf("parseSSEEvents() returned %d events, want 0 (incomplete events should not be returned). Got: %v", len(result), result)
 	}
 
-	if !reflect.DeepEqual(resultStrings, expected) {
-		t.Errorf("parseSSEEvents() = %v, want %v", resultStrings, expected)
+	// Verify that when the event is completed, it's returned properly
+	completeInput := "data: incomplete event\n\n"
+	completeResult := parseSSEEvents([]byte(completeInput))
+
+	if len(completeResult) != 1 {
+		t.Fatalf("parseSSEEvents() with complete event returned %d events, want 1", len(completeResult))
+	}
+
+	expectedComplete := "data: incomplete event"
+	if string(completeResult[0]) != expectedComplete {
+		t.Errorf("parseSSEEvents() with complete event = %q, want %q", string(completeResult[0]), expectedComplete)
+	}
+}
+
+func TestSessionManager_SSEChunkBoundarySplitsEvent(t *testing.T) {
+	// This test reproduces issue #83: HTTP chunking can split SSE event data mid-payload
+	// When an HTTP chunk boundary occurs in the middle of an SSE event (like in the middle
+	// of a JSON string), the SSE parser should buffer incomplete events and only emit
+	// complete events after all data has arrived.
+	mockBus := tu.NewMockBus()
+	sm, err := NewSessionManager(mockBus)
+	if err != nil {
+		t.Fatalf("Failed to create SessionManager: %v", err)
+	}
+	defer sm.Close()
+
+	sslCtx := uint64(12345)
+
+	// Send request
+	requestPayload := "{\"jsonrpc\":\"2.0\",\"method\":\"tools/call\"}"
+	requestData := []byte(fmt.Sprintf("POST /message/tools/call HTTP/1.1\r\nHost: example.com\r\nContent-Type: application/json\r\nContent-Length: %d\r\n\r\n%s", len(requestPayload), requestPayload))
+	requestEvent := &event.TlsPayloadEvent{
+		EventHeader: event.EventHeader{
+			EventType: event.EventTypeTlsPayloadSend,
+			PID:       1234,
+		},
+		SSLContext:  sslCtx,
+		HttpVersion: event.HttpVersion1,
+		BufSize:     uint32(len(requestData)),
+	}
+	copy(requestEvent.Buf[:], requestData)
+	sm.ProcessTlsEvent(requestEvent)
+
+	// Consume request event
+	select {
+	case evt := <-mockBus.Events():
+		if evt.Type() != event.EventTypeHttpRequest {
+			t.Fatalf("Expected EventTypeHttpRequest, got %v", evt.Type())
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("No request event received")
+	}
+
+	// Send SSE response headers
+	responseHeaders := []byte("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n")
+	headerEvent := &event.TlsPayloadEvent{
+		EventHeader: event.EventHeader{
+			EventType: event.EventTypeTlsPayloadRecv,
+			PID:       1234,
+		},
+		SSLContext:  sslCtx,
+		HttpVersion: event.HttpVersion1,
+		BufSize:     uint32(len(responseHeaders)),
+	}
+	copy(headerEvent.Buf[:], responseHeaders)
+	sm.ProcessTlsEvent(headerEvent)
+
+	// Simulate the problematic scenario from issue #83:
+	// HTTP chunk 1: Contains beginning of SSE event with partial JSON payload
+	// The chunk size is 1ffa (hex) = 8186 bytes in the real scenario, but we'll use a smaller example
+	// This chunk contains: event: message\ndata: {"jsonrpc":"2.0","id":"123","result":{"content":[{"type":"text","text":"The title
+	// Note: The JSON string is cut off mid-word in "title
+	chunk1Data := "event: message\ndata: {\"jsonrpc\":\"2.0\",\"id\":\"123\",\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"The title"
+	chunk1 := []byte(fmt.Sprintf("%x\r\n%s\r\n", len(chunk1Data), chunk1Data))
+
+	chunkEvent1 := &event.TlsPayloadEvent{
+		EventHeader: event.EventHeader{
+			EventType: event.EventTypeTlsPayloadRecv,
+			PID:       1234,
+		},
+		SSLContext:  sslCtx,
+		HttpVersion: event.HttpVersion1,
+		BufSize:     uint32(len(chunk1)),
+	}
+	copy(chunkEvent1.Buf[:], chunk1)
+	sm.ProcessTlsEvent(chunkEvent1)
+
+	// At this point, NO SSE event should be emitted because the event is incomplete
+	// (not terminated by \n\n)
+	select {
+	case evt := <-mockBus.Events():
+		// If we receive an SSE event here, it's the bug - we're emitting incomplete data
+		if evt.Type() == event.EventTypeHttpSSE {
+			sseEvt := evt.(*event.SSEEvent)
+			t.Fatalf("BUG: Received incomplete SSE event after first chunk: %q\nThis is the bug from issue #83 - should not emit incomplete SSE events", string(sseEvt.Data))
+		}
+	case <-time.After(50 * time.Millisecond):
+		// Expected - no SSE event should be emitted yet
+	}
+
+	// HTTP chunk 2: Contains the rest of the SSE event
+	// This completes the JSON string and terminates the SSE event with \n\n
+	chunk2Data := " of the page\"}]}}\n\n"
+	chunk2 := []byte(fmt.Sprintf("%x\r\n%s\r\n", len(chunk2Data), chunk2Data))
+
+	chunkEvent2 := &event.TlsPayloadEvent{
+		EventHeader: event.EventHeader{
+			EventType: event.EventTypeTlsPayloadRecv,
+			PID:       1234,
+		},
+		SSLContext:  sslCtx,
+		HttpVersion: event.HttpVersion1,
+		BufSize:     uint32(len(chunk2)),
+	}
+	copy(chunkEvent2.Buf[:], chunk2)
+	sm.ProcessTlsEvent(chunkEvent2)
+
+	// NOW we should receive exactly ONE complete SSE event with the full JSON payload
+	select {
+	case evt := <-mockBus.Events():
+		if evt.Type() != event.EventTypeHttpSSE {
+			t.Fatalf("Expected EventTypeHttpSSE, got %v", evt.Type())
+		}
+		sseEvt := evt.(*event.SSEEvent)
+
+		// Verify we got the COMPLETE JSON payload
+		expectedData := "{\"jsonrpc\":\"2.0\",\"id\":\"123\",\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"The title of the page\"}]}}"
+		if string(sseEvt.Data) != expectedData {
+			t.Errorf("Expected complete SSE data:\n%s\n\nGot:\n%s", expectedData, string(sseEvt.Data))
+		}
+
+		// Verify the event type
+		if sseEvt.SSEEventType != "message" {
+			t.Errorf("Expected SSE event type 'message', got %q", sseEvt.SSEEventType)
+		}
+
+		// Verify HTTP request context is included
+		if sseEvt.Method != "POST" {
+			t.Errorf("Expected method POST, got %s", sseEvt.Method)
+		}
+		if sseEvt.Path != "/message/tools/call" {
+			t.Errorf("Expected path /message/tools/call, got %s", sseEvt.Path)
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("Expected to receive complete SSE event after second chunk")
+	}
+
+	// Verify NO additional SSE events are emitted (no duplicates)
+	select {
+	case evt := <-mockBus.Events():
+		if evt.Type() == event.EventTypeHttpSSE {
+			t.Fatalf("BUG: Received duplicate/extra SSE event: %v", evt)
+		}
+	case <-time.After(50 * time.Millisecond):
+		// Expected - no more SSE events
 	}
 }
 

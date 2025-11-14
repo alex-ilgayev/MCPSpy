@@ -565,6 +565,10 @@ func (s *SessionManager) processHTTPSSEResponse(sess *session) {
 // parseSSEEvents receives raw response payload (after trimming the chunked parts)
 // and returns list of SSE events as raw data.
 // Each event contains all fields (data:, event:, id:, retry:, etc.) concatenated.
+// IMPORTANT: Only returns COMPLETE SSE events that are properly terminated by empty lines (\n\n).
+// Incomplete events (not yet terminated) are NOT returned - they will remain in the buffer
+// and be parsed when more data arrives. This ensures HTTP chunk boundaries don't cause
+// partial SSE events to be emitted (issue #83).
 func parseSSEEvents(data []byte) [][]byte {
 	var events [][]byte
 
@@ -596,11 +600,16 @@ func parseSSEEvents(data []byte) [][]byte {
 		// Lines without colon or comments (starting with :) are ignored
 	}
 
-	// Handle any remaining data that wasn't terminated by an empty line
-	if len(currentEventLines) > 0 {
-		eventData := bytes.Join(currentEventLines, []byte("\n"))
-		events = append(events, eventData)
-	}
+	// DO NOT return incomplete events that haven't been terminated by \n\n
+	// This is crucial for handling HTTP chunk boundaries that split SSE events (issue #83).
+	// The incomplete data will remain in the responseBuf and be parsed again when more
+	// data arrives, at which point the complete event will be returned.
+	//
+	// Previous buggy behavior (removed):
+	// if len(currentEventLines) > 0 {
+	//     eventData := bytes.Join(currentEventLines, []byte("\n"))
+	//     events = append(events, eventData)
+	// }
 
 	return events
 }
