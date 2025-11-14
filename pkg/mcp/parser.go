@@ -146,6 +146,8 @@ func (p *Parser) ParseDataStdio(e event.Event) {
 		return
 	}
 
+	fmt.Println("STDIO PAYLOAD", string(buf))
+
 	logrus.WithFields(e.LogFields()).Trace("Parsing STDIO data for MCP")
 
 	// Use JSON decoder to handle multi-line JSON properly

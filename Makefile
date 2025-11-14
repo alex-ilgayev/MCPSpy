@@ -212,6 +212,24 @@ test-e2e-https: build test-e2e-setup ## Run end-to-end test for HTTP transport
 		--config tests/e2e_config.yaml \
 		--scenario http-fastmcp
 
+# Run e2e scenarios without MCPSpy (traffic generation only) - Claude Code
+.PHONY: test-e2e-mcp-claude
+test-e2e-mcp-claude: test-e2e-setup ## Run e2e test without MCPSpy for Claude Code
+	@echo "Running e2e test without MCPSpy for Claude Code..."
+	tests/venv/bin/python tests/e2e_test.py \
+		--config tests/e2e_config.yaml \
+		--scenario claude-code-init \
+		--skip-mcpspy
+
+# Run end-to-end test for Claude Code
+.PHONY: test-e2e-claude
+test-e2e-claude: build test-e2e-setup ## Run end-to-end test for Claude Code
+	@echo "Running end-to-end test for Claude Code..."
+	@echo "Note: MCPSpy requires root privileges for eBPF operations"
+	sudo -E tests/venv/bin/python tests/e2e_test.py \
+		--config tests/e2e_config.yaml \
+		--scenario claude-code-init
+
 # Run end-to-end tests for all transports
 .PHONY: test-e2e
 test-e2e: build test-e2e-setup ## Run end-to-end tests for all transports
@@ -238,6 +256,16 @@ test-e2e-update-https: build test-e2e-setup ## Update expected output files for 
 	sudo -E tests/venv/bin/python tests/e2e_test.py \
 		--config tests/e2e_config.yaml \
 		--scenario http-fastmcp \
+		--update-expected
+
+# Update expected output files for Claude Code
+.PHONY: test-e2e-update-claude
+test-e2e-update-claude: build test-e2e-setup ## Update expected output files for Claude Code
+	@echo "Updating expected output for Claude Code..."
+	@echo "Note: MCPSpy requires root privileges for eBPF operations"
+	sudo -E tests/venv/bin/python tests/e2e_test.py \
+		--config tests/e2e_config.yaml \
+		--scenario claude-code-init \
 		--update-expected
 
 # Update expected output files for all transports

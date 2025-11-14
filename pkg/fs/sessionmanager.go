@@ -80,6 +80,8 @@ func (s *SessionManager) ProcessFSEvent(e *event.FSDataEvent) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	fmt.Println("FS EVENT", string(e.Buffer()))
+
 	// Create session key
 	key := sessionKey{
 		pid:           e.PID,
