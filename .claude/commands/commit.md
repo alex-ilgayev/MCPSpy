@@ -1,1 +1,1 @@
-Create a commit using the commit creator sub-agent.
+Create a commit using the git-commit-creator skill.
