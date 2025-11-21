@@ -1,3 +1,3 @@
-Create an issue using the GitHub issue creator sub-agent.
+Create an issue using the github-issue-creator skill.
 Here is the relevant info for the issue:
 #$ARGUMENTS
