@@ -36,6 +36,207 @@ static __always_inline bool is_json(const char *buf, __u32 size) {
     return false;
 }
 
+// Correlation result structure for IPC operations
+struct correlation_result {
+    __u32 from_pid;
+    __u8 from_comm[TASK_COMM_LEN];
+    __u32 to_pid;
+    __u8 to_comm[TASK_COMM_LEN];
+    bool success;
+};
+
+// Correlate pipe read operation
+// Returns true if both reader and writer are known
+static __always_inline bool correlate_pipe_read(
+    __u32 inode, __u32 pid, struct correlation_result *result) {
+    struct inode_process_info *info =
+        bpf_map_lookup_elem(&inode_process_map, &inode);
+    if (!info) {
+        // First access - create entry with reader info
+        struct inode_process_info new_info = {0};
+        new_info.reader_pid = pid;
+        bpf_get_current_comm(new_info.reader_comm, sizeof(new_info.reader_comm));
+        if (bpf_map_update_elem(&inode_process_map, &inode, &new_info, BPF_ANY)) {
+            LOG_WARN("correlate_pipe_read: failed to create map entry");
+        }
+        return false;
+    }
+
+    // Check for conflict - another reader already registered
+    if (info->reader_pid != 0 && info->reader_pid != pid) {
+        bpf_map_delete_elem(&inode_process_map, &inode);
+        return false;
+    }
+
+    // Register ourselves as reader if slot is empty
+    if (info->reader_pid == 0) {
+        info->reader_pid = pid;
+        bpf_get_current_comm(info->reader_comm, sizeof(info->reader_comm));
+        if (bpf_map_update_elem(&inode_process_map, &inode, info, BPF_ANY)) {
+            LOG_WARN("correlate_pipe_read: failed to update map entry");
+            return false;
+        }
+    }
+
+    // Can't correlate without writer info
+    if (info->writer_pid == 0) {
+        return false;
+    }
+
+    // Correlation successful: from=writer, to=reader
+    result->from_pid = info->writer_pid;
+    __builtin_memcpy(result->from_comm, info->writer_comm, TASK_COMM_LEN);
+    result->to_pid = info->reader_pid;
+    __builtin_memcpy(result->to_comm, info->reader_comm, TASK_COMM_LEN);
+    return true;
+}
+
+// Correlate pipe write operation
+// Returns true if both reader and writer are known
+static __always_inline bool correlate_pipe_write(
+    __u32 inode, __u32 pid, struct correlation_result *result) {
+    struct inode_process_info *info =
+        bpf_map_lookup_elem(&inode_process_map, &inode);
+    if (!info) {
+        // First access - create entry with writer info
+        struct inode_process_info new_info = {0};
+        new_info.writer_pid = pid;
+        bpf_get_current_comm(new_info.writer_comm, sizeof(new_info.writer_comm));
+        if (bpf_map_update_elem(&inode_process_map, &inode, &new_info, BPF_ANY)) {
+            LOG_WARN("correlate_pipe_write: failed to create map entry");
+        }
+        return false;
+    }
+
+    // Check for conflict - another writer already registered
+    if (info->writer_pid != 0 && info->writer_pid != pid) {
+        bpf_map_delete_elem(&inode_process_map, &inode);
+        return false;
+    }
+
+    // Register ourselves as writer if slot is empty
+    if (info->writer_pid == 0) {
+        info->writer_pid = pid;
+        bpf_get_current_comm(info->writer_comm, sizeof(info->writer_comm));
+        if (bpf_map_update_elem(&inode_process_map, &inode, info, BPF_ANY)) {
+            LOG_WARN("correlate_pipe_write: failed to update map entry");
+            return false;
+        }
+    }
+
+    // Can't correlate without reader info
+    if (info->reader_pid == 0) {
+        return false;
+    }
+
+    // Correlation successful: from=writer, to=reader
+    result->from_pid = info->writer_pid;
+    __builtin_memcpy(result->from_comm, info->writer_comm, TASK_COMM_LEN);
+    result->to_pid = info->reader_pid;
+    __builtin_memcpy(result->to_comm, info->reader_comm, TASK_COMM_LEN);
+    return true;
+}
+
+// Correlate Unix socket read operation
+// Returns true if both our socket and peer are known
+static __always_inline bool correlate_unix_socket_read(
+    struct file *file, __u32 pid, struct correlation_result *result) {
+    struct sock *sk = get_sock_from_file(file);
+    if (!sk) {
+        return false;
+    }
+
+    struct sock *peer_sk = get_unix_peer_sock(sk);
+    if (!peer_sk) {
+        return false;
+    }
+
+    __u64 sk_ptr = (__u64)sk;
+    __u64 peer_sk_ptr = (__u64)peer_sk;
+
+    // Register ourselves if not already present
+    struct unix_sock_process_info *my_info =
+        bpf_map_lookup_elem(&unix_sock_process_map, &sk_ptr);
+    if (!my_info) {
+        struct unix_sock_process_info new_info = {0};
+        new_info.pid = pid;
+        bpf_get_current_comm(new_info.comm, sizeof(new_info.comm));
+        if (bpf_map_update_elem(&unix_sock_process_map, &sk_ptr, &new_info,
+                                BPF_ANY)) {
+            LOG_WARN("correlate_unix_socket_read: failed to create map entry");
+            return false;
+        }
+        my_info = bpf_map_lookup_elem(&unix_sock_process_map, &sk_ptr);
+        if (!my_info) {
+            return false;
+        }
+    }
+
+    // Look up peer's info
+    struct unix_sock_process_info *peer_info =
+        bpf_map_lookup_elem(&unix_sock_process_map, &peer_sk_ptr);
+    if (!peer_info) {
+        return false;
+    }
+
+    // For read: from=peer (who wrote), to=us (who reads)
+    result->from_pid = peer_info->pid;
+    __builtin_memcpy(result->from_comm, peer_info->comm, TASK_COMM_LEN);
+    result->to_pid = my_info->pid;
+    __builtin_memcpy(result->to_comm, my_info->comm, TASK_COMM_LEN);
+    return true;
+}
+
+// Correlate Unix socket write operation
+// Returns true if both our socket and peer are known
+static __always_inline bool correlate_unix_socket_write(
+    struct file *file, __u32 pid, struct correlation_result *result) {
+    struct sock *sk = get_sock_from_file(file);
+    if (!sk) {
+        return false;
+    }
+
+    struct sock *peer_sk = get_unix_peer_sock(sk);
+    if (!peer_sk) {
+        return false;
+    }
+
+    __u64 sk_ptr = (__u64)sk;
+    __u64 peer_sk_ptr = (__u64)peer_sk;
+
+    // Register ourselves if not already present
+    struct unix_sock_process_info *my_info =
+        bpf_map_lookup_elem(&unix_sock_process_map, &sk_ptr);
+    if (!my_info) {
+        struct unix_sock_process_info new_info = {0};
+        new_info.pid = pid;
+        bpf_get_current_comm(new_info.comm, sizeof(new_info.comm));
+        if (bpf_map_update_elem(&unix_sock_process_map, &sk_ptr, &new_info,
+                                BPF_ANY)) {
+            LOG_WARN("correlate_unix_socket_write: failed to create map entry");
+            return false;
+        }
+        my_info = bpf_map_lookup_elem(&unix_sock_process_map, &sk_ptr);
+        if (!my_info) {
+            return false;
+        }
+    }
+
+    // Look up peer's info
+    struct unix_sock_process_info *peer_info =
+        bpf_map_lookup_elem(&unix_sock_process_map, &peer_sk_ptr);
+    if (!peer_info) {
+        return false;
+    }
+
+    // For write: from=us (who writes), to=peer (who receives)
+    result->from_pid = my_info->pid;
+    __builtin_memcpy(result->from_comm, my_info->comm, TASK_COMM_LEN);
+    result->to_pid = peer_info->pid;
+    __builtin_memcpy(result->to_comm, peer_info->comm, TASK_COMM_LEN);
+    return true;
+}
+
 SEC("fexit/vfs_read")
 int BPF_PROG(exit_vfs_read, struct file *file, const char *buf, size_t count,
              loff_t *_pos, ssize_t ret) {
@@ -51,9 +252,8 @@ int BPF_PROG(exit_vfs_read, struct file *file, const char *buf, size_t count,
         return 0;
     }
 
-    // Check if inode is a pipe - we only track stdio (pipe) communication
-    // This is cheaper than buffer inspection, so check it first
-    if (!is_pipe(file)) {
+    // Check if inode is a pipe or unix socket
+    if (!is_ipc_allowed(file)) {
         return 0;
     }
 
@@ -72,53 +272,15 @@ int BPF_PROG(exit_vfs_read, struct file *file, const char *buf, size_t count,
         return 0;
     }
 
-    // Lookup or create cache entry
-    // Note: Inode numbers are only unique within a filesystem. If monitoring
-    // processes across multiple filesystems or mount namespaces, inode
-    // collisions are possible but rare in practice for pipe-based stdio.
     __u32 inode = BPF_CORE_READ(file, f_inode, i_ino);
-    struct inode_process_info *info =
-        bpf_map_lookup_elem(&inode_process_map, &inode);
-    if (!info) {
-        struct inode_process_info new_info = {0};
-        new_info.reader_pid = bpf_get_current_pid_tgid() >> 32;
-        bpf_get_current_comm(new_info.reader_comm,
-                             sizeof(new_info.reader_comm));
-        if (bpf_map_update_elem(&inode_process_map, &inode, &new_info,
-                                BPF_ANY)) {
-            LOG_WARN("exit_vfs_read: failed to create inode_process map entry");
-            return 0;
-        }
+    struct correlation_result corr = {0};
 
-        // We can't report the event yet, as we don't have the writer info.
+    // Correlate based on IPC type
+    bool correlated = is_pipe(file)
+                          ? correlate_pipe_read(inode, pid, &corr)
+                          : correlate_unix_socket_read(file, pid, &corr);
+    if (!correlated) {
         return 0;
-    } else {
-        // Check if reader slot is already filled with another pid
-        if (info->reader_pid != 0 && info->reader_pid != pid) {
-            // Even though this shouldn't happen for pipes, this can happen for
-            // other cases. In case of pipes this is unordinary, so we remove it
-            // from the cache.
-            bpf_map_delete_elem(&inode_process_map, &inode);
-            return 0;
-        }
-
-        // Empty reader slot, fill it
-        if (info->reader_pid == 0) {
-            info->reader_pid = pid;
-            bpf_get_current_comm(info->reader_comm, sizeof(info->reader_comm));
-            if (bpf_map_update_elem(&inode_process_map, &inode, info,
-                                    BPF_ANY)) {
-                LOG_WARN(
-                    "exit_vfs_read: failed to update inode_process map entry");
-                return 0;
-            }
-        }
-
-        // Check if we have a writer
-        if (info->writer_pid == 0) {
-            // We can't report the event yet, as we don't have the writer info.
-            return 0;
-        }
     }
 
     struct data_event *event =
@@ -132,10 +294,10 @@ int BPF_PROG(exit_vfs_read, struct file *file, const char *buf, size_t count,
     event->header.pid = pid;
     bpf_get_current_comm(&event->header.comm, sizeof(event->header.comm));
     event->inode = inode;
-    event->from_pid = info->writer_pid;
-    __builtin_memcpy(event->from_comm, info->writer_comm, TASK_COMM_LEN);
-    event->to_pid = info->reader_pid;
-    __builtin_memcpy(event->to_comm, info->reader_comm, TASK_COMM_LEN);
+    event->from_pid = corr.from_pid;
+    __builtin_memcpy(event->from_comm, corr.from_comm, TASK_COMM_LEN);
+    event->to_pid = corr.to_pid;
+    __builtin_memcpy(event->to_comm, corr.to_comm, TASK_COMM_LEN);
     event->file_ptr = (__u64)file;
     event->size = ret;
     event->buf_size = ret < MAX_BUF_SIZE ? ret : MAX_BUF_SIZE;
@@ -161,9 +323,8 @@ int BPF_PROG(exit_vfs_write, struct file *file, const char *buf, size_t count,
         return 0;
     }
 
-    // Check if inode is a pipe - we only track stdio (pipe) communication
-    // This is cheaper than buffer inspection, so check it first
-    if (!is_pipe(file)) {
+    // Check if inode is a pipe or unix socket
+    if (!is_ipc_allowed(file)) {
         return 0;
     }
 
@@ -181,54 +342,15 @@ int BPF_PROG(exit_vfs_write, struct file *file, const char *buf, size_t count,
         return 0;
     }
 
-    // Lookup or create cache entry
-    // Note: Inode numbers are only unique within a filesystem. If monitoring
-    // processes across multiple filesystems or mount namespaces, inode
-    // collisions are possible but rare in practice for pipe-based stdio.
     __u32 inode = BPF_CORE_READ(file, f_inode, i_ino);
-    struct inode_process_info *info =
-        bpf_map_lookup_elem(&inode_process_map, &inode);
-    if (!info) {
-        struct inode_process_info new_info = {0};
-        new_info.writer_pid = bpf_get_current_pid_tgid() >> 32;
-        bpf_get_current_comm(new_info.writer_comm,
-                             sizeof(new_info.writer_comm));
-        if (bpf_map_update_elem(&inode_process_map, &inode, &new_info,
-                                BPF_ANY)) {
-            LOG_WARN(
-                "exit_vfs_write: failed to create inode_process map entry");
-            return 0;
-        }
+    struct correlation_result corr = {0};
 
-        // We can't report the event yet, as we don't have the reader info.
+    // Correlate based on IPC type
+    bool correlated = is_pipe(file)
+                          ? correlate_pipe_write(inode, pid, &corr)
+                          : correlate_unix_socket_write(file, pid, &corr);
+    if (!correlated) {
         return 0;
-    } else {
-        // Check if writer slot is already filled with another pid
-        if (info->writer_pid != 0 && info->writer_pid != pid) {
-            // Even though this shouldn't happen for pipes, this can happen for
-            // other cases. In case of pipes this is unordinary, so we remove it
-            // from the cache.
-            bpf_map_delete_elem(&inode_process_map, &inode);
-            return 0;
-        }
-
-        // Empty writer slot, fill it
-        if (info->writer_pid == 0) {
-            info->writer_pid = pid;
-            bpf_get_current_comm(info->writer_comm, sizeof(info->writer_comm));
-            if (bpf_map_update_elem(&inode_process_map, &inode, info,
-                                    BPF_ANY)) {
-                LOG_WARN(
-                    "exit_vfs_write: failed to update inode_process map entry");
-                return 0;
-            }
-        }
-
-        // Check if we have a reader
-        if (info->reader_pid == 0) {
-            // We can't report the event yet, as we don't have the reader info.
-            return 0;
-        }
     }
 
     struct data_event *event =
@@ -243,10 +365,10 @@ int BPF_PROG(exit_vfs_write, struct file *file, const char *buf, size_t count,
     event->header.pid = pid;
     bpf_get_current_comm(&event->header.comm, sizeof(event->header.comm));
     event->inode = inode;
-    event->from_pid = info->writer_pid;
-    __builtin_memcpy(event->from_comm, info->writer_comm, TASK_COMM_LEN);
-    event->to_pid = info->reader_pid;
-    __builtin_memcpy(event->to_comm, info->reader_comm, TASK_COMM_LEN);
+    event->from_pid = corr.from_pid;
+    __builtin_memcpy(event->from_comm, corr.from_comm, TASK_COMM_LEN);
+    event->to_pid = corr.to_pid;
+    __builtin_memcpy(event->to_comm, corr.to_comm, TASK_COMM_LEN);
     event->file_ptr = (__u64)file;
     event->size = ret;
     event->buf_size = ret < MAX_BUF_SIZE ? ret : MAX_BUF_SIZE;
@@ -873,7 +995,7 @@ int BPF_URETPROBE(ssl_do_handshake_exit, int ret) {
     return 0;
 }
 
-// Clean up cache when inode is destroyed
+// Clean up cache when inode is destroyed (for pipes)
 SEC("fentry/destroy_inode")
 int BPF_PROG(trace_destroy_inode, struct inode *inode) {
     if (!inode) {
@@ -882,6 +1004,26 @@ int BPF_PROG(trace_destroy_inode, struct inode *inode) {
 
     __u32 inode_num = BPF_CORE_READ(inode, i_ino);
     bpf_map_delete_elem(&inode_process_map, &inode_num);
+
+    return 0;
+}
+
+// Clean up Unix socket map when socket is released
+// __sock_release is called when a socket is being closed
+// We unconditionally delete - if the key doesn't exist, it's a no-op
+SEC("fentry/__sock_release")
+int BPF_PROG(trace_sock_release, struct socket *sock, struct inode *inode) {
+    if (!sock) {
+        return 0;
+    }
+
+    struct sock *sk = BPF_CORE_READ(sock, sk);
+    if (!sk) {
+        return 0;
+    }
+
+    __u64 sk_ptr = (__u64)sk;
+    bpf_map_delete_elem(&unix_sock_process_map, &sk_ptr);
 
     return 0;
 }

@@ -143,6 +143,16 @@ func (l *Loader) Load() error {
 	}
 	l.links = append(l.links, destroyInodeLink)
 
+	// Attaching trace_sock_release with Fentry for Unix socket cleanup
+	sockReleaseLink, err := link.AttachTracing(link.TracingOptions{
+		Program:    l.objs.TraceSockRelease,
+		AttachType: ebpf.AttachTraceFEntry,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to attach %s fentry: %w", l.objs.TraceSockRelease.String(), err)
+	}
+	l.links = append(l.links, sockReleaseLink)
+
 	// Open the ring buffer reader
 	reader, err := ringbuf.NewReader(l.objs.Events)
 	if err != nil {

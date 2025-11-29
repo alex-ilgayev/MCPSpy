@@ -39,7 +39,12 @@ scenarios:
     # No pre_commands needed - client spawns server automatically
 
     traffic:
-      command: ["bash", "-c", "tests/venv/bin/python tests/mcp_client.py --server 'tests/venv/bin/python tests/mcp_server.py'"]
+      command:
+        [
+          "bash",
+          "-c",
+          "tests/venv/bin/python tests/mcp_client.py --server 'tests/venv/bin/python tests/mcp_server.py'",
+        ]
       working_directory: "."
       timeout_seconds: 30
 
@@ -55,12 +60,34 @@ scenarios:
 
     # Start HTTPS server before MCPSpy
     pre_commands:
-      - command: ["tests/venv/bin/python", "-m", "uvicorn", "tests.mcp_server:app", "--host", "0.0.0.0", "--port", "12345", "--ssl-keyfile=tests/server.key", "--ssl-certfile=tests/server.crt", "--log-level", "error"]
+      - command:
+          [
+            "tests/venv/bin/python",
+            "-m",
+            "uvicorn",
+            "tests.mcp_server:app",
+            "--host",
+            "0.0.0.0",
+            "--port",
+            "12345",
+            "--ssl-keyfile=tests/server.key",
+            "--ssl-certfile=tests/server.crt",
+            "--log-level",
+            "error",
+          ]
         background: true
         wait_seconds: 3.0
 
     traffic:
-      command: ["tests/venv/bin/python", "tests/mcp_client.py", "--transport", "http", "--url", "https://127.0.0.1:12345/mcp"]
+      command:
+        [
+          "tests/venv/bin/python",
+          "tests/mcp_client.py",
+          "--transport",
+          "http",
+          "--url",
+          "https://127.0.0.1:12345/mcp",
+        ]
       timeout_seconds: 30
 
     # Stop HTTP server after test completes

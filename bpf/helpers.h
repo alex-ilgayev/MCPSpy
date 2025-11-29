@@ -89,6 +89,73 @@ static __always_inline bool is_pipe(struct file *file) {
     return (i_mode & S_IFMT) == S_IFIFO;
 }
 
+// Get the struct sock pointer from a file.
+// Returns NULL if not a socket file or not readable.
+static __always_inline struct sock *get_sock_from_file(struct file *file) {
+    if (!file) {
+        return NULL;
+    }
+
+    // Verify this is actually a socket file
+    __u16 i_mode = BPF_CORE_READ(file, f_inode, i_mode);
+    if ((i_mode & S_IFMT) != S_IFSOCK) {
+        return NULL;
+    }
+
+    struct socket *sock = (struct socket *)BPF_CORE_READ(file, private_data);
+    if (!sock) {
+        return NULL;
+    }
+
+    return BPF_CORE_READ(sock, sk);
+}
+
+// Check if file is a Unix domain stream socket.
+// Returns true if the file is a Unix socket with SOCK_STREAM type.
+static __always_inline bool is_unix_socket(struct file *file) {
+    struct sock *sk = get_sock_from_file(file);
+    if (!sk) {
+        return false;
+    }
+
+    // Check socket family
+    __u16 family = BPF_CORE_READ(sk, __sk_common.skc_family);
+    if (family != AF_UNIX) {
+        return false;
+    }
+
+    // Check socket type (need socket struct for this)
+    struct socket *sock = (struct socket *)BPF_CORE_READ(file, private_data);
+    if (!sock) {
+        return false;
+    }
+
+    __u16 type = BPF_CORE_READ(sock, type);
+    return type == SOCK_STREAM;
+}
+
+// Check if file is an allowed IPC mechanism for MCP communication.
+// Allowed types:
+// - Pipes (S_IFIFO) - standard stdio transport
+// - Unix domain sockets (AF_UNIX + SOCK_STREAM) - used by some clients like Claude
+static __always_inline bool is_ipc_allowed(struct file *file) {
+    return is_pipe(file) || is_unix_socket(file);
+}
+
+// Get the peer sock pointer for a Unix domain socket
+// Returns NULL if no peer or not a Unix socket
+// Note: This uses BPF CO-RE to read from unix_sock structure
+static __always_inline struct sock *get_unix_peer_sock(struct sock *sk) {
+    if (!sk) {
+        return NULL;
+    }
+
+    // unix_sock embeds sock as its first member, so casting is safe
+    // struct unix_sock { struct sock sk; ... struct sock *peer; }
+    // We use CO-RE to read the peer field
+    return BPF_CORE_READ((struct unix_sock *)sk, peer);
+}
+
 // Get the mount namespace ID of the current task
 static __always_inline __u32 get_mount_ns_id(void) {
     struct task_struct *task = (struct task_struct *)bpf_get_current_task();

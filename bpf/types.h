@@ -16,9 +16,14 @@
 #define FILENAME_MAX 255
 
 // File mode constants
-#define S_IFMT 00170000 // File type mask
-#define S_IFDIR 0040000 // Directory
-#define S_IFIFO 0010000 // Pipe (FIFO)
+#define S_IFMT 00170000  // File type mask
+#define S_IFDIR 0040000  // Directory
+#define S_IFIFO 0010000  // Pipe (FIFO)
+#define S_IFSOCK 0140000 // Socket
+
+// Socket constants for Unix domain socket detection
+#define AF_UNIX 1
+#define SOCK_STREAM 1
 
 // Taken from mm.h
 #define VM_EXEC 0x00000004
@@ -60,6 +65,21 @@ struct {
     __type(key, __u32); // inode number
     __type(value, struct inode_process_info);
 } inode_process_map SEC(".maps");
+
+// Unix socket process tracking
+// Key is the struct sock* pointer (unique identifier for each socket endpoint)
+// Each side of a connected Unix socket has its own entry
+struct unix_sock_process_info {
+    __u32 pid;
+    __u8 comm[TASK_COMM_LEN];
+};
+
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(max_entries, 2048); // 2x pipe map since Unix sockets need 2 entries per connection
+    __type(key, __u64);        // struct sock* pointer
+    __type(value, struct unix_sock_process_info);
+} unix_sock_process_map SEC(".maps");
 
 // Map to store the PID of the mcpspy process itself
 // Key is always 0, value is the PID to ignore
