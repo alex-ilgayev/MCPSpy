@@ -56,11 +56,7 @@ var (
 	errorCodeColor = color.New(color.FgHiRed)
 	headerColor    = color.New(color.FgWhite, color.Bold)
 	idColor        = color.New(color.FgHiBlack)
-
-	// LLM-specific colors
 	llmModelColor  = color.New(color.FgMagenta)
-	llmStreamColor = color.New(color.FgHiBlue)
-	llmTokenColor  = color.New(color.FgHiBlack)
 )
 
 // PrintHeader prints the MCPSpy header
@@ -254,111 +250,45 @@ func (d *ConsoleDisplay) printLLMMessage(e event.Event) {
 		return
 	}
 
-	// Skip individual stream chunks in console output (only show aggregated)
-	if msg.MessageType == event.LLMMessageTypeStreamChunk {
-		return
-	}
-
-	// Format timestamp
+	// Format: TIMESTAMP LLM COMM[PID] → api.anthropic.com [MODEL] REQ/RESP "content..."
 	ts := timestampColor.Sprint(msg.Timestamp.Format("15:04:05.000"))
-	fmt.Fprintf(d.writer, "%s ", ts)
 
-	// Format provider and transport
-	d.printLLMCommFlow(msg)
-
-	// Format message info
-	d.printLLMMessageInfo(msg)
-
-	// Print a new line after the message info
-	fmt.Fprintln(d.writer)
-}
-
-// printLLMCommFlow formats the communication flow for an LLM message
-func (d *ConsoleDisplay) printLLMCommFlow(msg *event.LLMEvent) {
 	commFlow := fmt.Sprintf("%s %s[%s] → %s",
 		transportColor.Sprint("LLM"),
 		commColor.Sprint(msg.Comm),
 		pidColor.Sprint(msg.PID),
 		commColor.Sprint("api.anthropic.com"),
 	)
-	fmt.Fprintf(d.writer, "%s ", commFlow)
-}
 
-// printLLMMessageInfo formats the message info for an LLM message
-func (d *ConsoleDisplay) printLLMMessageInfo(msg *event.LLMEvent) {
-	var msgInfo string
-
-	// Model info
 	modelInfo := ""
 	if msg.Model != "" {
-		modelInfo = llmModelColor.Sprintf("[%s]", msg.Model)
+		modelInfo = llmModelColor.Sprintf("[%s] ", msg.Model)
 	}
 
+	var msgType, content string
 	switch msg.MessageType {
 	case event.LLMMessageTypeRequest:
-		streamInfo := ""
-		if msg.IsStreaming {
-			streamInfo = llmStreamColor.Sprint(" (streaming)")
-		}
-
-		// Extract user prompt preview
-		prompt := msg.ExtractUserPrompt()
-		promptPreview := ""
-		if prompt != "" {
-			if len(prompt) > 60 {
-				promptPreview = fmt.Sprintf(" \"%s...\"", prompt[:60])
-			} else {
-				promptPreview = fmt.Sprintf(" \"%s\"", prompt)
-			}
-		}
-
-		msgInfo = fmt.Sprintf("%s REQ %s%s%s", modelInfo, methodColor.Sprint("completion"), streamInfo, promptPreview)
-
+		msgType = methodColor.Sprint("REQ")
+		content = msg.Content
 	case event.LLMMessageTypeResponse:
 		if msg.Error != "" {
-			msgInfo = fmt.Sprintf("%s ERR  %s", modelInfo, errorColor.Sprint(msg.Error))
+			msgType = errorColor.Sprint("ERR")
+			content = msg.Error
 		} else {
-			streamInfo := ""
-			if msg.IsStreaming {
-				streamInfo = llmStreamColor.Sprint(" (streaming)")
-			}
-
-			// Token usage info
-			tokenInfo := ""
-			if msg.InputTokens > 0 || msg.OutputTokens > 0 {
-				tokenInfo = llmTokenColor.Sprintf(" [%d→%d tokens]", msg.InputTokens, msg.OutputTokens)
-			}
-
-			// Tool calls info
-			toolInfo := ""
-			if len(msg.ToolCalls) > 0 {
-				var names []string
-				for _, tc := range msg.ToolCalls {
-					names = append(names, tc.Name)
-				}
-				toolInfo = fmt.Sprintf(" tools:[%s]", strings.Join(names, ","))
-			}
-
-			// Response preview
-			content := msg.ExtractAssistantContent()
-			contentPreview := ""
-			if content != "" {
-				if len(content) > 60 {
-					contentPreview = fmt.Sprintf(" \"%s...\"", content[:60])
-				} else {
-					contentPreview = fmt.Sprintf(" \"%s\"", content)
-				}
-			}
-
-			msgInfo = fmt.Sprintf("%s RESP%s%s%s%s", modelInfo, streamInfo, tokenInfo, toolInfo, contentPreview)
+			msgType = "RESP"
+			content = msg.Content
 		}
-
-	case event.LLMMessageTypeStreamEnd:
-		msgInfo = fmt.Sprintf("%s STREAM_END", modelInfo)
-
-	default:
-		msgInfo = fmt.Sprintf("%s %s", modelInfo, string(msg.MessageType))
 	}
 
-	fmt.Fprintf(d.writer, "%s", msgInfo)
+	// Truncate content for display
+	contentPreview := ""
+	if content != "" {
+		if len(content) > 60 {
+			contentPreview = fmt.Sprintf(" \"%s...\"", content[:60])
+		} else {
+			contentPreview = fmt.Sprintf(" \"%s\"", content)
+		}
+	}
+
+	fmt.Fprintf(d.writer, "%s %s %s%s%s\n", ts, commFlow, modelInfo, msgType, contentPreview)
 }

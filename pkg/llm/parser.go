@@ -1,8 +1,10 @@
 package llm
 
 import (
+	"encoding/json"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/alex-ilgayev/mcpspy/pkg/bus"
 	"github.com/alex-ilgayev/mcpspy/pkg/event"
@@ -21,14 +23,10 @@ type Parser struct {
 }
 
 type streamSession struct {
-	pid          uint32
-	comm         string
-	model        string
-	chunkIndex   int
-	content      strings.Builder
-	toolCalls    []event.LLMToolCall
-	inputTokens  int
-	outputTokens int
+	pid     uint32
+	comm    string
+	model   string
+	content strings.Builder
 }
 
 // NewParser creates a new LLM parser
@@ -51,7 +49,7 @@ func NewParser(eventBus bus.EventBus) (*Parser, error) {
 		return nil, err
 	}
 
-	logrus.Info("LLM parser initialized (Anthropic only)")
+	logrus.Info("LLM parser initialized (Anthropic)")
 	return p, nil
 }
 
@@ -71,11 +69,12 @@ func (p *Parser) handleRequest(e event.Event) {
 		return
 	}
 
-	if llmEvent.IsStreaming {
+	// Start stream session if streaming
+	var body map[string]interface{}
+	if json.Unmarshal(httpEvent.RequestPayload, &body) == nil && IsStreamingRequest(body) {
 		p.startStreamSession(httpEvent.SSLContext, llmEvent)
 	}
 
-	logrus.WithFields(llmEvent.LogFields()).Debug("Anthropic request parsed")
 	p.eventBus.Publish(llmEvent)
 }
 
@@ -95,7 +94,6 @@ func (p *Parser) handleResponse(e event.Event) {
 		return
 	}
 
-	logrus.WithFields(llmEvent.LogFields()).Debug("Anthropic response parsed")
 	p.eventBus.Publish(llmEvent)
 }
 
@@ -110,45 +108,29 @@ func (p *Parser) handleSSE(e event.Event) {
 	}
 
 	session := p.getOrCreateStreamSession(sseEvent.SSLContext, sseEvent.PID, sseEvent.Comm())
-	session.chunkIndex++
 
 	data := strings.TrimSpace(string(sseEvent.Data))
 	if data == "" {
 		return
 	}
 
-	llmEvent, err := p.parser.ParseStreamEvent(data, sseEvent.PID, sseEvent.Comm())
+	ev, done, err := p.parser.ParseStreamEvent(data, sseEvent.PID, sseEvent.Comm())
 	if err != nil {
 		logrus.WithError(err).Debug("Failed to parse Anthropic SSE")
 		return
 	}
 
-	if llmEvent == nil {
-		return // ping or other ignored event
+	// Accumulate content
+	if ev != nil && ev.Content != "" {
+		session.content.WriteString(ev.Content)
+	}
+	if ev != nil && ev.Model != "" {
+		session.model = ev.Model
 	}
 
-	// Aggregate content
-	if llmEvent.ChunkContent != "" {
-		session.content.WriteString(llmEvent.ChunkContent)
-	}
-	if len(llmEvent.ToolCalls) > 0 {
-		session.toolCalls = append(session.toolCalls, llmEvent.ToolCalls...)
-	}
-	if llmEvent.Model != "" {
-		session.model = llmEvent.Model
-	}
-	if llmEvent.InputTokens > 0 {
-		session.inputTokens = llmEvent.InputTokens
-	}
-	if llmEvent.OutputTokens > 0 {
-		session.outputTokens = llmEvent.OutputTokens
-	}
-
-	p.eventBus.Publish(llmEvent)
-
-	// If stream ended, emit aggregated response
-	if llmEvent.MessageType == event.LLMMessageTypeStreamEnd {
-		p.emitAggregatedResponse(sseEvent.SSLContext, session, llmEvent)
+	// Stream ended - emit final response
+	if done {
+		p.emitAggregatedResponse(sseEvent.SSLContext, session)
 	}
 }
 
@@ -175,33 +157,20 @@ func (p *Parser) getOrCreateStreamSession(sslContext uint64, pid uint32, comm st
 	return session
 }
 
-func (p *Parser) emitAggregatedResponse(sslContext uint64, session *streamSession, finalEvent *event.LLMEvent) {
+func (p *Parser) emitAggregatedResponse(sslContext uint64, session *streamSession) {
 	p.streamMu.Lock()
 	defer p.streamMu.Unlock()
 
 	aggregated := &event.LLMEvent{
-		Timestamp:    finalEvent.Timestamp,
-		MessageType:  event.LLMMessageTypeResponse,
-		PID:          session.pid,
-		Comm:         session.comm,
-		Model:        session.model,
-		IsStreaming:  true,
-		StopReason:   finalEvent.StopReason,
-		InputTokens:  session.inputTokens,
-		OutputTokens: session.outputTokens,
-		ToolCalls:    session.toolCalls,
+		Timestamp:   time.Now(),
+		MessageType: event.LLMMessageTypeResponse,
+		PID:         session.pid,
+		Comm:        session.comm,
+		Model:       session.model,
+		Content:     session.content.String(),
 	}
 
-	if session.content.Len() > 0 {
-		aggregated.Messages = []event.LLMMessage{{
-			Role:    "assistant",
-			Content: session.content.String(),
-		}}
-	}
-
-	logrus.WithFields(aggregated.LogFields()).Debug("Anthropic aggregated response")
 	p.eventBus.Publish(aggregated)
-
 	delete(p.streamSessions, sslContext)
 }
 

@@ -15,14 +15,10 @@ func NewAnthropicParser() *AnthropicParser {
 	return &AnthropicParser{}
 }
 
-// Request structure
+// Request structure (minimal)
 type anthropicRequest struct {
-	Model     string             `json:"model"`
-	Messages  []anthropicMessage `json:"messages"`
-	MaxTokens int                `json:"max_tokens"`
-	Stream    bool               `json:"stream"`
-	System    interface{}        `json:"system,omitempty"`
-	Tools     []anthropicTool    `json:"tools,omitempty"`
+	Model    string             `json:"model"`
+	Messages []anthropicMessage `json:"messages"`
 }
 
 type anthropicMessage struct {
@@ -30,54 +26,33 @@ type anthropicMessage struct {
 	Content interface{} `json:"content"`
 }
 
-type anthropicTool struct {
-	Name string `json:"name"`
-}
-
-// Response structure
+// Response structure (minimal)
 type anthropicResponse struct {
-	ID         string                  `json:"id"`
-	Type       string                  `json:"type"`
-	Role       string                  `json:"role"`
-	Content    []anthropicContentBlock `json:"content"`
-	Model      string                  `json:"model"`
-	StopReason string                  `json:"stop_reason"`
-	Usage      *anthropicUsage         `json:"usage,omitempty"`
-	Error      *anthropicError         `json:"error,omitempty"`
+	Model   string                  `json:"model"`
+	Content []anthropicContentBlock `json:"content"`
+	Error   *anthropicError         `json:"error,omitempty"`
 }
 
 type anthropicContentBlock struct {
 	Type string `json:"type"`
 	Text string `json:"text,omitempty"`
-	ID   string `json:"id,omitempty"`
-	Name string `json:"name,omitempty"`
-}
-
-type anthropicUsage struct {
-	InputTokens  int `json:"input_tokens"`
-	OutputTokens int `json:"output_tokens"`
 }
 
 type anthropicError struct {
-	Type    string `json:"type"`
 	Message string `json:"message"`
 }
 
-// Streaming event structure
+// Streaming event structure (minimal)
 type anthropicStreamEvent struct {
-	Type         string                 `json:"type"`
-	Message      *anthropicResponse     `json:"message,omitempty"`
-	Index        int                    `json:"index,omitempty"`
-	ContentBlock *anthropicContentBlock `json:"content_block,omitempty"`
-	Delta        *anthropicDelta        `json:"delta,omitempty"`
-	Usage        *anthropicUsage        `json:"usage,omitempty"`
-	Error        *anthropicError        `json:"error,omitempty"`
+	Type    string             `json:"type"`
+	Message *anthropicResponse `json:"message,omitempty"`
+	Delta   *anthropicDelta    `json:"delta,omitempty"`
+	Error   *anthropicError    `json:"error,omitempty"`
 }
 
 type anthropicDelta struct {
-	Type       string `json:"type"`
-	Text       string `json:"text,omitempty"`
-	StopReason string `json:"stop_reason,omitempty"`
+	Type string `json:"type"`
+	Text string `json:"text,omitempty"`
 }
 
 // ParseRequest parses an Anthropic API request
@@ -93,8 +68,7 @@ func (p *AnthropicParser) ParseRequest(body []byte, pid uint32, comm string) (*e
 		PID:         pid,
 		Comm:        comm,
 		Model:       req.Model,
-		IsStreaming: req.Stream,
-		Messages:    convertMessages(req.Messages, req.System),
+		Content:     extractUserPrompt(req.Messages),
 	}, nil
 }
 
@@ -111,8 +85,6 @@ func (p *AnthropicParser) ParseResponse(body []byte, pid uint32, comm string) (*
 		PID:         pid,
 		Comm:        comm,
 		Model:       resp.Model,
-		IsStreaming: false,
-		StopReason:  resp.StopReason,
 	}
 
 	if resp.Error != nil {
@@ -120,100 +92,70 @@ func (p *AnthropicParser) ParseResponse(body []byte, pid uint32, comm string) (*
 		return ev, nil
 	}
 
-	ev.Messages, ev.ToolCalls = extractContent(resp.Content)
-
-	if resp.Usage != nil {
-		ev.InputTokens = resp.Usage.InputTokens
-		ev.OutputTokens = resp.Usage.OutputTokens
-	}
-
+	ev.Content = extractResponseText(resp.Content)
 	return ev, nil
 }
 
 // ParseStreamEvent parses an Anthropic streaming SSE event
-func (p *AnthropicParser) ParseStreamEvent(data string, pid uint32, comm string) (*event.LLMEvent, error) {
+// Returns nil event for events we want to skip (ping, deltas, etc.)
+// Returns event only for message_start (with model) and message_stop (final)
+func (p *AnthropicParser) ParseStreamEvent(data string, pid uint32, comm string) (*event.LLMEvent, bool, error) {
 	var streamEvent anthropicStreamEvent
 	if err := json.Unmarshal([]byte(data), &streamEvent); err != nil {
-		return nil, err
-	}
-
-	ev := &event.LLMEvent{
-		Timestamp:   time.Now(),
-		PID:         pid,
-		Comm:        comm,
-		IsStreaming: true,
+		return nil, false, err
 	}
 
 	switch streamEvent.Type {
 	case "message_start":
-		ev.MessageType = event.LLMMessageTypeStreamChunk
+		// Return model info, continue accumulating
+		ev := &event.LLMEvent{
+			Timestamp:   time.Now(),
+			MessageType: event.LLMMessageTypeResponse,
+			PID:         pid,
+			Comm:        comm,
+		}
 		if streamEvent.Message != nil {
 			ev.Model = streamEvent.Message.Model
-			if streamEvent.Message.Usage != nil {
-				ev.InputTokens = streamEvent.Message.Usage.InputTokens
-			}
 		}
-
-	case "content_block_start":
-		ev.MessageType = event.LLMMessageTypeStreamChunk
-		if streamEvent.ContentBlock != nil && streamEvent.ContentBlock.Type == "tool_use" {
-			ev.ToolCalls = []event.LLMToolCall{{
-				ID:   streamEvent.ContentBlock.ID,
-				Name: streamEvent.ContentBlock.Name,
-			}}
-		}
+		return ev, false, nil // false = not done
 
 	case "content_block_delta":
-		ev.MessageType = event.LLMMessageTypeStreamChunk
+		// Return delta text for accumulation, but don't emit event
 		if streamEvent.Delta != nil && streamEvent.Delta.Type == "text_delta" {
-			ev.ChunkContent = streamEvent.Delta.Text
+			return &event.LLMEvent{Content: streamEvent.Delta.Text}, false, nil
 		}
-
-	case "message_delta":
-		ev.MessageType = event.LLMMessageTypeStreamChunk
-		if streamEvent.Delta != nil {
-			ev.StopReason = streamEvent.Delta.StopReason
-		}
-		if streamEvent.Usage != nil {
-			ev.OutputTokens = streamEvent.Usage.OutputTokens
-		}
+		return nil, false, nil
 
 	case "message_stop":
-		ev.MessageType = event.LLMMessageTypeStreamEnd
-
-	case "ping", "content_block_stop":
-		return nil, nil // Ignore these events
+		// Stream ended
+		return nil, true, nil // true = done
 
 	case "error":
-		ev.MessageType = event.LLMMessageTypeStreamChunk
+		ev := &event.LLMEvent{
+			Timestamp:   time.Now(),
+			MessageType: event.LLMMessageTypeResponse,
+			PID:         pid,
+			Comm:        comm,
+		}
 		if streamEvent.Error != nil {
 			ev.Error = streamEvent.Error.Message
 		}
+		return ev, true, nil
 
 	default:
-		ev.MessageType = event.LLMMessageTypeStreamChunk
+		// Ignore ping, content_block_start, content_block_stop, message_delta
+		return nil, false, nil
 	}
-
-	return ev, nil
 }
 
-func convertMessages(messages []anthropicMessage, system interface{}) []event.LLMMessage {
-	result := make([]event.LLMMessage, 0, len(messages)+1)
-
-	// Add system message if present
-	if system != nil {
-		if s, ok := system.(string); ok && s != "" {
-			result = append(result, event.LLMMessage{Role: "system", Content: s})
+func extractUserPrompt(messages []anthropicMessage) string {
+	// Get the last user message
+	for i := len(messages) - 1; i >= 0; i-- {
+		if messages[i].Role == "user" {
+			return extractMessageContent(messages[i].Content)
 		}
 	}
-
-	for _, msg := range messages {
-		result = append(result, event.LLMMessage{
-			Role:    msg.Role,
-			Content: extractMessageContent(msg.Content),
-		})
-	}
-	return result
+	return ""
 }
 
 func extractMessageContent(content interface{}) string {
@@ -240,29 +182,12 @@ func extractMessageContent(content interface{}) string {
 	return ""
 }
 
-func extractContent(blocks []anthropicContentBlock) ([]event.LLMMessage, []event.LLMToolCall) {
+func extractResponseText(blocks []anthropicContentBlock) string {
 	var texts []string
-	var toolCalls []event.LLMToolCall
-
 	for _, block := range blocks {
-		switch block.Type {
-		case "text":
+		if block.Type == "text" && block.Text != "" {
 			texts = append(texts, block.Text)
-		case "tool_use":
-			toolCalls = append(toolCalls, event.LLMToolCall{
-				ID:   block.ID,
-				Name: block.Name,
-			})
 		}
 	}
-
-	var messages []event.LLMMessage
-	if len(texts) > 0 {
-		messages = []event.LLMMessage{{
-			Role:    "assistant",
-			Content: strings.Join(texts, "\n"),
-		}}
-	}
-
-	return messages, toolCalls
+	return strings.Join(texts, "\n")
 }
