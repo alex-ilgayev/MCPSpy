@@ -58,10 +58,9 @@ var (
 	idColor        = color.New(color.FgHiBlack)
 
 	// LLM-specific colors
-	llmProviderColor = color.New(color.FgHiMagenta)
-	llmModelColor    = color.New(color.FgMagenta)
-	llmStreamColor   = color.New(color.FgHiBlue)
-	llmTokenColor    = color.New(color.FgHiBlack)
+	llmModelColor  = color.New(color.FgMagenta)
+	llmStreamColor = color.New(color.FgHiBlue)
+	llmTokenColor  = color.New(color.FgHiBlack)
 )
 
 // PrintHeader prints the MCPSpy header
@@ -272,21 +271,15 @@ func (d *ConsoleDisplay) printLLMMessage(e event.Event) {
 
 	// Print a new line after the message info
 	fmt.Fprintln(d.writer)
-
-	// Print buffer content if requested
-	if d.showBuffers && msg.Raw != "" {
-		d.printBuffer(msg.Raw)
-	}
 }
 
 // printLLMCommFlow formats the communication flow for an LLM message
 func (d *ConsoleDisplay) printLLMCommFlow(msg *event.LLMEvent) {
-	provider := strings.ToUpper(string(msg.Provider))
 	commFlow := fmt.Sprintf("%s %s[%s] → %s",
-		llmProviderColor.Sprint(provider),
-		commColor.Sprint(msg.Transport.Comm),
-		pidColor.Sprint(msg.Transport.PID),
-		commColor.Sprint(msg.Transport.Host),
+		transportColor.Sprint("LLM"),
+		commColor.Sprint(msg.Comm),
+		pidColor.Sprint(msg.PID),
+		commColor.Sprint("api.anthropic.com"),
 	)
 	fmt.Fprintf(d.writer, "%s ", commFlow)
 }
@@ -322,8 +315,8 @@ func (d *ConsoleDisplay) printLLMMessageInfo(msg *event.LLMEvent) {
 		msgInfo = fmt.Sprintf("%s REQ %s%s%s", modelInfo, methodColor.Sprint("completion"), streamInfo, promptPreview)
 
 	case event.LLMMessageTypeResponse:
-		if msg.Error != nil {
-			msgInfo = fmt.Sprintf("%s ERR  %s", modelInfo, errorColor.Sprint(msg.Error.Message))
+		if msg.Error != "" {
+			msgInfo = fmt.Sprintf("%s ERR  %s", modelInfo, errorColor.Sprint(msg.Error))
 		} else {
 			streamInfo := ""
 			if msg.IsStreaming {
@@ -332,14 +325,17 @@ func (d *ConsoleDisplay) printLLMMessageInfo(msg *event.LLMEvent) {
 
 			// Token usage info
 			tokenInfo := ""
-			if msg.Usage != nil {
-				tokenInfo = llmTokenColor.Sprintf(" [%d→%d tokens]", msg.Usage.InputTokens, msg.Usage.OutputTokens)
+			if msg.InputTokens > 0 || msg.OutputTokens > 0 {
+				tokenInfo = llmTokenColor.Sprintf(" [%d→%d tokens]", msg.InputTokens, msg.OutputTokens)
 			}
 
 			// Tool calls info
 			toolInfo := ""
 			if len(msg.ToolCalls) > 0 {
-				names := msg.ExtractToolNames()
+				var names []string
+				for _, tc := range msg.ToolCalls {
+					names = append(names, tc.Name)
+				}
 				toolInfo = fmt.Sprintf(" tools:[%s]", strings.Join(names, ","))
 			}
 

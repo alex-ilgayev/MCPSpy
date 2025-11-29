@@ -187,15 +187,7 @@ scenarios:
     description: "Test Anthropic Claude API monitoring (streaming and non-streaming)"
 
     mcpspy:
-      flags:
-        [
-          "--tui=false",
-          "--log-level",
-          "trace",
-          "--llm",
-          "--llm-providers",
-          "anthropic",
-        ]
+      flags: ["--tui=false", "--log-level", "trace", "--llm"]
 
     pre_commands:
       - command:
@@ -233,7 +225,4 @@ scenarios:
         ignore_order: true
         exclude_regex_paths:
           - "root\\[\\d+\\]\\['timestamp'\\]"
-          - "root\\[\\d+\\]\\['transport'\\]\\['pid'\\]"
-          - "root\\[\\d+\\]\\['request_id'\\]"
-          - "root\\[\\d+\\]\\['raw'\\]"
-          - "root\\[\\d+\\]\\['chunk_index'\\]"
+          - "root\\[\\d+\\]\\['pid'\\]"

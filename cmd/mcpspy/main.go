@@ -33,7 +33,6 @@ var (
 	logLevel         string
 	tui              bool
 	enableLLMMonitor bool
-	llmProviders     []string
 )
 
 func main() {
@@ -53,8 +52,7 @@ communication by tracking stdio operations and analyzing JSON-RPC 2.0 messages.`
 	rootCmd.Flags().StringVarP(&outputFile, "output", "o", "", "Output file (JSONL format will be written to file)")
 	rootCmd.Flags().StringVarP(&logLevel, "log-level", "l", "info", "Set log level (trace, debug, info, warn, error, fatal, panic)")
 	rootCmd.Flags().BoolVar(&tui, "tui", true, "Enable TUI (Terminal UI) mode. Use --tui=false to disable and use static console output")
-	rootCmd.Flags().BoolVar(&enableLLMMonitor, "llm", false, "Enable LLM API monitoring (OpenAI, Anthropic, Gemini, Ollama)")
-	rootCmd.Flags().StringSliceVar(&llmProviders, "llm-providers", []string{"openai", "anthropic", "gemini", "ollama"}, "LLM providers to monitor (comma-separated)")
+	rootCmd.Flags().BoolVar(&enableLLMMonitor, "llm", false, "Enable Anthropic API monitoring")
 
 	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)
@@ -250,14 +248,14 @@ func run(cmd *cobra.Command, args []string) error {
 
 	// Create LLM parser if enabled (opt-in)
 	if enableLLMMonitor {
-		llmParser, err := llm.NewParser(eventBus, llmProviders)
+		llmParser, err := llm.NewParser(eventBus)
 		if err != nil {
 			return fmt.Errorf("failed to create LLM parser: %w", err)
 		}
 		defer llmParser.Close()
 
 		if !tui {
-			consoleDisplay.PrintInfo("LLM API monitoring enabled for providers: " + strings.Join(llmProviders, ", "))
+			consoleDisplay.PrintInfo("Anthropic API monitoring enabled")
 		}
 	}
 

@@ -269,48 +269,18 @@ test-e2e-update: build test-e2e-setup ## Update expected output files for all tr
 
 ##@ LLM Monitoring Test Targets
 
-# Run e2e test for LLM OpenAI monitoring
-.PHONY: test-e2e-llm-openai
-test-e2e-llm-openai: build test-e2e-setup ## Run end-to-end test for OpenAI API monitoring
-	@echo "Running end-to-end test for OpenAI API monitoring..."
-	@echo "Note: MCPSpy requires root privileges for eBPF operations"
-	sudo -E tests/venv/bin/python tests/e2e_test.py \
-		--config tests/e2e_config.yaml \
-		--scenario llm-openai
-
-# Run e2e test for LLM Anthropic monitoring
-.PHONY: test-e2e-llm-anthropic
-test-e2e-llm-anthropic: build test-e2e-setup ## Run end-to-end test for Anthropic API monitoring
+# Run e2e test for Anthropic API monitoring
+.PHONY: test-e2e-llm
+test-e2e-llm: build test-e2e-setup ## Run end-to-end test for Anthropic API monitoring
 	@echo "Running end-to-end test for Anthropic API monitoring..."
 	@echo "Note: MCPSpy requires root privileges for eBPF operations"
 	sudo -E tests/venv/bin/python tests/e2e_test.py \
 		--config tests/e2e_config.yaml \
 		--scenario llm-anthropic
 
-# Run all LLM monitoring e2e tests
-.PHONY: test-e2e-llm
-test-e2e-llm: build test-e2e-setup ## Run all LLM API monitoring tests
-	@echo "Running all LLM API monitoring tests..."
-	@echo "Note: MCPSpy requires root privileges for eBPF operations"
-	sudo -E tests/venv/bin/python tests/e2e_test.py \
-		--config tests/e2e_config.yaml \
-		--scenario llm-openai
-	sudo -E tests/venv/bin/python tests/e2e_test.py \
-		--config tests/e2e_config.yaml \
-		--scenario llm-anthropic
-
-# Update expected output for LLM OpenAI tests
-.PHONY: test-e2e-llm-openai-update
-test-e2e-llm-openai-update: build test-e2e-setup ## Update expected output for OpenAI API tests
-	@echo "Updating expected output for OpenAI API tests..."
-	sudo -E tests/venv/bin/python tests/e2e_test.py \
-		--config tests/e2e_config.yaml \
-		--scenario llm-openai \
-		--update-expected
-
 # Update expected output for LLM Anthropic tests
-.PHONY: test-e2e-llm-anthropic-update
-test-e2e-llm-anthropic-update: build test-e2e-setup ## Update expected output for Anthropic API tests
+.PHONY: test-e2e-llm-update
+test-e2e-llm-update: build test-e2e-setup ## Update expected output for Anthropic API tests
 	@echo "Updating expected output for Anthropic API tests..."
 	sudo -E tests/venv/bin/python tests/e2e_test.py \
 		--config tests/e2e_config.yaml \
