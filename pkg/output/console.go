@@ -17,6 +17,7 @@ import (
 // ConsoleDisplay handles the CLI output formatting for console output
 // Subscribes to the following events:
 // - EventTypeMCPMessage
+// - EventTypeLLMMessage
 type ConsoleDisplay struct {
 	writer      io.Writer
 	showBuffers bool
@@ -36,6 +37,11 @@ func NewConsoleDisplay(writer io.Writer, showBuffers bool, eventBus bus.EventBus
 		return nil, err
 	}
 
+	// Subscribe to LLM events
+	if err := eventBus.Subscribe(event.EventTypeLLMMessage, d.printLLMMessage); err != nil {
+		return nil, err
+	}
+
 	return d, nil
 }
 
@@ -50,6 +56,12 @@ var (
 	errorCodeColor = color.New(color.FgHiRed)
 	headerColor    = color.New(color.FgWhite, color.Bold)
 	idColor        = color.New(color.FgHiBlack)
+
+	// LLM-specific colors
+	llmProviderColor = color.New(color.FgHiMagenta)
+	llmModelColor    = color.New(color.FgMagenta)
+	llmStreamColor   = color.New(color.FgHiBlue)
+	llmTokenColor    = color.New(color.FgHiBlack)
 )
 
 // PrintHeader prints the MCPSpy header
@@ -234,4 +246,123 @@ func (d *ConsoleDisplay) printBuffer(content string) {
 
 	// Print bottom border
 	fmt.Fprintln(d.writer, "└────")
+}
+
+// printLLMMessage prints an LLM API message
+func (d *ConsoleDisplay) printLLMMessage(e event.Event) {
+	msg, ok := e.(*event.LLMEvent)
+	if !ok {
+		return
+	}
+
+	// Skip individual stream chunks in console output (only show aggregated)
+	if msg.MessageType == event.LLMMessageTypeStreamChunk {
+		return
+	}
+
+	// Format timestamp
+	ts := timestampColor.Sprint(msg.Timestamp.Format("15:04:05.000"))
+	fmt.Fprintf(d.writer, "%s ", ts)
+
+	// Format provider and transport
+	d.printLLMCommFlow(msg)
+
+	// Format message info
+	d.printLLMMessageInfo(msg)
+
+	// Print a new line after the message info
+	fmt.Fprintln(d.writer)
+
+	// Print buffer content if requested
+	if d.showBuffers && msg.Raw != "" {
+		d.printBuffer(msg.Raw)
+	}
+}
+
+// printLLMCommFlow formats the communication flow for an LLM message
+func (d *ConsoleDisplay) printLLMCommFlow(msg *event.LLMEvent) {
+	provider := strings.ToUpper(string(msg.Provider))
+	commFlow := fmt.Sprintf("%s %s[%s] → %s",
+		llmProviderColor.Sprint(provider),
+		commColor.Sprint(msg.Transport.Comm),
+		pidColor.Sprint(msg.Transport.PID),
+		commColor.Sprint(msg.Transport.Host),
+	)
+	fmt.Fprintf(d.writer, "%s ", commFlow)
+}
+
+// printLLMMessageInfo formats the message info for an LLM message
+func (d *ConsoleDisplay) printLLMMessageInfo(msg *event.LLMEvent) {
+	var msgInfo string
+
+	// Model info
+	modelInfo := ""
+	if msg.Model != "" {
+		modelInfo = llmModelColor.Sprintf("[%s]", msg.Model)
+	}
+
+	switch msg.MessageType {
+	case event.LLMMessageTypeRequest:
+		streamInfo := ""
+		if msg.IsStreaming {
+			streamInfo = llmStreamColor.Sprint(" (streaming)")
+		}
+
+		// Extract user prompt preview
+		prompt := msg.ExtractUserPrompt()
+		promptPreview := ""
+		if prompt != "" {
+			if len(prompt) > 60 {
+				promptPreview = fmt.Sprintf(" \"%s...\"", prompt[:60])
+			} else {
+				promptPreview = fmt.Sprintf(" \"%s\"", prompt)
+			}
+		}
+
+		msgInfo = fmt.Sprintf("%s REQ %s%s%s", modelInfo, methodColor.Sprint("completion"), streamInfo, promptPreview)
+
+	case event.LLMMessageTypeResponse:
+		if msg.Error != nil {
+			msgInfo = fmt.Sprintf("%s ERR  %s", modelInfo, errorColor.Sprint(msg.Error.Message))
+		} else {
+			streamInfo := ""
+			if msg.IsStreaming {
+				streamInfo = llmStreamColor.Sprint(" (streaming)")
+			}
+
+			// Token usage info
+			tokenInfo := ""
+			if msg.Usage != nil {
+				tokenInfo = llmTokenColor.Sprintf(" [%d→%d tokens]", msg.Usage.InputTokens, msg.Usage.OutputTokens)
+			}
+
+			// Tool calls info
+			toolInfo := ""
+			if len(msg.ToolCalls) > 0 {
+				names := msg.ExtractToolNames()
+				toolInfo = fmt.Sprintf(" tools:[%s]", strings.Join(names, ","))
+			}
+
+			// Response preview
+			content := msg.ExtractAssistantContent()
+			contentPreview := ""
+			if content != "" {
+				if len(content) > 60 {
+					contentPreview = fmt.Sprintf(" \"%s...\"", content[:60])
+				} else {
+					contentPreview = fmt.Sprintf(" \"%s\"", content)
+				}
+			}
+
+			msgInfo = fmt.Sprintf("%s RESP%s%s%s%s", modelInfo, streamInfo, tokenInfo, toolInfo, contentPreview)
+		}
+
+	case event.LLMMessageTypeStreamEnd:
+		msgInfo = fmt.Sprintf("%s STREAM_END", modelInfo)
+
+	default:
+		msgInfo = fmt.Sprintf("%s %s", modelInfo, string(msg.MessageType))
+	}
+
+	fmt.Fprintf(d.writer, "%s", msgInfo)
 }
