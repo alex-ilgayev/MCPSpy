@@ -99,3 +99,22 @@ scenarios:
       message_count:
         min: 20
         max: 30
+
+  # Claude Code CLI scenario
+  - name: "claude-code-init"
+    description: "Test Claude Code CLI initialization with MCP servers"
+
+    traffic:
+      # Run Claude Code with the test config - it will initialize and connect to MCP servers
+      # Provide a simple prompt and exit immediately to trigger MCP initialization
+      command:
+        [
+          "bash",
+          "-c",
+          "echo 'exit' | npx -y @anthropic-ai/claude-code --strict-mcp-config --mcp-config tests/claude_config.json 2>&1",
+        ]
+      timeout_seconds: 30
+
+    validation:
+      message_count:
+        min: 10

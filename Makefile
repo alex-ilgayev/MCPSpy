@@ -199,7 +199,7 @@ test-e2e-mcp-https: test-e2e-setup ## Run e2e test without MCPSpy for HTTPS tran
 test-e2e-stdio: build test-e2e-setup ## Run end-to-end test for stdio transport
 	@echo "Running end-to-end test for stdio transport..."
 	@echo "Note: MCPSpy requires root privileges for eBPF operations"
-	sudo -E tests/venv/bin/python tests/e2e_test.py \
+	sudo -E env PATH="$$PATH" tests/venv/bin/python tests/e2e_test.py \
 		--config tests/e2e_config.yaml \
 		--scenario stdio-fastmcp
 
@@ -208,16 +208,34 @@ test-e2e-stdio: build test-e2e-setup ## Run end-to-end test for stdio transport
 test-e2e-https: build test-e2e-setup ## Run end-to-end test for HTTP transport
 	@echo "Running end-to-end test for HTTP transport..."
 	@echo "Note: MCPSpy requires root privileges for eBPF operations"
-	sudo -E tests/venv/bin/python tests/e2e_test.py \
+	sudo -E env PATH="$$PATH" tests/venv/bin/python tests/e2e_test.py \
 		--config tests/e2e_config.yaml \
 		--scenario http-fastmcp
+
+# Run e2e scenarios without MCPSpy (traffic generation only) - Claude Code
+.PHONY: test-e2e-mcp-claude
+test-e2e-mcp-claude: test-e2e-setup ## Run e2e test without MCPSpy for Claude Code
+	@echo "Running e2e test without MCPSpy for Claude Code..."
+	tests/venv/bin/python tests/e2e_test.py \
+		--config tests/e2e_config.yaml \
+		--scenario claude-code-init \
+		--skip-mcpspy
+
+# Run end-to-end test for Claude Code
+.PHONY: test-e2e-claude
+test-e2e-claude: build test-e2e-setup ## Run end-to-end test for Claude Code
+	@echo "Running end-to-end test for Claude Code..."
+	@echo "Note: MCPSpy requires root privileges for eBPF operations"
+	sudo -E env PATH="$$PATH" tests/venv/bin/python tests/e2e_test.py \
+		--config tests/e2e_config.yaml \
+		--scenario claude-code-init
 
 # Run end-to-end tests for all transports
 .PHONY: test-e2e
 test-e2e: build test-e2e-setup ## Run end-to-end tests for all transports
 	@echo "Running all end-to-end test scenarios..."
 	@echo "Note: MCPSpy requires root privileges for eBPF operations"
-	sudo -E tests/venv/bin/python tests/e2e_test.py \
+	sudo -E env PATH="$$PATH" tests/venv/bin/python tests/e2e_test.py \
 		--config tests/e2e_config.yaml
 
 # Update expected output files for stdio transport
@@ -225,7 +243,7 @@ test-e2e: build test-e2e-setup ## Run end-to-end tests for all transports
 test-e2e-update-stdio: build test-e2e-setup ## Update expected output files for stdio transport
 	@echo "Updating expected output for stdio transport..."
 	@echo "Note: MCPSpy requires root privileges for eBPF operations"
-	sudo -E tests/venv/bin/python tests/e2e_test.py \
+	sudo -E env PATH="$$PATH" tests/venv/bin/python tests/e2e_test.py \
 		--config tests/e2e_config.yaml \
 		--scenario stdio-fastmcp \
 		--update-expected
@@ -235,7 +253,7 @@ test-e2e-update-stdio: build test-e2e-setup ## Update expected output files for 
 test-e2e-update-https: build test-e2e-setup ## Update expected output files for HTTP transport
 	@echo "Updating expected output for HTTP transport..."
 	@echo "Note: MCPSpy requires root privileges for eBPF operations"
-	sudo -E tests/venv/bin/python tests/e2e_test.py \
+	sudo -E env PATH="$$PATH" tests/venv/bin/python tests/e2e_test.py \
 		--config tests/e2e_config.yaml \
 		--scenario http-fastmcp \
 		--update-expected
@@ -245,7 +263,7 @@ test-e2e-update-https: build test-e2e-setup ## Update expected output files for 
 test-e2e-update: build test-e2e-setup ## Update expected output files for all transports
 	@echo "Updating expected output for all scenarios..."
 	@echo "Note: MCPSpy requires root privileges for eBPF operations"
-	sudo -E tests/venv/bin/python tests/e2e_test.py \
+	sudo -E env PATH="$$PATH" tests/venv/bin/python tests/e2e_test.py \
 		--config tests/e2e_config.yaml \
 		--update-expected
 
@@ -255,7 +273,7 @@ test-smoke: ## Run smoke test (basic startup/shutdown test)
 	@echo "Note: MCPSpy requires root privileges for eBPF operations"
 	@chmod +x tests/smoke_test.sh
 	@chmod +x $(BUILD_DIR)/$(BINARY_NAME)-$(PLATFORM)
-	sudo -E tests/smoke_test.sh $(BUILD_DIR)/$(BINARY_NAME)-$(PLATFORM)
+	sudo -E env PATH="$$PATH" tests/smoke_test.sh $(BUILD_DIR)/$(BINARY_NAME)-$(PLATFORM)
 
 # Help
 PHONY: help

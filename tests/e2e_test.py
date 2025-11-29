@@ -226,6 +226,18 @@ class ValidationEngine:
 
         print(f"📊 Captured {len(captured_messages)} messages")
 
+        # Validate message count (do this first, works with or without expected file)
+        if validation_config.message_count:
+            if not self._validate_message_count(
+                len(captured_messages), validation_config.message_count
+            ):
+                return False
+
+        # If no expected output file specified, only message count validation is done
+        if not validation_config.expected_output_file:
+            print("✅ Message count validation passed (no expected file comparison)")
+            return True
+
         # Resolve expected output file path
         expected_file = Path(validation_config.expected_output_file)
         if not expected_file.is_absolute():
@@ -249,13 +261,6 @@ class ValidationEngine:
             return False
 
         print(f"📋 Expected {len(expected_messages)} messages")
-
-        # Validate message count
-        if validation_config.message_count:
-            if not self._validate_message_count(
-                len(captured_messages), validation_config.message_count
-            ):
-                return False
 
         # Validate using DeepDiff
         return self._validate_deepdiff(

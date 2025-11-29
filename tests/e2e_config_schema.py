@@ -136,9 +136,11 @@ class Scenario(BaseModel):
     @field_validator("validation")
     @classmethod
     def validate_expected_output_file(cls, v: ValidationConfig) -> ValidationConfig:
-        """Ensure scenario validation has expected_output_file."""
-        if v.expected_output_file is None:
-            raise ValueError("Scenario validation must specify 'expected_output_file'")
+        """Ensure scenario validation has either expected_output_file or message_count."""
+        if v.expected_output_file is None and v.message_count is None:
+            raise ValueError(
+                "Scenario validation must specify either 'expected_output_file' or 'message_count'"
+            )
         return v
 
 
