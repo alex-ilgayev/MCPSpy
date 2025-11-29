@@ -13,6 +13,7 @@ import (
 // JSONLDisplay handles JSONL output formatting
 // Subscribes to the following events:
 // - EventTypeMCPMessage
+// - EventTypeLLMMessage
 type JSONLDisplay struct {
 	writer   io.Writer
 	eventBus bus.EventBus
@@ -27,6 +28,11 @@ func NewJSONLDisplay(writer io.Writer, eventBus bus.EventBus) (*JSONLDisplay, er
 
 	// Subscribe to MCP events
 	if err := eventBus.Subscribe(event.EventTypeMCPMessage, j.printMessage); err != nil {
+		return nil, err
+	}
+
+	// Subscribe to LLM events
+	if err := eventBus.Subscribe(event.EventTypeLLMMessage, j.printLLMMessage); err != nil {
 		return nil, err
 	}
 
@@ -48,7 +54,7 @@ func (j *JSONLDisplay) PrintInfo(format string, args ...interface{}) {
 	// No info messages for JSONL format
 }
 
-// printMessage outputs a single message in JSON format
+// printMessage outputs a single MCP message in JSON format
 func (j *JSONLDisplay) printMessage(e event.Event) {
 	msg, ok := e.(*event.MCPEvent)
 	if !ok {
@@ -58,6 +64,24 @@ func (j *JSONLDisplay) printMessage(e event.Event) {
 	data, err := json.Marshal(msg)
 	if err != nil {
 		logrus.WithError(err).Error("failed to marshal message")
+		return
+	}
+
+	fmt.Fprintf(j.writer, "%s\n", string(data))
+}
+
+// printLLMMessage outputs a single LLM message in JSON format
+func (j *JSONLDisplay) printLLMMessage(e event.Event) {
+	msg, ok := e.(*event.LLMEvent)
+	if !ok {
+		return
+	}
+
+	// Skip individual stream chunks to reduce noise (optional - can be configurable)
+	// For now, we include all messages including chunks for comprehensive logging
+	data, err := json.Marshal(msg)
+	if err != nil {
+		logrus.WithError(err).Error("failed to marshal LLM message")
 		return
 	}
 

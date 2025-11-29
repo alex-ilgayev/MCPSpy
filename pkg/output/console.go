@@ -17,6 +17,7 @@ import (
 // ConsoleDisplay handles the CLI output formatting for console output
 // Subscribes to the following events:
 // - EventTypeMCPMessage
+// - EventTypeLLMMessage
 type ConsoleDisplay struct {
 	writer      io.Writer
 	showBuffers bool
@@ -36,6 +37,11 @@ func NewConsoleDisplay(writer io.Writer, showBuffers bool, eventBus bus.EventBus
 		return nil, err
 	}
 
+	// Subscribe to LLM events
+	if err := eventBus.Subscribe(event.EventTypeLLMMessage, d.printLLMMessage); err != nil {
+		return nil, err
+	}
+
 	return d, nil
 }
 
@@ -50,6 +56,7 @@ var (
 	errorCodeColor = color.New(color.FgHiRed)
 	headerColor    = color.New(color.FgWhite, color.Bold)
 	idColor        = color.New(color.FgHiBlack)
+	llmModelColor  = color.New(color.FgMagenta)
 )
 
 // PrintHeader prints the MCPSpy header
@@ -234,4 +241,54 @@ func (d *ConsoleDisplay) printBuffer(content string) {
 
 	// Print bottom border
 	fmt.Fprintln(d.writer, "└────")
+}
+
+// printLLMMessage prints an LLM API message
+func (d *ConsoleDisplay) printLLMMessage(e event.Event) {
+	msg, ok := e.(*event.LLMEvent)
+	if !ok {
+		return
+	}
+
+	// Format: TIMESTAMP LLM COMM[PID] → api.anthropic.com [MODEL] REQ/RESP "content..."
+	ts := timestampColor.Sprint(msg.Timestamp.Format("15:04:05.000"))
+
+	commFlow := fmt.Sprintf("%s %s[%s] → %s",
+		transportColor.Sprint("LLM"),
+		commColor.Sprint(msg.Comm),
+		pidColor.Sprint(msg.PID),
+		commColor.Sprint("api.anthropic.com"),
+	)
+
+	modelInfo := ""
+	if msg.Model != "" {
+		modelInfo = llmModelColor.Sprintf("[%s] ", msg.Model)
+	}
+
+	var msgType, content string
+	switch msg.MessageType {
+	case event.LLMMessageTypeRequest:
+		msgType = methodColor.Sprint("REQ")
+		content = msg.Content
+	case event.LLMMessageTypeResponse:
+		if msg.Error != "" {
+			msgType = errorColor.Sprint("ERR")
+			content = msg.Error
+		} else {
+			msgType = "RESP"
+			content = msg.Content
+		}
+	}
+
+	// Truncate content for display
+	contentPreview := ""
+	if content != "" {
+		if len(content) > 60 {
+			contentPreview = fmt.Sprintf(" \"%s...\"", content[:60])
+		} else {
+			contentPreview = fmt.Sprintf(" \"%s\"", content)
+		}
+	}
+
+	fmt.Fprintf(d.writer, "%s %s %s%s%s\n", ts, commFlow, modelInfo, msgType, contentPreview)
 }

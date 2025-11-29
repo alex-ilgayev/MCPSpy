@@ -30,6 +30,8 @@ const (
 	EventTypeFSAggregatedRead EventType = 104
 	// Complete JSON message aggregated from raw FS write events
 	EventTypeFSAggregatedWrite EventType = 105
+	// Detected a parsed LLM API message (OpenAI, Anthropic, Gemini, etc.)
+	EventTypeLLMMessage EventType = 110
 )
 
 type HttpVersion uint8
@@ -77,6 +79,8 @@ func (e EventType) String() string {
 		return "fs_aggregated_read"
 	case EventTypeFSAggregatedWrite:
 		return "fs_aggregated_write"
+	case EventTypeLLMMessage:
+		return "llm_message"
 	default:
 		return "unknown"
 	}

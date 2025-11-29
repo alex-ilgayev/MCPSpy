@@ -267,6 +267,26 @@ test-e2e-update: build test-e2e-setup ## Update expected output files for all tr
 		--config tests/e2e_config.yaml \
 		--update-expected
 
+##@ LLM Monitoring Test Targets
+
+# Run e2e test for Anthropic API monitoring
+.PHONY: test-e2e-llm
+test-e2e-llm: build test-e2e-setup ## Run end-to-end test for Anthropic API monitoring
+	@echo "Running end-to-end test for Anthropic API monitoring..."
+	@echo "Note: MCPSpy requires root privileges for eBPF operations"
+	sudo -E tests/venv/bin/python tests/e2e_test.py \
+		--config tests/e2e_config.yaml \
+		--scenario llm-anthropic
+
+# Update expected output for LLM Anthropic tests
+.PHONY: test-e2e-llm-update
+test-e2e-llm-update: build test-e2e-setup ## Update expected output for Anthropic API tests
+	@echo "Updating expected output for Anthropic API tests..."
+	sudo -E tests/venv/bin/python tests/e2e_test.py \
+		--config tests/e2e_config.yaml \
+		--scenario llm-anthropic \
+		--update-expected
+
 .PHONY: test-smoke
 test-smoke: ## Run smoke test (basic startup/shutdown test)
 	@echo "Running smoke test..."

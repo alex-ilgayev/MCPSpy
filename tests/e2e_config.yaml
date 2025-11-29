@@ -118,3 +118,111 @@ scenarios:
     validation:
       message_count:
         min: 10
+
+  # LLM API Monitoring Scenarios
+  # ============================
+  # These scenarios test LLM API interception with the --llm flag
+
+  # OpenAI API scenario
+  - name: "llm-openai"
+    description: "Test OpenAI API monitoring (streaming and non-streaming)"
+
+    # Override mcpspy flags to enable LLM monitoring
+    mcpspy:
+      flags:
+        [
+          "--tui=false",
+          "--log-level",
+          "trace",
+          "--llm",
+          "--llm-providers",
+          "openai",
+        ]
+
+    # Start mock OpenAI server before MCPSpy
+    pre_commands:
+      - command:
+          [
+            "tests/venv/bin/python",
+            "tests/mock_llm_servers/mock_openai_server.py",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            "8001",
+            "--ssl",
+          ]
+        background: true
+        wait_seconds: 2.0
+
+    traffic:
+      command:
+        [
+          "tests/venv/bin/python",
+          "tests/llm_test_clients/test_openai_client.py",
+          "--url",
+          "https://127.0.0.1:8001",
+        ]
+      timeout_seconds: 30
+
+    # Stop mock server after test
+    post_commands:
+      - command: ["pkill", "-f", "mock_openai_server"]
+
+    validation:
+      expected_output_file: "expected_output_llm_openai.jsonl"
+      message_count:
+        min: 5
+        max: 30
+      deepdiff:
+        ignore_order: true
+        exclude_regex_paths:
+          - "root\\[\\d+\\]\\['timestamp'\\]"
+          - "root\\[\\d+\\]\\['transport'\\]\\['pid'\\]"
+          - "root\\[\\d+\\]\\['request_id'\\]"
+          - "root\\[\\d+\\]\\['raw'\\]"
+          - "root\\[\\d+\\]\\['chunk_index'\\]"
+
+  # Anthropic Claude API scenario
+  - name: "llm-anthropic"
+    description: "Test Anthropic Claude API monitoring (streaming and non-streaming)"
+
+    mcpspy:
+      flags: ["--tui=false", "--log-level", "trace", "--llm"]
+
+    pre_commands:
+      - command:
+          [
+            "tests/venv/bin/python",
+            "tests/mock_llm_servers/mock_anthropic_server.py",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            "8002",
+            "--ssl",
+          ]
+        background: true
+        wait_seconds: 2.0
+
+    traffic:
+      command:
+        [
+          "tests/venv/bin/python",
+          "tests/llm_test_clients/test_anthropic_client.py",
+          "--url",
+          "https://127.0.0.1:8002",
+        ]
+      timeout_seconds: 30
+
+    post_commands:
+      - command: ["pkill", "-f", "mock_anthropic_server"]
+
+    validation:
+      expected_output_file: "expected_output_llm_anthropic.jsonl"
+      message_count:
+        min: 5
+        max: 30
+      deepdiff:
+        ignore_order: true
+        exclude_regex_paths:
+          - "root\\[\\d+\\]\\['timestamp'\\]"
+          - "root\\[\\d+\\]\\['pid'\\]"

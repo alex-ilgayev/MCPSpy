@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"syscall"
 
 	"github.com/sirupsen/logrus"
@@ -15,6 +16,7 @@ import (
 	"github.com/alex-ilgayev/mcpspy/pkg/ebpf"
 	"github.com/alex-ilgayev/mcpspy/pkg/fs"
 	"github.com/alex-ilgayev/mcpspy/pkg/http"
+	"github.com/alex-ilgayev/mcpspy/pkg/llm"
 	"github.com/alex-ilgayev/mcpspy/pkg/mcp"
 	"github.com/alex-ilgayev/mcpspy/pkg/namespace"
 	"github.com/alex-ilgayev/mcpspy/pkg/output"
@@ -25,11 +27,12 @@ import (
 
 // Command line flags
 var (
-	showBuffers bool
-	verbose     bool
-	outputFile  string
-	logLevel    string
-	tui         bool
+	showBuffers      bool
+	verbose          bool
+	outputFile       string
+	logLevel         string
+	tui              bool
+	enableLLMMonitor bool
 )
 
 func main() {
@@ -49,6 +52,7 @@ communication by tracking stdio operations and analyzing JSON-RPC 2.0 messages.`
 	rootCmd.Flags().StringVarP(&outputFile, "output", "o", "", "Output file (JSONL format will be written to file)")
 	rootCmd.Flags().StringVarP(&logLevel, "log-level", "l", "info", "Set log level (trace, debug, info, warn, error, fatal, panic)")
 	rootCmd.Flags().BoolVar(&tui, "tui", true, "Enable TUI (Terminal UI) mode. Use --tui=false to disable and use static console output")
+	rootCmd.Flags().BoolVar(&enableLLMMonitor, "llm", false, "Enable Anthropic API monitoring")
 
 	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)
@@ -241,6 +245,19 @@ func run(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to create MCP parser: %w", err)
 	}
 	defer parser.Close()
+
+	// Create LLM parser if enabled (opt-in)
+	if enableLLMMonitor {
+		llmParser, err := llm.NewParser(eventBus)
+		if err != nil {
+			return fmt.Errorf("failed to create LLM parser: %w", err)
+		}
+		defer llmParser.Close()
+
+		if !tui {
+			consoleDisplay.PrintInfo("Anthropic API monitoring enabled")
+		}
+	}
 
 	// Run TUI or wait for context cancellation
 	if tui {
