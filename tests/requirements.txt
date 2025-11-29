@@ -4,3 +4,6 @@ mcp==1.12.2
 uvicorn[standard]>=0.30.0
 pyyaml
 pydantic>=2.0.0
+# LLM monitoring test dependencies
+fastapi>=0.109.0
+httpx>=0.26.0
