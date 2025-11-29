@@ -68,6 +68,10 @@ class TrafficConfig(BaseModel):
     environment: Optional[Dict[str, str]] = Field(
         default=None, description="Environment variables for traffic command"
     )
+    post_traffic_wait_seconds: float = Field(
+        default=0.0,
+        description="Seconds to wait after traffic completes before stopping MCPSpy (useful for async operations like security analysis)",
+    )
 
 
 class MessageCountConfig(BaseModel):

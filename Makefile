@@ -169,6 +169,21 @@ test-unit: ## Run unit tests
 	@echo "Running unit tests..."
 	$(GO) test $(TEST_FLAGS) ./...
 
+# Run all integration tests
+.PHONY: test-integration
+test-integration: test-integration-security ## Run all integration tests (requires HF_TOKEN)
+
+# Run security integration tests (requires HF_TOKEN)
+.PHONY: test-integration-security
+test-integration-security: ## Run security integration tests with real HuggingFace API (requires HF_TOKEN)
+	@echo "Running security integration tests..."
+	@if [ -z "$$HF_TOKEN" ]; then \
+		echo "Error: HF_TOKEN environment variable is not set"; \
+		echo "Usage: HF_TOKEN=hf_xxx make test-integration"; \
+		exit 1; \
+	fi
+	$(GO) test -v -tags=integration -timeout=300s ./pkg/security/...
+
 # Setup e2e test environment
 .PHONY: test-e2e-setup
 test-e2e-setup: ## Setup Python e2e test environment
@@ -192,6 +207,15 @@ test-e2e-mcp-https: test-e2e-setup ## Run e2e test without MCPSpy for HTTPS tran
 	tests/venv/bin/python tests/e2e_test.py \
 		--config tests/e2e_config.yaml \
 		--scenario http-fastmcp \
+		--skip-mcpspy
+
+# Run e2e scenarios without MCPSpy (traffic generation only) - security test
+.PHONY: test-e2e-mcp-security
+test-e2e-mcp-security: test-e2e-setup ## Run security e2e test without MCPSpy (traffic generation only)
+	@echo "Running security e2e test without MCPSpy..."
+	tests/venv/bin/python tests/e2e_test.py \
+		--config tests/e2e_config.yaml \
+		--scenario security-injection \
 		--skip-mcpspy
 
 # Run end-to-end test for stdio transport
@@ -266,6 +290,16 @@ test-e2e-update: build test-e2e-setup ## Update expected output files for all tr
 	sudo -E env PATH="$$PATH" tests/venv/bin/python tests/e2e_test.py \
 		--config tests/e2e_config.yaml \
 		--update-expected
+
+# Run security E2E test (requires HF_TOKEN environment variable)
+.PHONY: test-e2e-security
+test-e2e-security: build test-e2e-setup ## Run security/prompt injection E2E test (requires HF_TOKEN)
+	@echo "Running security E2E test..."
+	@echo "Note: Requires HF_TOKEN environment variable and root privileges"
+	@if [ -z "$$HF_TOKEN" ]; then echo "ERROR: HF_TOKEN environment variable is required"; exit 1; fi
+	sudo -E tests/venv/bin/python tests/e2e_test.py \
+		--config tests/e2e_config.yaml \
+		--scenario security-injection
 
 .PHONY: test-smoke
 test-smoke: ## Run smoke test (basic startup/shutdown test)

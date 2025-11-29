@@ -47,16 +47,18 @@ struct correlation_result {
 
 // Correlate pipe read operation
 // Returns true if both reader and writer are known
-static __always_inline bool correlate_pipe_read(
-    __u32 inode, __u32 pid, struct correlation_result *result) {
+static __always_inline bool
+correlate_pipe_read(__u32 inode, __u32 pid, struct correlation_result *result) {
     struct inode_process_info *info =
         bpf_map_lookup_elem(&inode_process_map, &inode);
     if (!info) {
         // First access - create entry with reader info
         struct inode_process_info new_info = {0};
         new_info.reader_pid = pid;
-        bpf_get_current_comm(new_info.reader_comm, sizeof(new_info.reader_comm));
-        if (bpf_map_update_elem(&inode_process_map, &inode, &new_info, BPF_ANY)) {
+        bpf_get_current_comm(new_info.reader_comm,
+                             sizeof(new_info.reader_comm));
+        if (bpf_map_update_elem(&inode_process_map, &inode, &new_info,
+                                BPF_ANY)) {
             LOG_WARN("correlate_pipe_read: failed to create map entry");
         }
         return false;
@@ -93,16 +95,19 @@ static __always_inline bool correlate_pipe_read(
 
 // Correlate pipe write operation
 // Returns true if both reader and writer are known
-static __always_inline bool correlate_pipe_write(
-    __u32 inode, __u32 pid, struct correlation_result *result) {
+static __always_inline bool
+correlate_pipe_write(__u32 inode, __u32 pid,
+                     struct correlation_result *result) {
     struct inode_process_info *info =
         bpf_map_lookup_elem(&inode_process_map, &inode);
     if (!info) {
         // First access - create entry with writer info
         struct inode_process_info new_info = {0};
         new_info.writer_pid = pid;
-        bpf_get_current_comm(new_info.writer_comm, sizeof(new_info.writer_comm));
-        if (bpf_map_update_elem(&inode_process_map, &inode, &new_info, BPF_ANY)) {
+        bpf_get_current_comm(new_info.writer_comm,
+                             sizeof(new_info.writer_comm));
+        if (bpf_map_update_elem(&inode_process_map, &inode, &new_info,
+                                BPF_ANY)) {
             LOG_WARN("correlate_pipe_write: failed to create map entry");
         }
         return false;
@@ -139,8 +144,9 @@ static __always_inline bool correlate_pipe_write(
 
 // Correlate Unix socket read operation
 // Returns true if both our socket and peer are known
-static __always_inline bool correlate_unix_socket_read(
-    struct file *file, __u32 pid, struct correlation_result *result) {
+static __always_inline bool
+correlate_unix_socket_read(struct file *file, __u32 pid,
+                           struct correlation_result *result) {
     struct sock *sk = get_sock_from_file(file);
     if (!sk) {
         return false;
@@ -189,8 +195,9 @@ static __always_inline bool correlate_unix_socket_read(
 
 // Correlate Unix socket write operation
 // Returns true if both our socket and peer are known
-static __always_inline bool correlate_unix_socket_write(
-    struct file *file, __u32 pid, struct correlation_result *result) {
+static __always_inline bool
+correlate_unix_socket_write(struct file *file, __u32 pid,
+                            struct correlation_result *result) {
     struct sock *sk = get_sock_from_file(file);
     if (!sk) {
         return false;

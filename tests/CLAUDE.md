@@ -20,6 +20,21 @@ make test-e2e-https      # HTTPS transport
 ```bash
 make test-e2e-mcp-stdio      # Stdio transport
 make test-e2e-mcp-https      # HTTPS transport
+make test-e2e-mcp-security   # Security/injection test
+```
+
+### Run Security/Prompt Injection E2E Test
+
+Requires `HF_TOKEN` environment variable:
+
+```bash
+HF_TOKEN=your_huggingface_token make test-e2e-security
+```
+
+Update expected output:
+
+```bash
+HF_TOKEN=your_token make test-e2e-update-security
 ```
 
 ### Update Expected Outputs
@@ -82,14 +97,29 @@ python tests/e2e_test.py --config tests/e2e_config.yaml --verbose
 - All MCP message types over HTTP
 - StreamableHTTP protocol handling
 
+### security-injection
+
+**What it tests:**
+
+- Prompt injection detection via HuggingFace API
+- Security alert event generation for malicious content
+- Benign vs malicious content classification
+- Integration of security analyzer with MCP event processing
+
+**Requirements:**
+
+- `HF_TOKEN` environment variable with valid HuggingFace API token
+
 ## File Reference
 
-| File                       | Purpose                                                |
-| -------------------------- | ------------------------------------------------------ |
-| `e2e_test.py`              | Main test runner - loads config and executes scenarios |
-| `e2e_config.yaml`          | Test scenario definitions and validation rules         |
-| `e2e_config_schema.py`     | Pydantic schema for config validation                  |
-| `mcp_server.py`            | FastMCP test server (stdio/http/sse transports)        |
-| `mcp_client.py`            | MCP client that generates test traffic                 |
-| `expected_output_*.jsonl`  | Expected captured messages per scenario                |
-| `server.key`, `server.crt` | Self-signed SSL certificates for HTTPS tests           |
+| File                             | Purpose                                                |
+| -------------------------------- | ------------------------------------------------------ |
+| `e2e_test.py`                    | Main test runner - loads config and executes scenarios |
+| `e2e_config.yaml`                | Test scenario definitions and validation rules         |
+| `e2e_config_schema.py`           | Pydantic schema for config validation                  |
+| `mcp_server.py`                  | FastMCP test server (stdio/http/sse transports)        |
+| `mcp_client.py`                  | MCP client that generates test traffic                 |
+| `expected_output_stdio.jsonl`    | Expected output for stdio transport                    |
+| `expected_output_http.jsonl`     | Expected output for HTTP transport                     |
+| `expected_output_security.jsonl` | Expected output for security/injection test            |
+| `server.key`, `server.crt`       | Self-signed SSL certificates for HTTPS tests           |

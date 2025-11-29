@@ -76,8 +76,10 @@ struct unix_sock_process_info {
 
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
-    __uint(max_entries, 2048); // 2x pipe map since Unix sockets need 2 entries per connection
-    __type(key, __u64);        // struct sock* pointer
+    __uint(
+        max_entries,
+        2048); // 2x pipe map since Unix sockets need 2 entries per connection
+    __type(key, __u64); // struct sock* pointer
     __type(value, struct unix_sock_process_info);
 } unix_sock_process_map SEC(".maps");
 

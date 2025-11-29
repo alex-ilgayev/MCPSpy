@@ -30,6 +30,8 @@ const (
 	EventTypeFSAggregatedRead EventType = 104
 	// Complete JSON message aggregated from raw FS write events
 	EventTypeFSAggregatedWrite EventType = 105
+	// Security alert event (injection/jailbreak detected)
+	EventTypeSecurityAlert EventType = 106
 )
 
 type HttpVersion uint8
@@ -77,6 +79,8 @@ func (e EventType) String() string {
 		return "fs_aggregated_read"
 	case EventTypeFSAggregatedWrite:
 		return "fs_aggregated_write"
+	case EventTypeSecurityAlert:
+		return "security_alert"
 	default:
 		return "unknown"
 	}

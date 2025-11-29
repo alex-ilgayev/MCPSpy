@@ -24,7 +24,10 @@ mcpspy/
 │   ├── fs/              # Filesystem (stdio) session management and JSON aggregation
 │   ├── http/            # HTTP transport parsing and analysis
 │   ├── mcp/             # MCP protocol parsing and analysis
-│   └── output/          # Output formatting (console, and file output)
+│   ├── output/          # Output formatting (console, and file output)
+│   └── security/        # Prompt injection detection via HuggingFace API
+│       ├── hf/          # HuggingFace Inference API client
+│       └── testdata/    # Test samples for security integration tests
 ├── internal/
 │   └── testing/         # Testing utilities (mock event bus, etc.)
 ├── bpf/                 # eBPF C programs
@@ -106,6 +109,34 @@ Running solely the mcp e2e tests (without mcpspy):
 ```bash
 make test-e2e-mcp-stdio
 make test-e2e-mcp-https
+make test-e2e-mcp-security  # Security/injection test
 ```
 
 **Note:** E2E tests automatically run MCPSpy in static mode (`--tui=false`) to capture output for validation. The test configuration is in `tests/e2e_config.yaml`.
+
+## Integration Tests
+
+Integration tests verify functionality with real external services. Currently includes security/prompt injection detection tests with HuggingFace API:
+
+```bash
+# Run all integration tests (requires HF_TOKEN)
+HF_TOKEN=hf_xxx make test-integration
+
+# Run only security integration tests
+HF_TOKEN=hf_xxx make test-integration-security
+
+# Override the model (default: protectai/deberta-v3-base-prompt-injection-v2)
+HF_TOKEN=hf_xxx HF_MODEL=meta-llama/Llama-Prompt-Guard-2-86M make test-integration
+```
+
+**Test structure:**
+
+- `pkg/security/testdata/samples.json` - Test samples (benign and malicious)
+- `pkg/security/hf/integration_test.go` - HF client integration tests
+- `pkg/security/integration_test.go` - Full analyzer integration tests with event bus
+
+**Notes:**
+
+- Integration tests use build tag `//go:build integration`
+- Default model is `protectai/deberta-v3-base-prompt-injection-v2` (non-gated)
+- Unit tests run without API calls via mock HTTP server

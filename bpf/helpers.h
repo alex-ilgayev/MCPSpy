@@ -137,7 +137,8 @@ static __always_inline bool is_unix_socket(struct file *file) {
 // Check if file is an allowed IPC mechanism for MCP communication.
 // Allowed types:
 // - Pipes (S_IFIFO) - standard stdio transport
-// - Unix domain sockets (AF_UNIX + SOCK_STREAM) - used by some clients like Claude
+// - Unix domain sockets (AF_UNIX + SOCK_STREAM) - used by some clients like
+// Claude
 static __always_inline bool is_ipc_allowed(struct file *file) {
     return is_pipe(file) || is_unix_socket(file);
 }
@@ -222,8 +223,8 @@ static __always_inline bool should_ignore_pid(__u32 pid) {
     bpf_get_current_comm(comm, sizeof(comm));
 
     // Check if comm starts with "mcpspy"
-    if (comm[0] == 'm' && comm[1] == 'c' && comm[2] == 'p' &&
-        comm[3] == 's' && comm[4] == 'p' && comm[5] == 'y') {
+    if (comm[0] == 'm' && comm[1] == 'c' && comm[2] == 'p' && comm[3] == 's' &&
+        comm[4] == 'p' && comm[5] == 'y') {
         return true;
     }
 

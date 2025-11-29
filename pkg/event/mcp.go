@@ -123,6 +123,67 @@ func (msg *MCPEvent) ExtractToolName() string {
 	return ""
 }
 
+// Copy creates a deep copy of the MCPEvent to avoid data races in async processing
+func (e *MCPEvent) Copy() *MCPEvent {
+	cp := &MCPEvent{
+		Timestamp:     e.Timestamp,
+		TransportType: e.TransportType,
+		Raw:           e.Raw,
+		JSONRPCMessage: JSONRPCMessage{
+			MessageType: e.MessageType,
+			ID:          e.ID,
+			Method:      e.Method,
+			Result:      e.Result,
+			Error:       e.Error,
+		},
+	}
+
+	// Deep copy Params map
+	if e.Params != nil {
+		cp.Params = make(map[string]interface{}, len(e.Params))
+		for k, v := range e.Params {
+			cp.Params[k] = v
+		}
+	}
+
+	// Deep copy Request if present
+	if e.Request != nil {
+		cp.Request = &JSONRPCMessage{
+			MessageType: e.Request.MessageType,
+			ID:          e.Request.ID,
+			Method:      e.Request.Method,
+			Result:      e.Request.Result,
+			Error:       e.Request.Error,
+		}
+		if e.Request.Params != nil {
+			cp.Request.Params = make(map[string]interface{}, len(e.Request.Params))
+			for k, v := range e.Request.Params {
+				cp.Request.Params[k] = v
+			}
+		}
+	}
+
+	// Deep copy transport info
+	if e.StdioTransport != nil {
+		cp.StdioTransport = &StdioTransport{
+			FromPID:  e.StdioTransport.FromPID,
+			FromComm: e.StdioTransport.FromComm,
+			ToPID:    e.StdioTransport.ToPID,
+			ToComm:   e.StdioTransport.ToComm,
+		}
+	}
+	if e.HttpTransport != nil {
+		cp.HttpTransport = &HttpTransport{
+			PID:       e.HttpTransport.PID,
+			Comm:      e.HttpTransport.Comm,
+			Host:      e.HttpTransport.Host,
+			IsRequest: e.HttpTransport.IsRequest,
+		}
+	}
+
+	return cp
+}
+
 // ExtractResourceURI attempts to extract resource URI from resource-related requests
 func (msg *MCPEvent) ExtractResourceURI() string {
 	// Check if this is a resource method that has a URI parameter

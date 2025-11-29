@@ -36,20 +36,28 @@ func NewConsoleDisplay(writer io.Writer, showBuffers bool, eventBus bus.EventBus
 		return nil, err
 	}
 
+	// Subscribe to security alerts
+	if err := eventBus.Subscribe(event.EventTypeSecurityAlert, d.printSecurityAlert); err != nil {
+		return nil, err
+	}
+
 	return d, nil
 }
 
 // Colors for different elements
 var (
-	timestampColor = color.New(color.FgHiBlack)
-	transportColor = color.New(color.FgHiCyan)
-	pidColor       = color.New(color.FgCyan)
-	commColor      = color.New(color.FgYellow)
-	methodColor    = color.New(color.FgGreen)
-	errorColor     = color.New(color.FgRed)
-	errorCodeColor = color.New(color.FgHiRed)
-	headerColor    = color.New(color.FgWhite, color.Bold)
-	idColor        = color.New(color.FgHiBlack)
+	timestampColor     = color.New(color.FgHiBlack)
+	transportColor     = color.New(color.FgHiCyan)
+	pidColor           = color.New(color.FgCyan)
+	commColor          = color.New(color.FgYellow)
+	methodColor        = color.New(color.FgGreen)
+	errorColor         = color.New(color.FgRed)
+	errorCodeColor     = color.New(color.FgHiRed)
+	headerColor        = color.New(color.FgWhite, color.Bold)
+	idColor            = color.New(color.FgHiBlack)
+	securityAlertColor = color.New(color.FgRed, color.Bold)
+	securityWarnColor  = color.New(color.FgYellow, color.Bold)
+	securityLowColor   = color.New(color.FgYellow)
 )
 
 // PrintHeader prints the MCPSpy header
@@ -234,4 +242,71 @@ func (d *ConsoleDisplay) printBuffer(content string) {
 
 	// Print bottom border
 	fmt.Fprintln(d.writer, "└────")
+}
+
+// printSecurityAlert displays security warnings
+func (d *ConsoleDisplay) printSecurityAlert(e event.Event) {
+	alert, ok := e.(*event.SecurityAlertEvent)
+	if !ok {
+		return
+	}
+
+	// Format timestamp
+	ts := timestampColor.Sprint(alert.Timestamp.Format("15:04:05.000"))
+
+	// Build alert message
+	riskIndicator := d.getRiskIndicator(alert.RiskLevel)
+
+	fmt.Fprintf(d.writer, "\n%s %s SECURITY ALERT %s\n",
+		ts,
+		securityAlertColor.Sprint("[!]"),
+		securityAlertColor.Sprint(riskIndicator),
+	)
+
+	fmt.Fprintf(d.writer, "  Risk Level:  %s (score: %.2f)\n",
+		d.colorizeRiskLevel(alert.RiskLevel),
+		alert.RiskScore,
+	)
+	fmt.Fprintf(d.writer, "  Category:    %s\n", alert.Category)
+	fmt.Fprintf(d.writer, "  Method:      %s\n", methodColor.Sprint(alert.MCPEvent.Method))
+
+	if alert.MCPEvent.Method == "tools/call" {
+		if toolName := alert.MCPEvent.ExtractToolName(); toolName != "" {
+			fmt.Fprintf(d.writer, "  Tool:        %s\n", toolName)
+		}
+	}
+
+	fmt.Fprintf(d.writer, "  Content:     %s\n\n", alert.AnalyzedText)
+}
+
+// getRiskIndicator returns visual indicator based on risk level
+func (d *ConsoleDisplay) getRiskIndicator(level event.RiskLevel) string {
+	switch level {
+	case event.RiskLevelCritical:
+		return "CRITICAL"
+	case event.RiskLevelHigh:
+		return "HIGH"
+	case event.RiskLevelMedium:
+		return "MEDIUM"
+	case event.RiskLevelLow:
+		return "LOW"
+	default:
+		return ""
+	}
+}
+
+// colorizeRiskLevel applies color to risk level
+func (d *ConsoleDisplay) colorizeRiskLevel(level event.RiskLevel) string {
+	switch level {
+	case event.RiskLevelCritical:
+		return securityAlertColor.Sprint(string(level))
+	case event.RiskLevelHigh:
+		return errorColor.Sprint(string(level))
+	case event.RiskLevelMedium:
+		return securityWarnColor.Sprint(string(level))
+	case event.RiskLevelLow:
+		return securityLowColor.Sprint(string(level))
+	default:
+		return string(level)
+	}
 }

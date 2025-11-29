@@ -7,20 +7,21 @@ import (
 	"os/signal"
 	"strconv"
 	"syscall"
+	"time"
 
 	"github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
 
 	"github.com/alex-ilgayev/mcpspy/pkg/bus"
+	mcpspydebug "github.com/alex-ilgayev/mcpspy/pkg/debug"
 	"github.com/alex-ilgayev/mcpspy/pkg/ebpf"
 	"github.com/alex-ilgayev/mcpspy/pkg/fs"
 	"github.com/alex-ilgayev/mcpspy/pkg/http"
 	"github.com/alex-ilgayev/mcpspy/pkg/mcp"
 	"github.com/alex-ilgayev/mcpspy/pkg/namespace"
 	"github.com/alex-ilgayev/mcpspy/pkg/output"
+	"github.com/alex-ilgayev/mcpspy/pkg/security"
 	"github.com/alex-ilgayev/mcpspy/pkg/version"
-
-	mcpspydebug "github.com/alex-ilgayev/mcpspy/pkg/debug"
 )
 
 // Command line flags
@@ -30,6 +31,13 @@ var (
 	outputFile  string
 	logLevel    string
 	tui         bool
+
+	// Security flags
+	securityEnabled   bool
+	securityHFToken   string
+	securityModel     string
+	securityThreshold float64
+	securityAsync     bool
 )
 
 func main() {
@@ -49,6 +57,13 @@ communication by tracking stdio operations and analyzing JSON-RPC 2.0 messages.`
 	rootCmd.Flags().StringVarP(&outputFile, "output", "o", "", "Output file (JSONL format will be written to file)")
 	rootCmd.Flags().StringVarP(&logLevel, "log-level", "l", "info", "Set log level (trace, debug, info, warn, error, fatal, panic)")
 	rootCmd.Flags().BoolVar(&tui, "tui", true, "Enable TUI (Terminal UI) mode. Use --tui=false to disable and use static console output")
+
+	// Security flags
+	rootCmd.Flags().BoolVar(&securityEnabled, "security", false, "Enable prompt injection detection")
+	rootCmd.Flags().StringVar(&securityHFToken, "hf-token", "", "HuggingFace API token for security analysis (required if --security is set)")
+	rootCmd.Flags().StringVar(&securityModel, "security-model", "meta-llama/Llama-Prompt-Guard-2-86M", "HuggingFace model for injection detection")
+	rootCmd.Flags().Float64Var(&securityThreshold, "security-threshold", 0.5, "Risk score threshold for detection (0.0-1.0)")
+	rootCmd.Flags().BoolVar(&securityAsync, "security-async", true, "Run security analysis asynchronously (non-blocking)")
 
 	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)
@@ -241,6 +256,36 @@ func run(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to create MCP parser: %w", err)
 	}
 	defer parser.Close()
+
+	// Security analyzer (optional)
+	if securityEnabled {
+		if securityHFToken == "" {
+			return fmt.Errorf("--hf-token is required when --security is enabled")
+		}
+
+		secConfig := security.Config{
+			Enabled:             true,
+			HFToken:             securityHFToken,
+			Model:               securityModel,
+			Threshold:           securityThreshold,
+			AsyncMode:           securityAsync,
+			AnalyzeResponses:    true, // Always analyze both requests and responses
+			Timeout:             10 * time.Second,
+			MaxTextLength:       4096,
+			HighRiskMethodsOnly: security.DefaultConfig().HighRiskMethodsOnly,
+		}
+
+		analyzer, err := security.NewAnalyzer(secConfig, eventBus)
+		if err != nil {
+			return fmt.Errorf("failed to create security analyzer: %w", err)
+		}
+		defer analyzer.Close()
+
+		if !tui {
+			consoleDisplay.PrintInfo("Security analysis enabled (model: %s, threshold: %.2f)",
+				secConfig.Model, secConfig.Threshold)
+		}
+	}
 
 	// Run TUI or wait for context cancellation
 	if tui {

@@ -35,6 +35,7 @@ The Model Context Protocol supports three transport protocols for communication:
 The Model Context Protocol is becoming the standard for AI tool integration, but understanding what's happening under the hood can be challenging. MCPSpy addresses this by providing:
 
 - **🔒 Security Analysis**: Monitor what data is being transmitted, detect PII leakage, and audit tool executions
+- **🛡️ Prompt Injection Detection**: Real-time detection of prompt injection and jailbreak attempts using ML models
 - **🐛 Debugging**: Troubleshoot MCP integrations by seeing the actual message flow
 - **📊 Performance Monitoring**: Track message patterns and identify bottlenecks
 - **🔍 Compliance**: Ensure MCP communications meet regulatory requirements
@@ -176,6 +177,46 @@ sudo mcpspy -o output.jsonl
 
 # Stop monitoring with Ctrl+C (or 'q' in TUI mode)
 ```
+
+### Prompt Injection Detection
+
+MCPSpy includes optional real-time prompt injection detection using HuggingFace's Inference API. When enabled, it analyzes MCP tool calls for potential injection attacks and jailbreak attempts.
+
+**Detection coverage:**
+
+1. **Request-based injection**: Detects malicious prompts in tool call arguments
+2. **Response-based injection**: Detects malicious content in tool responses that could manipulate the agent
+
+```bash
+# Enable security scanning with HuggingFace token
+sudo mcpspy --security --hf-token=hf_xxxxx
+
+# Use a custom detection model
+sudo mcpspy --security --hf-token=hf_xxxxx --security-model=protectai/deberta-v3-base-prompt-injection-v2
+
+# Adjust detection threshold (default: 0.5)
+sudo mcpspy --security --hf-token=hf_xxxxx --security-threshold=0.7
+
+# Run analysis synchronously (blocks until analysis completes)
+sudo mcpspy --security --hf-token=hf_xxxxx --security-async=false
+```
+
+**Security CLI Flags:**
+
+| Flag                   | Description                                               | Default                               |
+| ---------------------- | --------------------------------------------------------- | ------------------------------------- |
+| `--security`           | Enable prompt injection detection                         | `false`                               |
+| `--hf-token`           | HuggingFace API token (required when security is enabled) | -                                     |
+| `--security-model`     | HuggingFace model for detection                           | `meta-llama/Llama-Prompt-Guard-2-86M` |
+| `--security-threshold` | Detection threshold (0.0-1.0)                             | `0.5`                                 |
+| `--security-async`     | Run analysis asynchronously                               | `true`                                |
+
+**Supported Models:**
+
+- `meta-llama/Llama-Prompt-Guard-2-86M` (default, requires HF license acceptance)
+- `protectai/deberta-v3-base-prompt-injection-v2` (publicly accessible)
+
+When a potential injection is detected, MCPSpy displays a security alert with risk level (low/medium/high/critical), category, and the analyzed content.
 
 ### Output Format
 
@@ -380,6 +421,15 @@ MCPSpy uses an event-driven architecture with a publish-subscribe pattern to dec
 - Subscribes to all events on the event bus for debugging
 - Provides detailed logging of event flow through the system
 - Configurable log levels for different event types
+
+### 8. Security Analyzer (`pkg/security/`)
+
+- Optional component for real-time prompt injection detection
+- Subscribes to MCP message events from the event bus
+- Analyzes high-risk methods (`tools/call`, `resources/read`, `prompts/get`)
+- Uses HuggingFace Inference API with configurable ML models
+- Publishes security alerts when injections are detected
+- Supports async and sync analysis modes
 
 ## Development
 

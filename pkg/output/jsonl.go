@@ -30,6 +30,11 @@ func NewJSONLDisplay(writer io.Writer, eventBus bus.EventBus) (*JSONLDisplay, er
 		return nil, err
 	}
 
+	// Subscribe to security alerts
+	if err := eventBus.Subscribe(event.EventTypeSecurityAlert, j.printSecurityAlert); err != nil {
+		return nil, err
+	}
+
 	return j, nil
 }
 
@@ -58,6 +63,22 @@ func (j *JSONLDisplay) printMessage(e event.Event) {
 	data, err := json.Marshal(msg)
 	if err != nil {
 		logrus.WithError(err).Error("failed to marshal message")
+		return
+	}
+
+	fmt.Fprintf(j.writer, "%s\n", string(data))
+}
+
+// printSecurityAlert outputs a security alert in JSON format
+func (j *JSONLDisplay) printSecurityAlert(e event.Event) {
+	alert, ok := e.(*event.SecurityAlertEvent)
+	if !ok {
+		return
+	}
+
+	data, err := json.Marshal(alert)
+	if err != nil {
+		logrus.WithError(err).Error("failed to marshal security alert")
 		return
 	}
 

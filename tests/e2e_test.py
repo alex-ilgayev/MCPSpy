@@ -515,6 +515,13 @@ class ScenarioRunner:
                 self._print_logs_on_failure()
                 return False
 
+            # Wait for async operations to complete (e.g., security analysis)
+            if self.scenario.traffic.post_traffic_wait_seconds > 0:
+                self._log(
+                    f"Waiting {self.scenario.traffic.post_traffic_wait_seconds}s for async operations..."
+                )
+                time.sleep(self.scenario.traffic.post_traffic_wait_seconds)
+
             # Stop MCPSpy
             self._stop_mcpspy()
 
@@ -594,6 +601,20 @@ class ScenarioRunner:
             except Exception as e:
                 print(f"⚠️  Post-command failed: {e}")
 
+    def _expand_env_vars(self, flags: List[str]) -> List[str]:
+        """Expand environment variables in flags (e.g., ${HF_TOKEN})."""
+        import re
+        result = []
+        for flag in flags:
+            # Expand ${VAR} or $VAR patterns
+            expanded = re.sub(
+                r'\$\{([^}]+)\}|\$([A-Za-z_][A-Za-z0-9_]*)',
+                lambda m: os.environ.get(m.group(1) or m.group(2), ''),
+                flag
+            )
+            result.append(expanded)
+        return result
+
     def _start_mcpspy(self) -> None:
         """Start MCPSpy process in background."""
         cmd = [
@@ -603,7 +624,9 @@ class ScenarioRunner:
             "--output",
             self.output_file,
         ]
-        cmd.extend(self.scenario.mcpspy.flags)
+        # Expand environment variables in flags
+        expanded_flags = self._expand_env_vars(self.scenario.mcpspy.flags)
+        cmd.extend(expanded_flags)
 
         self._log(f"Starting MCPSpy: {' '.join(cmd)}")
 

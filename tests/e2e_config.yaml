@@ -118,3 +118,59 @@ scenarios:
     validation:
       message_count:
         min: 10
+
+  # Security/Prompt Injection detection scenario
+  # This test requires HF_TOKEN environment variable to be set
+  - name: "security-injection"
+    description: "Test prompt injection detection with security monitoring enabled"
+
+    pre_commands:
+      - command:
+          [
+            "bash",
+            "-c",
+            'if [ -z "$HF_TOKEN" ]; then echo ''ERROR: HF_TOKEN environment variable is required''; exit 1; fi',
+          ]
+        timeout_seconds: 5
+
+    mcpspy:
+      # Additional flags for security features - token comes from wrapper script
+      flags:
+        [
+          "--tui=false",
+          "--log-level",
+          "trace",
+          "--security",
+          "--hf-token",
+          "${HF_TOKEN}",
+          "--security-threshold",
+          "0.5",
+        ]
+
+    traffic:
+      command:
+        [
+          "bash",
+          "-c",
+          "tests/venv/bin/python tests/mcp_client.py --server 'tests/venv/bin/python tests/mcp_server.py' --security-test",
+        ]
+      working_directory: "."
+      timeout_seconds: 60
+      # Wait for async HuggingFace API calls to complete.
+      # Security analysis runs asynchronously by default. The HF API typically
+      # takes 3-5s per request (cold start can be longer if model needs loading).
+      # 15s allows for 2-3 analysis calls with margin for API latency variance.
+      post_traffic_wait_seconds: 15
+
+    validation:
+      message_count:
+        min: 19
+        max: 20
+      deepdiff:
+        ignore_order: true
+        exclude_regex_paths:
+          # Exclude security alert dynamic fields (model scores vary slightly)
+          - "root\\[\\d+\\]\\['risk_score'\\]"
+          - "root\\[\\d+\\]\\['mcp_event'\\]\\['timestamp'\\]"
+          - "root\\[\\d+\\]\\['mcp_event'\\]\\['stdio_transport'\\]"
+          - "root\\[\\d+\\]\\['mcp_event'\\]\\['raw'\\]"
