@@ -143,16 +143,24 @@ static __always_inline __u32 get_file_mount_ns_id(struct file *file) {
 static __always_inline bool should_ignore_pid(__u32 pid) {
     __u32 key = 0;
     __u32 *mcpspy_pid = bpf_map_lookup_elem(&mcpspy_pid_map, &key);
-    if (!mcpspy_pid) {
-        return false;
+
+    // Check PID match (if set)
+    if (mcpspy_pid && *mcpspy_pid != 0 && pid == *mcpspy_pid) {
+        return true;
     }
 
-    // 0 means not set, so don't filter
-    if (*mcpspy_pid == 0) {
-        return false;
+    // Also check by comm name - handles cases where PID namespace differs
+    // (e.g., WSL environments)
+    char comm[TASK_COMM_LEN];
+    bpf_get_current_comm(comm, sizeof(comm));
+
+    // Check if comm starts with "mcpspy"
+    if (comm[0] == 'm' && comm[1] == 'c' && comm[2] == 'p' &&
+        comm[3] == 's' && comm[4] == 'p' && comm[5] == 'y') {
+        return true;
     }
 
-    return pid == *mcpspy_pid;
+    return false;
 }
 
 #endif // __HELPERS_H
