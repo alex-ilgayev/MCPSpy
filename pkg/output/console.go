@@ -17,6 +17,7 @@ import (
 // ConsoleDisplay handles the CLI output formatting for console output
 // Subscribes to the following events:
 // - EventTypeMCPMessage
+// - EventTypeLLMMessage
 type ConsoleDisplay struct {
 	writer      io.Writer
 	showBuffers bool
@@ -41,6 +42,11 @@ func NewConsoleDisplay(writer io.Writer, showBuffers bool, eventBus bus.EventBus
 		return nil, err
 	}
 
+	// Subscribe to LLM events
+	if err := eventBus.Subscribe(event.EventTypeLLMMessage, d.printLLMMessage); err != nil {
+		return nil, err
+	}
+
 	return d, nil
 }
 
@@ -58,6 +64,7 @@ var (
 	securityAlertColor = color.New(color.FgRed, color.Bold)
 	securityWarnColor  = color.New(color.FgYellow, color.Bold)
 	securityLowColor   = color.New(color.FgYellow)
+	llmModelColor      = color.New(color.FgMagenta)
 )
 
 // PrintHeader prints the MCPSpy header
@@ -309,4 +316,73 @@ func (d *ConsoleDisplay) colorizeRiskLevel(level event.RiskLevel) string {
 	default:
 		return string(level)
 	}
+}
+
+// printLLMMessage prints an LLM API message
+func (d *ConsoleDisplay) printLLMMessage(e event.Event) {
+	msg, ok := e.(*event.LLMEvent)
+	if !ok {
+		return
+	}
+
+	// Format: TIMESTAMP LLM [FROM] → [TO] [MODEL] TYPE "content..."
+	ts := timestampColor.Sprint(msg.Timestamp.Format("15:04:05.000"))
+
+	// Direction depends on message type: request goes out, response/stream comes back
+	var commFlow string
+	switch msg.MessageType {
+	case event.LLMMessageTypeRequest:
+		// Request: client → server
+		commFlow = fmt.Sprintf("%s %s[%s] → %s",
+			transportColor.Sprint("LLM"),
+			commColor.Sprint(msg.Comm),
+			pidColor.Sprint(msg.PID),
+			commColor.Sprint(msg.Host),
+		)
+	case event.LLMMessageTypeStreamChunk, event.LLMMessageTypeResponse:
+		// Response/Stream: server → client
+		commFlow = fmt.Sprintf("%s %s → %s[%s]",
+			transportColor.Sprint("LLM"),
+			commColor.Sprint(msg.Host),
+			commColor.Sprint(msg.Comm),
+			pidColor.Sprint(msg.PID),
+		)
+	}
+
+	modelInfo := ""
+	if msg.Model != "" {
+		modelInfo = llmModelColor.Sprintf("[%s] ", msg.Model)
+	}
+
+	var msgType, content string
+	switch msg.MessageType {
+	case event.LLMMessageTypeRequest:
+		msgType = methodColor.Sprint("REQ")
+		content = msg.Content
+	case event.LLMMessageTypeStreamChunk:
+		msgType = idColor.Sprint("STRM")
+		content = msg.Content // Delta only
+	case event.LLMMessageTypeResponse:
+		if msg.Error != "" {
+			msgType = errorColor.Sprint("ERR")
+			content = msg.Error
+		} else {
+			msgType = methodColor.Sprint("RESP")
+			content = msg.Content
+		}
+	}
+
+	// Truncate content for display
+	contentPreview := ""
+	if content != "" {
+		// Escape newlines for single-line display
+		displayContent := strings.ReplaceAll(content, "\n", "\\n")
+		if len(displayContent) > 60 {
+			contentPreview = fmt.Sprintf(" \"%s...\"", displayContent[:60])
+		} else {
+			contentPreview = fmt.Sprintf(" \"%s\"", displayContent)
+		}
+	}
+
+	fmt.Fprintf(d.writer, "%s %s %s%s%s\n", ts, commFlow, modelInfo, msgType, contentPreview)
 }

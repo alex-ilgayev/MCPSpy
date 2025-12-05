@@ -17,6 +17,7 @@ import (
 	"github.com/alex-ilgayev/mcpspy/pkg/ebpf"
 	"github.com/alex-ilgayev/mcpspy/pkg/fs"
 	"github.com/alex-ilgayev/mcpspy/pkg/http"
+	"github.com/alex-ilgayev/mcpspy/pkg/llm"
 	"github.com/alex-ilgayev/mcpspy/pkg/mcp"
 	"github.com/alex-ilgayev/mcpspy/pkg/namespace"
 	"github.com/alex-ilgayev/mcpspy/pkg/output"
@@ -26,11 +27,12 @@ import (
 
 // Command line flags
 var (
-	showBuffers bool
-	verbose     bool
-	outputFile  string
-	logLevel    string
-	tui         bool
+	showBuffers      bool
+	verbose          bool
+	outputFile       string
+	logLevel         string
+	tui              bool
+	enableLLMMonitor bool
 
 	// Security flags
 	securityEnabled   bool
@@ -57,6 +59,7 @@ communication by tracking stdio operations and analyzing JSON-RPC 2.0 messages.`
 	rootCmd.Flags().StringVarP(&outputFile, "output", "o", "", "Output file (JSONL format will be written to file)")
 	rootCmd.Flags().StringVarP(&logLevel, "log-level", "l", "info", "Set log level (trace, debug, info, warn, error, fatal, panic)")
 	rootCmd.Flags().BoolVar(&tui, "tui", true, "Enable TUI (Terminal UI) mode. Use --tui=false to disable and use static console output")
+	rootCmd.Flags().BoolVar(&enableLLMMonitor, "llm", false, "Enable LLM API monitoring")
 
 	// Security flags
 	rootCmd.Flags().BoolVar(&securityEnabled, "security", false, "Enable prompt injection detection")
@@ -280,11 +283,15 @@ func run(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf("failed to create security analyzer: %w", err)
 		}
 		defer analyzer.Close()
+	}
 
-		if !tui {
-			consoleDisplay.PrintInfo("Security analysis enabled (model: %s, threshold: %.2f)",
-				secConfig.Model, secConfig.Threshold)
+	// Create LLM parser if enabled (opt-in)
+	if enableLLMMonitor {
+		llmParser, err := llm.NewParser(eventBus)
+		if err != nil {
+			return fmt.Errorf("failed to create LLM parser: %w", err)
 		}
+		defer llmParser.Close()
 	}
 
 	// Run TUI or wait for context cancellation

@@ -32,6 +32,8 @@ const (
 	EventTypeFSAggregatedWrite EventType = 105
 	// Security alert event (injection/jailbreak detected)
 	EventTypeSecurityAlert EventType = 106
+	// Detected a parsed LLM API message (OpenAI, Anthropic, Gemini, etc.)
+	EventTypeLLMMessage EventType = 107
 )
 
 type HttpVersion uint8
@@ -81,6 +83,8 @@ func (e EventType) String() string {
 		return "fs_aggregated_write"
 	case EventTypeSecurityAlert:
 		return "security_alert"
+	case EventTypeLLMMessage:
+		return "llm_message"
 	default:
 		return "unknown"
 	}
