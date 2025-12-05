@@ -1,6 +1,8 @@
 package http
 
 import (
+	"bytes"
+	"compress/gzip"
 	"fmt"
 	"reflect"
 	"testing"
@@ -1926,5 +1928,191 @@ func TestExtractSSEEventData(t *testing.T) {
 				t.Errorf("extractSSEEventData() data = %q, want %q", dataStr, tt.expectedData)
 			}
 		})
+	}
+}
+
+// gzipCompress is a helper function to compress data using gzip
+func gzipCompress(data []byte) []byte {
+	var buf bytes.Buffer
+	w := gzip.NewWriter(&buf)
+	w.Write(data)
+	w.Close()
+	return buf.Bytes()
+}
+
+func TestSessionManager_GzipResponse(t *testing.T) {
+	mockBus := tu.NewMockBus()
+	sm, err := NewSessionManager(mockBus)
+	if err != nil {
+		t.Fatalf("Failed to create SessionManager: %v", err)
+	}
+	defer sm.Close()
+
+	sslCtx := uint64(111111)
+
+	// Request
+	requestData := []byte("GET /api/data HTTP/1.1\r\nHost: example.com\r\nAccept-Encoding: gzip\r\n\r\n")
+	requestEvent := &event.TlsPayloadEvent{
+		EventHeader: event.EventHeader{
+			EventType: event.EventTypeTlsPayloadSend,
+		},
+		SSLContext:  sslCtx,
+		HttpVersion: event.HttpVersion1,
+		BufSize:     uint32(len(requestData)),
+	}
+	copy(requestEvent.Buf[:], requestData)
+	sm.ProcessTlsEvent(requestEvent)
+
+	// Consume request event
+	select {
+	case evt := <-mockBus.Events():
+		if evt.Type() != event.EventTypeHttpRequest {
+			t.Fatalf("Expected EventTypeHttpRequest, got %v", evt.Type())
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("No request event received")
+	}
+
+	// Create gzip-compressed response body
+	originalBody := `{"status":"ok","message":"Hello, World!"}`
+	compressedBody := gzipCompress([]byte(originalBody))
+
+	// Build response with gzip content
+	responseHeaders := fmt.Sprintf("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Encoding: gzip\r\nContent-Length: %d\r\n\r\n", len(compressedBody))
+	responseData := append([]byte(responseHeaders), compressedBody...)
+
+	responseEvent := &event.TlsPayloadEvent{
+		EventHeader: event.EventHeader{
+			EventType: event.EventTypeTlsPayloadRecv,
+		},
+		SSLContext:  sslCtx,
+		HttpVersion: event.HttpVersion1,
+		BufSize:     uint32(len(responseData)),
+	}
+	copy(responseEvent.Buf[:], responseData)
+	sm.ProcessTlsEvent(responseEvent)
+
+	// Check response event
+	select {
+	case evt := <-mockBus.Events():
+		if evt.Type() != event.EventTypeHttpResponse {
+			t.Errorf("Expected EventTypeHttpResponse, got %v", evt.Type())
+		}
+		httpEvent := evt.(*event.HttpResponseEvent)
+		if httpEvent.Code != 200 {
+			t.Errorf("Expected status code 200, got %d", httpEvent.Code)
+		}
+		// The response payload should be decompressed
+		if string(httpEvent.ResponsePayload) != originalBody {
+			t.Errorf("Expected decompressed response payload %q, got %q", originalBody, httpEvent.ResponsePayload)
+		}
+		// Content-Encoding header should still be present
+		if httpEvent.ResponseHeaders["Content-Encoding"] != "gzip" {
+			t.Errorf("Expected Content-Encoding header 'gzip', got %s", httpEvent.ResponseHeaders["Content-Encoding"])
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("No response event received")
+	}
+}
+
+func TestSessionManager_GzipChunkedResponse(t *testing.T) {
+	mockBus := tu.NewMockBus()
+	sm, err := NewSessionManager(mockBus)
+	if err != nil {
+		t.Fatalf("Failed to create SessionManager: %v", err)
+	}
+	defer sm.Close()
+
+	sslCtx := uint64(222222)
+
+	// Request
+	requestData := []byte("GET /api/chunked HTTP/1.1\r\nHost: example.com\r\nAccept-Encoding: gzip\r\n\r\n")
+	requestEvent := &event.TlsPayloadEvent{
+		EventHeader: event.EventHeader{
+			EventType: event.EventTypeTlsPayloadSend,
+		},
+		SSLContext:  sslCtx,
+		HttpVersion: event.HttpVersion1,
+		BufSize:     uint32(len(requestData)),
+	}
+	copy(requestEvent.Buf[:], requestData)
+	sm.ProcessTlsEvent(requestEvent)
+
+	// Consume request event
+	select {
+	case evt := <-mockBus.Events():
+		if evt.Type() != event.EventTypeHttpRequest {
+			t.Fatalf("Expected EventTypeHttpRequest, got %v", evt.Type())
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("No request event received")
+	}
+
+	// Create gzip-compressed response body
+	originalBody := `{"data":"chunked gzip response"}`
+	compressedBody := gzipCompress([]byte(originalBody))
+
+	// Build chunked response with gzip content
+	// Format: headers + chunk size (hex) + CRLF + chunk data + CRLF + 0 + CRLF + CRLF
+	responseHeaders := "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Encoding: gzip\r\nTransfer-Encoding: chunked\r\n\r\n"
+	chunkSize := fmt.Sprintf("%x\r\n", len(compressedBody))
+	responseData := []byte(responseHeaders + chunkSize)
+	responseData = append(responseData, compressedBody...)
+	responseData = append(responseData, []byte("\r\n0\r\n\r\n")...)
+
+	responseEvent := &event.TlsPayloadEvent{
+		EventHeader: event.EventHeader{
+			EventType: event.EventTypeTlsPayloadRecv,
+		},
+		SSLContext:  sslCtx,
+		HttpVersion: event.HttpVersion1,
+		BufSize:     uint32(len(responseData)),
+	}
+	copy(responseEvent.Buf[:], responseData)
+	sm.ProcessTlsEvent(responseEvent)
+
+	// Check response event
+	select {
+	case evt := <-mockBus.Events():
+		if evt.Type() != event.EventTypeHttpResponse {
+			t.Errorf("Expected EventTypeHttpResponse, got %v", evt.Type())
+		}
+		httpEvent := evt.(*event.HttpResponseEvent)
+		if httpEvent.Code != 200 {
+			t.Errorf("Expected status code 200, got %d", httpEvent.Code)
+		}
+		if !httpEvent.IsChunked {
+			t.Error("Expected IsChunked to be true")
+		}
+		// The response payload should be decompressed
+		if string(httpEvent.ResponsePayload) != originalBody {
+			t.Errorf("Expected decompressed response payload %q, got %q", originalBody, httpEvent.ResponsePayload)
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("No response event received")
+	}
+}
+
+func TestParseHTTPResponse_Gzip(t *testing.T) {
+	// Test the parseHTTPResponse function directly with gzip content
+	originalBody := `{"test":"gzip parsing"}`
+	compressedBody := gzipCompress([]byte(originalBody))
+
+	responseData := fmt.Sprintf("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Encoding: gzip\r\nContent-Length: %d\r\n\r\n", len(compressedBody))
+	responseData += string(compressedBody)
+
+	resp := parseHTTPResponse([]byte(responseData))
+
+	if !resp.isComplete {
+		t.Fatal("Expected response to be complete")
+	}
+
+	if resp.statusCode != 200 {
+		t.Errorf("Expected status code 200, got %d", resp.statusCode)
+	}
+
+	// The body should be decompressed
+	if string(resp.body) != originalBody {
+		t.Errorf("Expected decompressed body %q, got %q (length %d)", originalBody, resp.body, len(resp.body))
 	}
 }

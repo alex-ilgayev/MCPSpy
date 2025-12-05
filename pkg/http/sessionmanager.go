@@ -2,7 +2,9 @@ package http
 
 import (
 	"bytes"
+	"compress/gzip"
 	"fmt"
+	"io"
 	"strings"
 	"sync"
 
@@ -31,6 +33,7 @@ type httpResponse struct {
 	body       []byte
 	isChunked  bool
 	isSSE      bool
+	isGzip     bool
 }
 
 // session tracks HTTP communication for a single SSL context
@@ -419,6 +422,8 @@ func parseHTTPResponse(data []byte) *httpResponse {
 				} else if lowerKey == "content-length" {
 					hasContentLength = true
 					fmt.Sscanf(value, "%d", &contentLength)
+				} else if lowerKey == "content-encoding" && strings.Contains(strings.ToLower(value), "gzip") {
+					resp.isGzip = true
 				}
 			}
 		}
@@ -459,7 +464,35 @@ func parseHTTPResponse(data []byte) *httpResponse {
 		}
 	}
 
+	// Decompress gzip-encoded body if response is complete
+	if resp.isComplete && resp.isGzip && len(resp.body) > 0 {
+		resp.body = decompressGzip(resp.body)
+	}
+
 	return resp
+}
+
+// decompressGzip decompresses gzip-encoded data
+// Returns the decompressed data or the original data if decompression fails
+func decompressGzip(data []byte) []byte {
+	if len(data) == 0 {
+		return data
+	}
+
+	reader, err := gzip.NewReader(bytes.NewReader(data))
+	if err != nil {
+		logrus.WithError(err).Debug("Failed to create gzip reader, returning original data")
+		return data
+	}
+	defer reader.Close()
+
+	decompressed, err := io.ReadAll(reader)
+	if err != nil {
+		logrus.WithError(err).Debug("Failed to decompress gzip data, returning original data")
+		return data
+	}
+
+	return decompressed
 }
 
 // parseChunkedBody attempts to parse chunked body data
