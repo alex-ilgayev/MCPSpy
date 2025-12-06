@@ -21,6 +21,7 @@ make test-e2e-https      # HTTPS transport
 make test-e2e-mcp-stdio      # Stdio transport
 make test-e2e-mcp-https      # HTTPS transport
 make test-e2e-mcp-security   # Security/injection test
+make test-e2e-mcp-llm        # LLM API monitoring test
 ```
 
 ### Run Security/Prompt Injection E2E Test
@@ -35,6 +36,20 @@ Update expected output:
 
 ```bash
 HF_TOKEN=your_token make test-e2e-update-security
+```
+
+### Run LLM API Monitoring E2E Test
+
+Requires `CLAUDE_CODE_OAUTH_TOKEN` environment variable:
+
+```bash
+CLAUDE_CODE_OAUTH_TOKEN=your_api_key make test-e2e-llm
+```
+
+Update expected output:
+
+```bash
+CLAUDE_CODE_OAUTH_TOKEN=your_api_key make test-e2e-update-llm
 ```
 
 ### Update Expected Outputs
@@ -110,16 +125,31 @@ python tests/e2e_test.py --config tests/e2e_config.yaml --verbose
 
 - `HF_TOKEN` environment variable with valid HuggingFace API token
 
+### llm-anthropic
+
+**What it tests:**
+
+- LLM API monitoring with Anthropic Claude API
+- Non-streaming API request/response capture
+- Streaming (SSE) API request/response capture
+- Model and content extraction from API calls
+
+**Requirements:**
+
+- `CLAUDE_CODE_OAUTH_TOKEN` environment variable with valid Claude Code OAuth API key
+
 ## File Reference
 
-| File                             | Purpose                                                |
-| -------------------------------- | ------------------------------------------------------ |
-| `e2e_test.py`                    | Main test runner - loads config and executes scenarios |
-| `e2e_config.yaml`                | Test scenario definitions and validation rules         |
-| `e2e_config_schema.py`           | Pydantic schema for config validation                  |
-| `mcp_server.py`                  | FastMCP test server (stdio/http/sse transports)        |
-| `mcp_client.py`                  | MCP client that generates test traffic                 |
-| `expected_output_stdio.jsonl`    | Expected output for stdio transport                    |
-| `expected_output_http.jsonl`     | Expected output for HTTP transport                     |
-| `expected_output_security.jsonl` | Expected output for security/injection test            |
-| `server.key`, `server.crt`       | Self-signed SSL certificates for HTTPS tests           |
+| File                                  | Purpose                                                |
+| ------------------------------------- | ------------------------------------------------------ |
+| `e2e_test.py`                         | Main test runner - loads config and executes scenarios |
+| `e2e_config.yaml`                     | Test scenario definitions and validation rules         |
+| `e2e_config_schema.py`                | Pydantic schema for config validation                  |
+| `mcp_server.py`                       | FastMCP test server (stdio/http/sse transports)        |
+| `mcp_client.py`                       | MCP client that generates test traffic                 |
+| `llm_client.py`                       | LLM API client for Anthropic API testing               |
+| `expected_output_stdio.jsonl`         | Expected output for stdio transport                    |
+| `expected_output_http.jsonl`          | Expected output for HTTP transport                     |
+| `expected_output_security.jsonl`      | Expected output for security/injection test            |
+| `expected_output_llm_anthropic.jsonl` | Expected output for LLM API monitoring test            |
+| `server.key`, `server.crt`            | Self-signed SSL certificates for HTTPS tests           |

@@ -119,6 +119,38 @@ scenarios:
       message_count:
         min: 10
 
+  # LLM API monitoring scenario (Anthropic)
+  # This test requires CLAUDE_CODE_OAUTH_TOKEN environment variable to be set
+  - name: "llm-anthropic"
+    description: "Test LLM API monitoring with Anthropic (streaming and non-streaming)"
+
+    mcpspy:
+      # Enable LLM monitoring
+      flags: ["--tui=false", "--log-level", "trace", "--llm"]
+
+    traffic:
+      command:
+        ["tests/venv/bin/python", "tests/llm_client.py", "--mode", "both"]
+      working_directory: "."
+      timeout_seconds: 120
+      # Wait for API responses to complete
+      post_traffic_wait_seconds: 5
+
+    validation:
+      expected_output_file: "expected_output_llm_anthropic.jsonl"
+      message_count:
+        min: 3
+        max: 50
+      deepdiff:
+        ignore_order: true
+        exclude_regex_paths:
+          # Exclude dynamic fields
+          - "root\\[\\d+\\]\\['timestamp'\\]"
+          - "root\\[\\d+\\]\\['session_id'\\]"
+          - "root\\[\\d+\\]\\['pid'\\]"
+          # Exclude content (varies per API call)
+          - "root\\[\\d+\\]\\['content'\\]"
+
   # Security/Prompt Injection detection scenario
   # This test requires HF_TOKEN environment variable to be set
   - name: "security-injection"

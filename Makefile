@@ -297,9 +297,35 @@ test-e2e-security: build test-e2e-setup ## Run security/prompt injection E2E tes
 	@echo "Running security E2E test..."
 	@echo "Note: Requires HF_TOKEN environment variable and root privileges"
 	@if [ -z "$$HF_TOKEN" ]; then echo "ERROR: HF_TOKEN environment variable is required"; exit 1; fi
-	sudo -E tests/venv/bin/python tests/e2e_test.py \
+	sudo -E env PATH="$$PATH" tests/venv/bin/python tests/e2e_test.py \
 		--config tests/e2e_config.yaml \
 		--scenario security-injection
+
+# Run e2e scenarios without MCPSpy (traffic generation only) - LLM Anthropic
+.PHONY: test-e2e-mcp-llm
+test-e2e-mcp-llm: test-e2e-setup ## Run LLM e2e test without MCPSpy (traffic generation only, requires CLAUDE_CODE_OAUTH_TOKEN)
+	@echo "Running LLM e2e test without MCPSpy..."
+	tests/venv/bin/python tests/e2e_test.py \
+		--config tests/e2e_config.yaml \
+		--scenario llm-anthropic \
+		--skip-mcpspy
+
+# Run LLM E2E test (requires CLAUDE_CODE_OAUTH_TOKEN environment variable)
+.PHONY: test-e2e-llm
+test-e2e-llm: build test-e2e-setup ## Run LLM API monitoring E2E test (requires CLAUDE_CODE_OAUTH_TOKEN)
+	@echo "Running LLM E2E test..."
+	sudo -E env PATH="$$PATH" tests/venv/bin/python tests/e2e_test.py \
+		--config tests/e2e_config.yaml \
+		--scenario llm-anthropic
+
+# Update expected output files for LLM scenario
+.PHONY: test-e2e-update-llm
+test-e2e-update-llm: build test-e2e-setup ## Update expected output files for LLM scenario (requires CLAUDE_CODE_OAUTH_TOKEN)
+	@echo "Updating expected output for LLM scenario..."
+	sudo -E env PATH="$$PATH" tests/venv/bin/python tests/e2e_test.py \
+		--config tests/e2e_config.yaml \
+		--scenario llm-anthropic \
+		--update-expected
 
 .PHONY: test-smoke
 test-smoke: ## Run smoke test (basic startup/shutdown test)
