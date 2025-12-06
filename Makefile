@@ -301,6 +301,37 @@ test-e2e-security: build test-e2e-setup ## Run security/prompt injection E2E tes
 		--config tests/e2e_config.yaml \
 		--scenario security-injection
 
+# Run e2e scenarios without MCPSpy (traffic generation only) - LLM Anthropic
+.PHONY: test-e2e-mcp-llm
+test-e2e-mcp-llm: test-e2e-setup ## Run LLM e2e test without MCPSpy (traffic generation only, requires ANTHROPIC_API_KEY)
+	@echo "Running LLM e2e test without MCPSpy..."
+	@if [ -z "$$ANTHROPIC_API_KEY" ]; then echo "ERROR: ANTHROPIC_API_KEY environment variable is required"; exit 1; fi
+	tests/venv/bin/python tests/e2e_test.py \
+		--config tests/e2e_config.yaml \
+		--scenario llm-anthropic \
+		--skip-mcpspy
+
+# Run LLM E2E test (requires ANTHROPIC_API_KEY environment variable)
+.PHONY: test-e2e-llm
+test-e2e-llm: build test-e2e-setup ## Run LLM API monitoring E2E test (requires ANTHROPIC_API_KEY)
+	@echo "Running LLM E2E test..."
+	@echo "Note: Requires ANTHROPIC_API_KEY environment variable and root privileges"
+	@if [ -z "$$ANTHROPIC_API_KEY" ]; then echo "ERROR: ANTHROPIC_API_KEY environment variable is required"; exit 1; fi
+	sudo -E tests/venv/bin/python tests/e2e_test.py \
+		--config tests/e2e_config.yaml \
+		--scenario llm-anthropic
+
+# Update expected output files for LLM scenario
+.PHONY: test-e2e-update-llm
+test-e2e-update-llm: build test-e2e-setup ## Update expected output files for LLM scenario (requires ANTHROPIC_API_KEY)
+	@echo "Updating expected output for LLM scenario..."
+	@echo "Note: Requires ANTHROPIC_API_KEY environment variable and root privileges"
+	@if [ -z "$$ANTHROPIC_API_KEY" ]; then echo "ERROR: ANTHROPIC_API_KEY environment variable is required"; exit 1; fi
+	sudo -E tests/venv/bin/python tests/e2e_test.py \
+		--config tests/e2e_config.yaml \
+		--scenario llm-anthropic \
+		--update-expected
+
 .PHONY: test-smoke
 test-smoke: ## Run smoke test (basic startup/shutdown test)
 	@echo "Running smoke test..."
