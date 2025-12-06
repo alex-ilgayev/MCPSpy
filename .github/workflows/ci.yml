@@ -60,6 +60,7 @@ jobs:
 
       - name: Run end-to-end tests
         env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: make test-e2e
