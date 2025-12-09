@@ -1,5 +1,8 @@
 # MCPSpy - MCP Monitoring with eBPF 🕵️✨
 
+[![Run in Smithery](https://smithery.ai/badge/skills/alex-ilgayev)](https://smithery.ai/skills?ns=alex-ilgayev&utm_source=github&utm_medium=badge)
+
+
 [![CI](https://github.com/alex-ilgayev/mcpspy/actions/workflows/ci.yml/badge.svg)](https://github.com/alex-ilgayev/mcpspy/actions/workflows/ci.yml)
 [![Go Version](https://img.shields.io/badge/go-1.24+-blue.svg)](https://golang.org)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
