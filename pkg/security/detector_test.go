@@ -36,7 +36,7 @@ func TestDefaultConfig(t *testing.T) {
 	cfg := DefaultConfig()
 
 	assert.False(t, cfg.Enabled, "expected Enabled to be false by default")
-	assert.Equal(t, "meta-llama/Llama-Prompt-Guard-2-86M", cfg.Model)
+	assert.Equal(t, "protectai/deberta-v3-base-prompt-injection-v2", cfg.Model)
 	assert.Equal(t, 0.5, cfg.Threshold)
 	assert.Equal(t, 10*time.Second, cfg.Timeout)
 	assert.True(t, cfg.AsyncMode, "expected AsyncMode to be true by default")

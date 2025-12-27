@@ -126,7 +126,7 @@ HF_TOKEN=hf_xxx make test-integration
 HF_TOKEN=hf_xxx make test-integration-security
 
 # Override the model (default: protectai/deberta-v3-base-prompt-injection-v2)
-HF_TOKEN=hf_xxx HF_MODEL=meta-llama/Llama-Prompt-Guard-2-86M make test-integration
+HF_TOKEN=hf_xxx HF_MODEL=your-model-name make test-integration
 ```
 
 **Test structure:**

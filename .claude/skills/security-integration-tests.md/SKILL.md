@@ -80,8 +80,8 @@ Integration tests use the build tag `//go:build integration` and are excluded fr
 ### "Forbidden" Error
 
 - Ensure HF_TOKEN is set and valid
-- Check if the model requires license acceptance (Llama models are gated)
-- Default test model is `protectai/deberta-v3-base-prompt-injection-v2` (non-gated)
+- Note: `meta-llama/Llama-Prompt-Guard-2-86M` is deprecated on HF Inference API
+- Default test model is `protectai/deberta-v3-base-prompt-injection-v2` (publicly accessible)
 
 ### Model Loading
 

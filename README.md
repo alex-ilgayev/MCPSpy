@@ -207,14 +207,14 @@ sudo mcpspy --security --hf-token=hf_xxxxx --security-async=false
 | ---------------------- | --------------------------------------------------------- | ------------------------------------- |
 | `--security`           | Enable prompt injection detection                         | `false`                               |
 | `--hf-token`           | HuggingFace API token (required when security is enabled) | -                                     |
-| `--security-model`     | HuggingFace model for detection                           | `meta-llama/Llama-Prompt-Guard-2-86M` |
+| `--security-model`     | HuggingFace model for detection                           | `protectai/deberta-v3-base-prompt-injection-v2` |
 | `--security-threshold` | Detection threshold (0.0-1.0)                             | `0.5`                                 |
 | `--security-async`     | Run analysis asynchronously                               | `true`                                |
 
 **Supported Models:**
 
-- `meta-llama/Llama-Prompt-Guard-2-86M` (default, requires HF license acceptance)
-- `protectai/deberta-v3-base-prompt-injection-v2` (publicly accessible)
+- `protectai/deberta-v3-base-prompt-injection-v2` (default, publicly accessible)
+- `meta-llama/Llama-Prompt-Guard-2-86M` (deprecated on HF Inference API)
 
 When a potential injection is detected, MCPSpy displays a security alert with risk level (low/medium/high/critical), category, and the analyzed content.
 

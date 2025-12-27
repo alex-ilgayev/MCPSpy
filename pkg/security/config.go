@@ -10,7 +10,7 @@ type Config struct {
 	// HFToken is the Hugging Face API token
 	HFToken string
 
-	// Model to use (default: meta-llama/Llama-Prompt-Guard-2-86M)
+	// Model to use (default: protectai/deberta-v3-base-prompt-injection-v2)
 	Model string
 
 	// Threshold for detection (default: 0.5)
@@ -40,7 +40,7 @@ type Config struct {
 func DefaultConfig() Config {
 	return Config{
 		Enabled:          false,
-		Model:            "meta-llama/Llama-Prompt-Guard-2-86M",
+		Model:            "protectai/deberta-v3-base-prompt-injection-v2",
 		Threshold:        0.5,
 		Timeout:          10 * time.Second,
 		AsyncMode:        true,
