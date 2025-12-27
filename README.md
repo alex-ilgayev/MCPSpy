@@ -473,6 +473,32 @@ The test suite includes:
 - **Inode Collision for Stdio Transport**: Inode numbers are only unique within a filesystem. If monitoring processes across multiple filesystems or mount namespaces, inode collisions are theoretically possible but rare in practice for pipe-based stdio communication.
 - **Platform**: Linux only (kernel 5.15+).
 
+## Agentic Workflows Setup
+
+MCPSpy supports development with AI coding assistants like Claude Code. Since mcpspy requires root privileges for eBPF operations, you need to configure passwordless sudo to enable autonomous test execution.
+
+### Configuring Sudoers for Passwordless Execution
+
+Create a sudoers rule that allows your user to run mcpspy without a password. The E2E tests use the binary at `build/mcpspy-linux-amd64` (or `build/mcpspy-linux-arm64` on ARM):
+
+```bash
+# Option 1: Using visudo (opens editor)
+sudo visudo -f /etc/sudoers.d/mcpspy
+# Add this line (replace YOUR_USERNAME and adjust path as needed):
+# YOUR_USERNAME ALL=(ALL) NOPASSWD: /home/YOUR_USERNAME/mcpspy/build/mcpspy-linux-amd64
+
+# Option 2: One-liner (replace YOUR_USERNAME and path)
+echo 'YOUR_USERNAME ALL=(ALL) NOPASSWD: /home/YOUR_USERNAME/mcpspy/build/mcpspy-linux-amd64' | sudo tee /etc/sudoers.d/mcpspy && sudo chmod 440 /etc/sudoers.d/mcpspy
+```
+
+After configuration, verify it works:
+
+```bash
+sudo /path/to/build/mcpspy-linux-amd64 --help  # Should not prompt for password
+```
+
+This enables AI assistants to run E2E tests (`make test-e2e`) which require sudo for eBPF operations.
+
 ## Contributing
 
 We welcome contributions! Feel free to open an issue or a pull request.

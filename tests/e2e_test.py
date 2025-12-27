@@ -543,12 +543,25 @@ class ScenarioRunner:
             self._cleanup()
 
     def _create_temp_files(self) -> None:
-        """Create temporary output and log files."""
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".jsonl", delete=False) as f:
-            self.output_file = f.name
+        """Create temporary output and log files.
 
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".log", delete=False) as f:
+        Files are created in the tests directory (not /tmp) to avoid permission
+        issues with sudo and the sticky bit on /tmp.
+        """
+        tests_dir = Path(__file__).parent
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".jsonl", delete=False, dir=tests_dir
+        ) as f:
+            self.output_file = f.name
+        # Make output file writable by root (mcpspy runs via sudo)
+        os.chmod(self.output_file, 0o666)
+
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".log", delete=False, dir=tests_dir
+        ) as f:
             self.log_file = f.name
+        # Make log file writable by root (mcpspy runs via sudo)
+        os.chmod(self.log_file, 0o666)
 
         self._log(f"Output file: {self.output_file}")
         self._log(f"Log file: {self.log_file}")

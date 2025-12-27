@@ -1,5 +1,5 @@
 # Manual added .gitignore file for MCPSpy project
-
+.worktrees
 venv
 .venv
 __pycache__
@@ -8,6 +8,10 @@ pkg/ebpf/mcpspy_bpfel_*
 .vscode
 mcpspy
 .idea/*
+
+# Test temp files (created by e2e tests)
+tests/tmp*.jsonl
+tests/tmp*.log
 
 # Created by https://www.toptal.com/developers/gitignore/api/vagrant
 # Edit at https://www.toptal.com/developers/gitignore?templates=vagrant

@@ -222,8 +222,8 @@ test-e2e-mcp-security: test-e2e-setup ## Run security e2e test without MCPSpy (t
 .PHONY: test-e2e-stdio
 test-e2e-stdio: build test-e2e-setup ## Run end-to-end test for stdio transport
 	@echo "Running end-to-end test for stdio transport..."
-	@echo "Note: MCPSpy requires root privileges for eBPF operations"
-	sudo -E env PATH="$$PATH" tests/venv/bin/python tests/e2e_test.py \
+	@echo "Note: MCPSpy requires root privileges for eBPF operations (uses sudo -n internally)"
+	tests/venv/bin/python tests/e2e_test.py \
 		--config tests/e2e_config.yaml \
 		--scenario stdio-fastmcp
 
@@ -231,8 +231,8 @@ test-e2e-stdio: build test-e2e-setup ## Run end-to-end test for stdio transport
 .PHONY: test-e2e-https
 test-e2e-https: build test-e2e-setup ## Run end-to-end test for HTTP transport
 	@echo "Running end-to-end test for HTTP transport..."
-	@echo "Note: MCPSpy requires root privileges for eBPF operations"
-	sudo -E env PATH="$$PATH" tests/venv/bin/python tests/e2e_test.py \
+	@echo "Note: MCPSpy requires root privileges for eBPF operations (uses sudo -n internally)"
+	tests/venv/bin/python tests/e2e_test.py \
 		--config tests/e2e_config.yaml \
 		--scenario http-fastmcp
 
@@ -249,8 +249,8 @@ test-e2e-mcp-claude: test-e2e-setup ## Run e2e test without MCPSpy for Claude Co
 .PHONY: test-e2e-claude
 test-e2e-claude: build test-e2e-setup ## Run end-to-end test for Claude Code
 	@echo "Running end-to-end test for Claude Code..."
-	@echo "Note: MCPSpy requires root privileges for eBPF operations"
-	sudo -E env PATH="$$PATH" tests/venv/bin/python tests/e2e_test.py \
+	@echo "Note: MCPSpy requires root privileges for eBPF operations (uses sudo -n internally)"
+	tests/venv/bin/python tests/e2e_test.py \
 		--config tests/e2e_config.yaml \
 		--scenario claude-code-init
 
@@ -258,16 +258,16 @@ test-e2e-claude: build test-e2e-setup ## Run end-to-end test for Claude Code
 .PHONY: test-e2e
 test-e2e: build test-e2e-setup ## Run end-to-end tests for all transports
 	@echo "Running all end-to-end test scenarios..."
-	@echo "Note: MCPSpy requires root privileges for eBPF operations"
-	sudo -E env PATH="$$PATH" tests/venv/bin/python tests/e2e_test.py \
+	@echo "Note: MCPSpy requires root privileges for eBPF operations (uses sudo -n internally)"
+	tests/venv/bin/python tests/e2e_test.py \
 		--config tests/e2e_config.yaml
 
 # Update expected output files for stdio transport
 .PHONY: test-e2e-update-stdio
 test-e2e-update-stdio: build test-e2e-setup ## Update expected output files for stdio transport
 	@echo "Updating expected output for stdio transport..."
-	@echo "Note: MCPSpy requires root privileges for eBPF operations"
-	sudo -E env PATH="$$PATH" tests/venv/bin/python tests/e2e_test.py \
+	@echo "Note: MCPSpy requires root privileges for eBPF operations (uses sudo -n internally)"
+	tests/venv/bin/python tests/e2e_test.py \
 		--config tests/e2e_config.yaml \
 		--scenario stdio-fastmcp \
 		--update-expected
@@ -276,8 +276,8 @@ test-e2e-update-stdio: build test-e2e-setup ## Update expected output files for 
 .PHONY: test-e2e-update-https
 test-e2e-update-https: build test-e2e-setup ## Update expected output files for HTTP transport
 	@echo "Updating expected output for HTTP transport..."
-	@echo "Note: MCPSpy requires root privileges for eBPF operations"
-	sudo -E env PATH="$$PATH" tests/venv/bin/python tests/e2e_test.py \
+	@echo "Note: MCPSpy requires root privileges for eBPF operations (uses sudo -n internally)"
+	tests/venv/bin/python tests/e2e_test.py \
 		--config tests/e2e_config.yaml \
 		--scenario http-fastmcp \
 		--update-expected
@@ -286,8 +286,8 @@ test-e2e-update-https: build test-e2e-setup ## Update expected output files for 
 .PHONY: test-e2e-update
 test-e2e-update: build test-e2e-setup ## Update expected output files for all transports
 	@echo "Updating expected output for all scenarios..."
-	@echo "Note: MCPSpy requires root privileges for eBPF operations"
-	sudo -E env PATH="$$PATH" tests/venv/bin/python tests/e2e_test.py \
+	@echo "Note: MCPSpy requires root privileges for eBPF operations (uses sudo -n internally)"
+	tests/venv/bin/python tests/e2e_test.py \
 		--config tests/e2e_config.yaml \
 		--update-expected
 
@@ -295,9 +295,9 @@ test-e2e-update: build test-e2e-setup ## Update expected output files for all tr
 .PHONY: test-e2e-security
 test-e2e-security: build test-e2e-setup ## Run security/prompt injection E2E test (requires HF_TOKEN)
 	@echo "Running security E2E test..."
-	@echo "Note: Requires HF_TOKEN environment variable and root privileges"
+	@echo "Note: Requires HF_TOKEN environment variable and root privileges (uses sudo -n internally)"
 	@if [ -z "$$HF_TOKEN" ]; then echo "ERROR: HF_TOKEN environment variable is required"; exit 1; fi
-	sudo -E env PATH="$$PATH" tests/venv/bin/python tests/e2e_test.py \
+	tests/venv/bin/python tests/e2e_test.py \
 		--config tests/e2e_config.yaml \
 		--scenario security-injection
 
@@ -314,7 +314,8 @@ test-e2e-mcp-llm: test-e2e-setup ## Run LLM e2e test without MCPSpy (traffic gen
 .PHONY: test-e2e-llm
 test-e2e-llm: build test-e2e-setup ## Run LLM API monitoring E2E test (requires CLAUDE_CODE_OAUTH_TOKEN)
 	@echo "Running LLM E2E test..."
-	sudo -E env PATH="$$PATH" tests/venv/bin/python tests/e2e_test.py \
+	@echo "Note: MCPSpy requires root privileges for eBPF operations (uses sudo -n internally)"
+	tests/venv/bin/python tests/e2e_test.py \
 		--config tests/e2e_config.yaml \
 		--scenario llm-anthropic
 
@@ -322,7 +323,8 @@ test-e2e-llm: build test-e2e-setup ## Run LLM API monitoring E2E test (requires 
 .PHONY: test-e2e-update-llm
 test-e2e-update-llm: build test-e2e-setup ## Update expected output files for LLM scenario (requires CLAUDE_CODE_OAUTH_TOKEN)
 	@echo "Updating expected output for LLM scenario..."
-	sudo -E env PATH="$$PATH" tests/venv/bin/python tests/e2e_test.py \
+	@echo "Note: MCPSpy requires root privileges for eBPF operations (uses sudo -n internally)"
+	tests/venv/bin/python tests/e2e_test.py \
 		--config tests/e2e_config.yaml \
 		--scenario llm-anthropic \
 		--update-expected
@@ -330,10 +332,10 @@ test-e2e-update-llm: build test-e2e-setup ## Update expected output files for LL
 .PHONY: test-smoke
 test-smoke: ## Run smoke test (basic startup/shutdown test)
 	@echo "Running smoke test..."
-	@echo "Note: MCPSpy requires root privileges for eBPF operations"
+	@echo "Note: MCPSpy requires root privileges for eBPF operations (uses sudo -n internally)"
 	@chmod +x tests/smoke_test.sh
 	@chmod +x $(BUILD_DIR)/$(BINARY_NAME)-$(PLATFORM)
-	sudo -E env PATH="$$PATH" tests/smoke_test.sh $(BUILD_DIR)/$(BINARY_NAME)-$(PLATFORM)
+	tests/smoke_test.sh $(BUILD_DIR)/$(BINARY_NAME)-$(PLATFORM)
 
 # Help
 PHONY: help
