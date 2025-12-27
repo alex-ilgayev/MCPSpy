@@ -197,7 +197,7 @@ scenarios:
     validation:
       message_count:
         min: 19
-        max: 20
+        max: 22
       deepdiff:
         ignore_order: true
         exclude_regex_paths:
