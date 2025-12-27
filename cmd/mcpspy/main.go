@@ -64,7 +64,7 @@ communication by tracking stdio operations and analyzing JSON-RPC 2.0 messages.`
 	// Security flags
 	rootCmd.Flags().BoolVar(&securityEnabled, "security", false, "Enable prompt injection detection")
 	rootCmd.Flags().StringVar(&securityHFToken, "hf-token", "", "HuggingFace API token for security analysis (required if --security is set)")
-	rootCmd.Flags().StringVar(&securityModel, "security-model", "meta-llama/Llama-Prompt-Guard-2-86M", "HuggingFace model for injection detection")
+	rootCmd.Flags().StringVar(&securityModel, "security-model", "protectai/deberta-v3-base-prompt-injection-v2", "HuggingFace model for injection detection")
 	rootCmd.Flags().Float64Var(&securityThreshold, "security-threshold", 0.5, "Risk score threshold for detection (0.0-1.0)")
 	rootCmd.Flags().BoolVar(&securityAsync, "security-async", true, "Run security analysis asynchronously (non-blocking)")
 
