@@ -4,9 +4,11 @@ description: "Creates properly formatted Git commits following conventional comm
 allowed-tools:
   - Bash(git status:*)
   - Bash(git diff:*)
+  - Bash(git diff-index:*)
   - Bash(git add:*)
   - Bash(git checkout:*)
   - Bash(git commit:*)
+  - Bash(git show:*)
 ---
 
 # Git Commit Creator Skill

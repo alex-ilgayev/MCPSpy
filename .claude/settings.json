@@ -1,0 +1,18 @@
+{
+  "permissions": {
+    "allow": [
+      "WebSearch",
+
+      "Bash(go:*)",
+      "Bash(make:*)",
+      "Bash(git diff:*)",
+      "Bash(gh pr view:*)",
+      "Bash(git worktree:*)",
+
+      "Skill(git-commit-creator)",
+      "Skill(go-testing)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}

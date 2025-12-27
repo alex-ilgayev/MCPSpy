@@ -78,16 +78,19 @@ Integration tests use the build tag `//go:build integration` and are excluded fr
 ## Common Issues
 
 ### "Forbidden" Error
+
 - Ensure HF_TOKEN is set and valid
 - Check if the model requires license acceptance (Llama models are gated)
 - Default test model is `protectai/deberta-v3-base-prompt-injection-v2` (non-gated)
 
 ### Model Loading
+
 - HuggingFace warms up models on demand
 - Tests may skip with "Model loading" message on first run
 - Re-run tests after model is warm
 
 ### Network Issues
+
 - Integration tests require network access to HuggingFace API
 - Tests will fail in sandboxed environments without network access
 
