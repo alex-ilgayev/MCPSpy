@@ -39,9 +39,7 @@ class CommandConfig(BaseModel):
 class McpspyConfig(BaseModel):
     """Configuration for MCPSpy execution."""
 
-    binary_path: str = Field(
-        default="../mcpspy", description="Path to MCPSpy binary"
-    )
+    binary_path: str = Field(default="../mcpspy", description="Path to MCPSpy binary")
     flags: List[str] = Field(
         default_factory=list, description="Additional flags for MCPSpy"
     )
@@ -56,9 +54,7 @@ class McpspyConfig(BaseModel):
 class TrafficConfig(BaseModel):
     """Configuration for MCP traffic generation."""
 
-    command: List[str] = Field(
-        ..., description="Command to generate MCP traffic"
-    )
+    command: List[str] = Field(..., description="Command to generate MCP traffic")
     working_directory: Optional[str] = Field(
         default=None, description="Working directory for traffic command"
     )
@@ -106,7 +102,8 @@ class ValidationConfig(BaseModel):
     """Configuration for output validation (used in both defaults and scenarios)."""
 
     expected_output_file: Optional[str] = Field(
-        default=None, description="Path to expected JSONL output file (required for scenarios, omitted in defaults)"
+        default=None,
+        description="Path to expected JSONL output file (required for scenarios, omitted in defaults)",
     )
     message_count: Optional[MessageCountConfig] = Field(
         default=None, description="Message count validation rules"
@@ -203,7 +200,10 @@ class TestConfig(BaseModel):
         else:
             # Apply defaults for unset fields
             for field in McpspyConfig.model_fields:
-                if getattr(scenario.mcpspy, field) == McpspyConfig.model_fields[field].default:
+                if (
+                    getattr(scenario.mcpspy, field)
+                    == McpspyConfig.model_fields[field].default
+                ):
                     default_value = getattr(self.defaults.mcpspy, field)
                     setattr(scenario.mcpspy, field, default_value)
 
@@ -216,7 +216,9 @@ class TestConfig(BaseModel):
                 else:
                     # Merge: scenario overrides take precedence
                     default_dict = self.defaults.validation.deepdiff.model_dump()
-                    scenario_dict = scenario.validation.deepdiff.model_dump(exclude_unset=True)
+                    scenario_dict = scenario.validation.deepdiff.model_dump(
+                        exclude_unset=True
+                    )
                     merged = default_dict.copy()
                     merged.update(scenario_dict)
                     scenario.validation.deepdiff = DeepDiffConfig(**merged)
@@ -224,7 +226,9 @@ class TestConfig(BaseModel):
             # Merge message_count config
             if self.defaults.validation.message_count:
                 if scenario.validation.message_count is None:
-                    scenario.validation.message_count = self.defaults.validation.message_count
+                    scenario.validation.message_count = (
+                        self.defaults.validation.message_count
+                    )
 
         return scenario
 

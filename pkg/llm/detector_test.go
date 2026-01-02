@@ -45,6 +45,49 @@ func TestDetectProvider(t *testing.T) {
 			path: "/v1/messages",
 			want: ProviderUnknown,
 		},
+		// Gemini test cases
+		{
+			name: "valid gemini generateContent endpoint",
+			host: "generativelanguage.googleapis.com",
+			path: "/v1beta/models/gemini-2.0-flash:generateContent",
+			want: ProviderGemini,
+		},
+		{
+			name: "gemini streamGenerateContent endpoint",
+			host: "generativelanguage.googleapis.com",
+			path: "/v1beta/models/gemini-1.5-pro:streamGenerateContent",
+			want: ProviderGemini,
+		},
+		{
+			name: "gemini with alt=sse query param",
+			host: "generativelanguage.googleapis.com",
+			path: "/v1beta/models/gemini-2.0-flash:streamGenerateContent?alt=sse",
+			want: ProviderGemini,
+		},
+		{
+			name: "gemini with API key query param",
+			host: "generativelanguage.googleapis.com",
+			path: "/v1beta/models/gemini-2.0-flash:generateContent?key=AIzaSy...",
+			want: ProviderGemini,
+		},
+		{
+			name: "gemini case insensitive host",
+			host: "GENERATIVELANGUAGE.GOOGLEAPIS.COM",
+			path: "/v1beta/models/gemini-2.0-flash:generateContent",
+			want: ProviderGemini,
+		},
+		{
+			name: "gemini wrong endpoint (no colon action)",
+			host: "generativelanguage.googleapis.com",
+			path: "/v1beta/models/gemini-2.0-flash",
+			want: ProviderUnknown,
+		},
+		{
+			name: "gemini wrong path prefix",
+			host: "generativelanguage.googleapis.com",
+			path: "/v1/models/gemini-2.0-flash:generateContent",
+			want: ProviderUnknown,
+		},
 	}
 
 	for _, tt := range tests {
@@ -75,6 +118,12 @@ func TestIsLLMRequest(t *testing.T) {
 			host: "example.com",
 			path: "/api",
 			want: false,
+		},
+		{
+			name: "gemini is LLM",
+			host: "generativelanguage.googleapis.com",
+			path: "/v1beta/models/gemini-2.0-flash:generateContent",
+			want: true,
 		},
 	}
 

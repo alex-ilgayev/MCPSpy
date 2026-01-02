@@ -329,6 +329,34 @@ test-e2e-update-llm: build test-e2e-setup ## Update expected output files for LL
 		--scenario llm-anthropic \
 		--update-expected
 
+# Run Gemini LLM e2e test without MCPSpy (traffic generation only)
+.PHONY: test-e2e-mcp-llm-gemini
+test-e2e-mcp-llm-gemini: test-e2e-setup ## Run Gemini LLM e2e test without MCPSpy (requires GEMINI_API_KEY)
+	@echo "Running Gemini LLM e2e test without MCPSpy..."
+	tests/venv/bin/python tests/e2e_test.py \
+		--config tests/e2e_config.yaml \
+		--scenario llm-gemini \
+		--skip-mcpspy
+
+# Run Gemini LLM E2E test (requires GEMINI_API_KEY environment variable)
+.PHONY: test-e2e-llm-gemini
+test-e2e-llm-gemini: build test-e2e-setup ## Run Gemini LLM API monitoring E2E test (requires GEMINI_API_KEY)
+	@echo "Running Gemini LLM E2E test..."
+	@echo "Note: MCPSpy requires root privileges for eBPF operations (uses sudo -n internally)"
+	tests/venv/bin/python tests/e2e_test.py \
+		--config tests/e2e_config.yaml \
+		--scenario llm-gemini
+
+# Update expected output files for Gemini LLM scenario
+.PHONY: test-e2e-update-llm-gemini
+test-e2e-update-llm-gemini: build test-e2e-setup ## Update expected output files for Gemini LLM scenario (requires GEMINI_API_KEY)
+	@echo "Updating expected output for Gemini LLM scenario..."
+	@echo "Note: MCPSpy requires root privileges for eBPF operations (uses sudo -n internally)"
+	tests/venv/bin/python tests/e2e_test.py \
+		--config tests/e2e_config.yaml \
+		--scenario llm-gemini \
+		--update-expected
+
 .PHONY: test-smoke
 test-smoke: ## Run smoke test (basic startup/shutdown test)
 	@echo "Running smoke test..."

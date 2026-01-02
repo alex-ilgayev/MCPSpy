@@ -221,7 +221,9 @@ class ValidationEngine:
 
         captured_messages = self._read_jsonl_file(output_file)
         if not captured_messages:
-            print("❌ No messages captured - MCPSpy may have failed to start or capture traffic")
+            print(
+                "❌ No messages captured - MCPSpy may have failed to start or capture traffic"
+            )
             return False
 
         print(f"📊 Captured {len(captured_messages)} messages")
@@ -502,7 +504,9 @@ class ScenarioRunner:
             time.sleep(self.scenario.mcpspy.startup_wait_seconds)
 
             # Generate traffic
-            self._log(f"Generating traffic via: {' '.join(self.scenario.traffic.command)}")
+            self._log(
+                f"Generating traffic via: {' '.join(self.scenario.traffic.command)}"
+            )
             success, stdout, stderr = self.traffic_generator.generate_traffic(
                 self.scenario.traffic
             )
@@ -617,13 +621,14 @@ class ScenarioRunner:
     def _expand_env_vars(self, flags: List[str]) -> List[str]:
         """Expand environment variables in flags (e.g., ${HF_TOKEN})."""
         import re
+
         result = []
         for flag in flags:
             # Expand ${VAR} or $VAR patterns
             expanded = re.sub(
-                r'\$\{([^}]+)\}|\$([A-Za-z_][A-Za-z0-9_]*)',
-                lambda m: os.environ.get(m.group(1) or m.group(2), ''),
-                flag
+                r"\$\{([^}]+)\}|\$([A-Za-z_][A-Za-z0-9_]*)",
+                lambda m: os.environ.get(m.group(1) or m.group(2), ""),
+                flag,
             )
             result.append(expanded)
         return result
@@ -746,7 +751,9 @@ class ScenarioRunner:
 class TestSuite:
     """Orchestrates multiple test scenarios."""
 
-    def __init__(self, config: TestConfig, verbose: bool = False, skip_mcpspy: bool = False):
+    def __init__(
+        self, config: TestConfig, verbose: bool = False, skip_mcpspy: bool = False
+    ):
         self.config = config
         self.verbose = verbose
         self.skip_mcpspy = skip_mcpspy

@@ -184,12 +184,10 @@ class AnthropicClient:
 
         try:
             if mode in ("non-streaming", "both"):
-                await self.send_non_streaming_request("Say hello in exactly 3 words.")
+                await self.send_non_streaming_request("Repeat exactly: PING")
 
             if mode in ("streaming", "both"):
-                await self.send_streaming_request(
-                    "Count from 1 to 5, one number per line."
-                )
+                await self.send_streaming_request("Repeat exactly: PONG")
 
             self.logger.info("LLM API E2E test completed successfully")
 
