@@ -485,11 +485,13 @@ Create a sudoers rule that allows your user to run mcpspy without a password. Th
 # Option 1: Using visudo (opens editor)
 sudo visudo -f /etc/sudoers.d/mcpspy
 # Add this line (replace YOUR_USERNAME and adjust path as needed):
-# YOUR_USERNAME ALL=(ALL) NOPASSWD: /home/YOUR_USERNAME/mcpspy/build/mcpspy-linux-amd64
+# YOUR_USERNAME ALL=(ALL) NOPASSWD: /home/YOUR_USERNAME/mcpspy/build/mcpspy-linux-amd64, /home/YOUR_USERNAME/mcpspy/.worktrees/*/build/mcpspy-linux-amd64
 
 # Option 2: One-liner (replace YOUR_USERNAME and path)
-echo 'YOUR_USERNAME ALL=(ALL) NOPASSWD: /home/YOUR_USERNAME/mcpspy/build/mcpspy-linux-amd64' | sudo tee /etc/sudoers.d/mcpspy && sudo chmod 440 /etc/sudoers.d/mcpspy
+echo 'YOUR_USERNAME ALL=(ALL) NOPASSWD: /home/YOUR_USERNAME/mcpspy/build/mcpspy-linux-amd64, /home/YOUR_USERNAME/mcpspy/.worktrees/*/build/mcpspy-linux-amd64' | sudo tee /etc/sudoers.d/mcpspy && sudo chmod 440 /etc/sudoers.d/mcpspy
 ```
+
+The `.worktrees/*` pattern enables passwordless execution from git worktrees. Note that sudoers `*` doesn't match `/`, so both patterns are needed.
 
 After configuration, verify it works:
 
