@@ -148,6 +148,8 @@ scenarios:
           - "root\\[\\d+\\]\\['timestamp'\\]"
           - "root\\[\\d+\\]\\['session_id'\\]"
           - "root\\[\\d+\\]\\['pid'\\]"
+          # Exclude raw JSON field (contains full API payload)
+          - "root\\[\\d+\\]\\['raw_json'\\]"
 
   # LLM API monitoring scenario (Gemini)
   # This test requires GEMINI_API_KEY environment variable to be set
@@ -178,6 +180,8 @@ scenarios:
           - "root\\[\\d+\\]\\['timestamp'\\]"
           - "root\\[\\d+\\]\\['session_id'\\]"
           - "root\\[\\d+\\]\\['pid'\\]"
+          # Exclude raw JSON field (contains full API payload)
+          - "root\\[\\d+\\]\\['raw_json'\\]"
 
   # Security/Prompt Injection detection scenario
   # This test requires HF_TOKEN environment variable to be set
