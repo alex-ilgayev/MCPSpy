@@ -6,8 +6,6 @@
       "trust": true
     },
     "deepwiki": {
-      "url": "https://mcp.deepwiki.com/mcp",
-      "type": "http",
       "httpUrl": "https://mcp.deepwiki.com/mcp",
       "trust": true
     }

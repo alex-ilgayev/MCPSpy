@@ -249,6 +249,11 @@ test-scenario-security: test-e2e-setup ## Run security scenario (no MCPSpy)
 	@echo "Running security scenario..."
 	$(call run-scenario,security-injection)
 
+.PHONY: test-scenario-gemini-cli
+test-scenario-gemini-cli: test-e2e-setup ## Run Gemini CLI scenario (no MCPSpy, requires GEMINI_API_KEY)
+	@echo "Running Gemini CLI scenario..."
+	$(call run-scenario,gemini-cli)
+
 # =============================================================================
 ##@ E2E Tests (with MCPSpy)
 # =============================================================================
@@ -283,6 +288,11 @@ test-e2e-security: build test-e2e-setup ## Run e2e test for security (requires H
 	@echo "Running security e2e test..."
 	@if [ -z "$$HF_TOKEN" ]; then echo "ERROR: HF_TOKEN environment variable is required"; exit 1; fi
 	$(call run-e2e,security-injection)
+
+.PHONY: test-e2e-gemini-cli
+test-e2e-gemini-cli: build test-e2e-setup ## Run e2e test for Gemini CLI (requires GEMINI_API_KEY)
+	@echo "Running Gemini CLI e2e test..."
+	$(call run-e2e,gemini-cli)
 
 .PHONY: test-e2e
 test-e2e: build test-e2e-setup ## Run all e2e test scenarios
