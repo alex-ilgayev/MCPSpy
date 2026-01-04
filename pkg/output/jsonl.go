@@ -41,6 +41,11 @@ func NewJSONLDisplay(writer io.Writer, eventBus bus.EventBus) (*JSONLDisplay, er
 		return nil, err
 	}
 
+	// Subscribe to tool usage events
+	if err := eventBus.Subscribe(event.EventTypeToolUsage, j.printToolUsage); err != nil {
+		return nil, err
+	}
+
 	return j, nil
 }
 
@@ -103,6 +108,22 @@ func (j *JSONLDisplay) printLLMMessage(e event.Event) {
 	data, err := json.Marshal(msg)
 	if err != nil {
 		logrus.WithError(err).Error("failed to marshal LLM message")
+		return
+	}
+
+	fmt.Fprintf(j.writer, "%s\n", string(data))
+}
+
+// printToolUsage outputs a tool usage event in JSON format
+func (j *JSONLDisplay) printToolUsage(e event.Event) {
+	msg, ok := e.(*event.ToolUsageEvent)
+	if !ok {
+		return
+	}
+
+	data, err := json.Marshal(msg)
+	if err != nil {
+		logrus.WithError(err).Error("failed to marshal tool usage event")
 		return
 	}
 

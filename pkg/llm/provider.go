@@ -13,4 +13,14 @@ type ProviderParser interface {
 	// ParseStreamEvent parses a single SSE event during streaming
 	// Returns: event (may be nil for skip), done flag, error
 	ParseStreamEvent(sse *event.SSEEvent) (*event.LLMEvent, bool, error)
+
+	// ExtractToolUsage extracts tool usage events from request or response payload.
+	// isRequest=true for tool results (in request), isRequest=false for tool invocations (in response).
+	// Returns nil slice if no tool usage found.
+	ExtractToolUsage(payload []byte, sessionID uint64, isRequest bool) []*event.ToolUsageEvent
+
+	// ExtractToolUsageFromSSE extracts tool usage from streaming SSE events.
+	// Accumulates tool_use blocks across content_block_start/delta/stop events.
+	// Returns completed tool events (when content_block_stop is received).
+	ExtractToolUsageFromSSE(sse *event.SSEEvent) []*event.ToolUsageEvent
 }

@@ -3,6 +3,7 @@ package providers
 import (
 	"encoding/json"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/alex-ilgayev/mcpspy/pkg/event"
@@ -67,8 +68,23 @@ const (
 	AnthropicStreamEventTypeError AnthropicStreamEventType = "error"
 )
 
+// streamingToolBlock tracks a tool_use block being accumulated during streaming
+type streamingToolBlock struct {
+	sessionID uint64
+	id        string
+	name      string
+	input     strings.Builder
+}
+
 // AnthropicParser parses Anthropic Claude API requests and responses
-type AnthropicParser struct{}
+type AnthropicParser struct {
+	// toolNames maps tool_use_id to tool name for correlating tool results
+	toolNames sync.Map
+	// streamingTools maps content block index to in-progress tool_use blocks
+	streamingTools sync.Map
+	// emittedResults tracks tool_use_ids for which we've already emitted results (dedup)
+	emittedResults sync.Map
+}
 
 func NewAnthropicParser() *AnthropicParser {
 	return &AnthropicParser{}
@@ -258,4 +274,279 @@ func extractResponseText(blocks []anthropicContentBlock) string {
 		}
 	}
 	return strings.Join(texts, "\n")
+}
+
+// Tool usage extraction structures
+
+// anthropicToolUseBlock represents a tool_use content block in responses
+type anthropicToolUseBlock struct {
+	Type  string          `json:"type"`
+	ID    string          `json:"id"`
+	Name  string          `json:"name"`
+	Input json.RawMessage `json:"input"`
+}
+
+// anthropicToolResultBlock represents a tool_result content block in requests
+type anthropicToolResultBlock struct {
+	Type      string          `json:"type"`
+	ToolUseID string          `json:"tool_use_id"`
+	Content   json.RawMessage `json:"content"`
+	IsError   bool            `json:"is_error,omitempty"`
+}
+
+// anthropicResponseForTools is used to parse responses for tool_use blocks
+type anthropicResponseForTools struct {
+	Content []json.RawMessage `json:"content"`
+}
+
+// anthropicRequestForTools is used to parse requests for tool_result blocks
+type anthropicRequestForTools struct {
+	Messages []struct {
+		Role    string            `json:"role"`
+		Content []json.RawMessage `json:"content"`
+	} `json:"messages"`
+}
+
+// ExtractToolUsage extracts tool usage events from request or response payload
+func (p *AnthropicParser) ExtractToolUsage(payload []byte, sessionID uint64, isRequest bool) []*event.ToolUsageEvent {
+	if isRequest {
+		return p.extractToolResults(payload, sessionID)
+	}
+	return p.extractToolCalls(payload, sessionID)
+}
+
+// extractToolCalls extracts tool_use blocks from response content
+func (p *AnthropicParser) extractToolCalls(payload []byte, sessionID uint64) []*event.ToolUsageEvent {
+	var resp anthropicResponseForTools
+	if err := json.Unmarshal(payload, &resp); err != nil {
+		return nil
+	}
+
+	var events []*event.ToolUsageEvent
+	for _, rawBlock := range resp.Content {
+		// First check the type
+		var typeCheck struct {
+			Type string `json:"type"`
+		}
+		if err := json.Unmarshal(rawBlock, &typeCheck); err != nil {
+			continue
+		}
+		if typeCheck.Type != "tool_use" {
+			continue
+		}
+
+		// Parse as tool_use block
+		var block anthropicToolUseBlock
+		if err := json.Unmarshal(rawBlock, &block); err != nil {
+			continue
+		}
+
+		// Store tool name for correlation with tool_result
+		p.toolNames.Store(block.ID, block.Name)
+
+		events = append(events, &event.ToolUsageEvent{
+			SessionID: sessionID,
+			Timestamp: time.Now(),
+			UsageType: event.ToolUsageTypeInvocation,
+			ToolID:    block.ID,
+			ToolName:  block.Name,
+			Input:     string(block.Input),
+		})
+	}
+
+	return events
+}
+
+// extractToolResults extracts tool_result blocks from request messages.
+// Uses deduplication by tool_use_id to avoid emitting the same result multiple times
+// as conversation history accumulates.
+func (p *AnthropicParser) extractToolResults(payload []byte, sessionID uint64) []*event.ToolUsageEvent {
+	var req anthropicRequestForTools
+	if err := json.Unmarshal(payload, &req); err != nil {
+		return nil
+	}
+
+	var events []*event.ToolUsageEvent
+	for _, msg := range req.Messages {
+		// tool_result blocks appear in user messages
+		if msg.Role != "user" {
+			continue
+		}
+
+		for _, rawBlock := range msg.Content {
+			// First check the type
+			var typeCheck struct {
+				Type string `json:"type"`
+			}
+			if err := json.Unmarshal(rawBlock, &typeCheck); err != nil {
+				continue
+			}
+			if typeCheck.Type != "tool_result" {
+				continue
+			}
+
+			// Parse as tool_result block
+			var block anthropicToolResultBlock
+			if err := json.Unmarshal(rawBlock, &block); err != nil {
+				continue
+			}
+
+			// Skip if we've already emitted this result (dedup)
+			if _, alreadyEmitted := p.emittedResults.LoadOrStore(block.ToolUseID, true); alreadyEmitted {
+				continue
+			}
+
+			// Look up tool name from previous tool_use
+			toolName := ""
+			if name, ok := p.toolNames.Load(block.ToolUseID); ok {
+				toolName = name.(string)
+				// Clean up after use to prevent memory growth
+				p.toolNames.Delete(block.ToolUseID)
+			}
+
+			events = append(events, &event.ToolUsageEvent{
+				SessionID: sessionID,
+				Timestamp: time.Now(),
+				UsageType: event.ToolUsageTypeResult,
+				ToolID:    block.ToolUseID,
+				ToolName:  toolName,
+				Output:    string(block.Content),
+				IsError:   block.IsError,
+			})
+		}
+	}
+
+	return events
+}
+
+// SSE event structures for tool extraction
+
+type sseContentBlockStart struct {
+	Type         string `json:"type"`
+	Index        int    `json:"index"`
+	ContentBlock struct {
+		Type  string          `json:"type"`
+		ID    string          `json:"id"`
+		Name  string          `json:"name"`
+		Input json.RawMessage `json:"input"`
+	} `json:"content_block"`
+}
+
+type sseContentBlockDelta struct {
+	Type  string `json:"type"`
+	Index int    `json:"index"`
+	Delta struct {
+		Type          string `json:"type"`
+		PartialJSON   string `json:"partial_json,omitempty"`
+		InputJSONText string `json:"input_json_delta,omitempty"` // Anthropic uses this field name
+	} `json:"delta"`
+}
+
+type sseContentBlockStop struct {
+	Type  string `json:"type"`
+	Index int    `json:"index"`
+}
+
+// ExtractToolUsageFromSSE extracts tool usage from streaming SSE events
+func (p *AnthropicParser) ExtractToolUsageFromSSE(sse *event.SSEEvent) []*event.ToolUsageEvent {
+	data := strings.TrimSpace(string(sse.Data))
+	if data == "" {
+		return nil
+	}
+
+	// First, determine the event type
+	var typeCheck struct {
+		Type string `json:"type"`
+	}
+	if err := json.Unmarshal([]byte(data), &typeCheck); err != nil {
+		return nil
+	}
+
+	switch AnthropicStreamEventType(typeCheck.Type) {
+	case AnthropicStreamEventTypeContentBlockStart:
+		return p.handleContentBlockStart(data, sse.SSLContext)
+	case AnthropicStreamEventTypeContentBlockDelta:
+		p.handleContentBlockDelta(data)
+		return nil
+	case AnthropicStreamEventTypeContentBlockStop:
+		return p.handleContentBlockStop(data)
+	default:
+		return nil
+	}
+}
+
+func (p *AnthropicParser) handleContentBlockStart(data string, sessionID uint64) []*event.ToolUsageEvent {
+	var ev sseContentBlockStart
+	if err := json.Unmarshal([]byte(data), &ev); err != nil {
+		return nil
+	}
+
+	// Only track tool_use blocks
+	if ev.ContentBlock.Type != "tool_use" {
+		return nil
+	}
+
+	// Create a new streaming tool block
+	block := &streamingToolBlock{
+		sessionID: sessionID,
+		id:        ev.ContentBlock.ID,
+		name:      ev.ContentBlock.Name,
+	}
+
+	// Store for delta accumulation
+	p.streamingTools.Store(ev.Index, block)
+
+	// Store tool name for result correlation
+	p.toolNames.Store(ev.ContentBlock.ID, ev.ContentBlock.Name)
+
+	return nil
+}
+
+func (p *AnthropicParser) handleContentBlockDelta(data string) {
+	var ev sseContentBlockDelta
+	if err := json.Unmarshal([]byte(data), &ev); err != nil {
+		return
+	}
+
+	// Only process input_json_delta
+	if ev.Delta.Type != "input_json_delta" {
+		return
+	}
+
+	// Look up the streaming tool block
+	blockI, ok := p.streamingTools.Load(ev.Index)
+	if !ok {
+		return
+	}
+	block := blockI.(*streamingToolBlock)
+
+	// Accumulate input JSON
+	// The delta contains raw JSON text to append
+	if ev.Delta.PartialJSON != "" {
+		block.input.WriteString(ev.Delta.PartialJSON)
+	}
+}
+
+func (p *AnthropicParser) handleContentBlockStop(data string) []*event.ToolUsageEvent {
+	var ev sseContentBlockStop
+	if err := json.Unmarshal([]byte(data), &ev); err != nil {
+		return nil
+	}
+
+	// Look up and remove the streaming tool block
+	blockI, ok := p.streamingTools.LoadAndDelete(ev.Index)
+	if !ok {
+		return nil
+	}
+	block := blockI.(*streamingToolBlock)
+
+	// Emit the completed tool invocation event
+	return []*event.ToolUsageEvent{{
+		SessionID: block.sessionID,
+		Timestamp: time.Now(),
+		UsageType: event.ToolUsageTypeInvocation,
+		ToolID:    block.id,
+		ToolName:  block.name,
+		Input:     block.input.String(),
+	}}
 }

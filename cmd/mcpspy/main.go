@@ -27,12 +27,13 @@ import (
 
 // Command line flags
 var (
-	showBuffers      bool
-	verbose          bool
-	outputFile       string
-	logLevel         string
-	tui              bool
-	enableLLMMonitor bool
+	showBuffers       bool
+	verbose           bool
+	outputFile        string
+	logLevel          string
+	tui               bool
+	enableLLMMonitor  bool
+	enableToolMonitor bool
 
 	// Security flags
 	securityEnabled   bool
@@ -59,7 +60,8 @@ communication by tracking stdio operations and analyzing JSON-RPC 2.0 messages.`
 	rootCmd.Flags().StringVarP(&outputFile, "output", "o", "", "Output file (JSONL format will be written to file)")
 	rootCmd.Flags().StringVarP(&logLevel, "log-level", "l", "info", "Set log level (trace, debug, info, warn, error, fatal, panic)")
 	rootCmd.Flags().BoolVar(&tui, "tui", true, "Enable TUI (Terminal UI) mode. Use --tui=false to disable and use static console output")
-	rootCmd.Flags().BoolVar(&enableLLMMonitor, "llm", false, "Enable LLM API monitoring")
+	rootCmd.Flags().BoolVar(&enableLLMMonitor, "llm", false, "Enable LLM API monitoring (shows LLM request/response events)")
+	rootCmd.Flags().BoolVar(&enableToolMonitor, "tools", false, "Enable tool usage monitoring (shows tool invocations/results from LLM APIs)")
 
 	// Security flags
 	rootCmd.Flags().BoolVar(&securityEnabled, "security", false, "Enable prompt injection detection")
@@ -285,9 +287,12 @@ func run(cmd *cobra.Command, args []string) error {
 		defer analyzer.Close()
 	}
 
-	// Create LLM parser if enabled (opt-in)
-	if enableLLMMonitor {
-		llmParser, err := llm.NewParser(eventBus)
+	// Create LLM parser if LLM or tool monitoring is enabled
+	if enableLLMMonitor || enableToolMonitor {
+		llmParser, err := llm.NewParserWithConfig(eventBus, llm.ParserConfig{
+			PublishLLMEvents:  enableLLMMonitor,
+			PublishToolEvents: enableToolMonitor,
+		})
 		if err != nil {
 			return fmt.Errorf("failed to create LLM parser: %w", err)
 		}

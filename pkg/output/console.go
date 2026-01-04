@@ -47,6 +47,11 @@ func NewConsoleDisplay(writer io.Writer, showBuffers bool, eventBus bus.EventBus
 		return nil, err
 	}
 
+	// Subscribe to tool usage events
+	if err := eventBus.Subscribe(event.EventTypeToolUsage, d.printToolUsage); err != nil {
+		return nil, err
+	}
+
 	return d, nil
 }
 
@@ -65,6 +70,7 @@ var (
 	securityWarnColor  = color.New(color.FgYellow, color.Bold)
 	securityLowColor   = color.New(color.FgYellow)
 	llmModelColor      = color.New(color.FgMagenta)
+	toolColor          = color.New(color.FgCyan, color.Bold)
 )
 
 // PrintHeader prints the MCPSpy header
@@ -385,4 +391,127 @@ func (d *ConsoleDisplay) printLLMMessage(e event.Event) {
 	}
 
 	fmt.Fprintf(d.writer, "%s %s %s%s%s\n", ts, commFlow, modelInfo, msgType, contentPreview)
+}
+
+// printToolUsage prints a tool usage event
+func (d *ConsoleDisplay) printToolUsage(e event.Event) {
+	msg, ok := e.(*event.ToolUsageEvent)
+	if !ok {
+		return
+	}
+
+	// Format: TIMESTAMP TOOL comm[pid] → host TYPE TOOLNAME [ID] summary
+	ts := timestampColor.Sprint(msg.Timestamp.Format("15:04:05.000"))
+
+	// Build communication flow similar to LLM events
+	var commFlow string
+	switch msg.UsageType {
+	case event.ToolUsageTypeInvocation:
+		// Invocation: server → client (LLM tells client to use tool)
+		commFlow = fmt.Sprintf("%s → %s[%s]",
+			commColor.Sprint(msg.Host),
+			commColor.Sprint(msg.Comm),
+			pidColor.Sprint(msg.PID),
+		)
+	case event.ToolUsageTypeResult:
+		// Result: client → server (client sends result back)
+		commFlow = fmt.Sprintf("%s[%s] → %s",
+			commColor.Sprint(msg.Comm),
+			pidColor.Sprint(msg.PID),
+			commColor.Sprint(msg.Host),
+		)
+	}
+
+	var msgType string
+	var summary string
+	switch msg.UsageType {
+	case event.ToolUsageTypeInvocation:
+		msgType = methodColor.Sprint("CALL")
+		summary = formatToolInput(msg.ToolName, msg.Input)
+	case event.ToolUsageTypeResult:
+		if msg.IsError {
+			msgType = errorColor.Sprint("ERR")
+			summary = formatToolError(msg.Output)
+		} else {
+			msgType = methodColor.Sprint("RSLT")
+			summary = formatToolOutput(msg.Output)
+		}
+	}
+
+	// Tool name with full ID in brackets for correlation
+	toolInfo := toolColor.Sprint(msg.ToolName)
+	if msg.ToolID != "" {
+		toolInfo += idColor.Sprintf(" [%s]", msg.ToolID)
+	}
+
+	fmt.Fprintf(d.writer, "%s %s %s %s %s %s\n", ts, toolColor.Sprint("TOOL"), commFlow, msgType, toolInfo, summary)
+}
+
+// formatToolInput formats tool invocation input for display
+func formatToolInput(toolName, input string) string {
+	// Try to extract key parameter based on tool name
+	var params map[string]interface{}
+	if err := json.Unmarshal([]byte(input), &params); err != nil {
+		// Not JSON, show truncated raw input
+		return truncateString(input, 60)
+	}
+
+	// Extract the most relevant parameter based on common patterns
+	switch {
+	case toolName == "Read" || toolName == "Write" || toolName == "Edit":
+		if path, ok := params["file_path"].(string); ok {
+			return truncatePath(path, 70)
+		}
+	case toolName == "Bash":
+		if cmd, ok := params["command"].(string); ok {
+			return truncateString(cmd, 70)
+		}
+	case toolName == "Glob":
+		if pattern, ok := params["pattern"].(string); ok {
+			return pattern
+		}
+	case toolName == "Grep":
+		if pattern, ok := params["pattern"].(string); ok {
+			return fmt.Sprintf("/%s/", pattern)
+		}
+	case toolName == "Task":
+		if desc, ok := params["description"].(string); ok {
+			return desc
+		}
+	}
+
+	// Fallback: show compact JSON
+	return truncateString(input, 60)
+}
+
+// formatToolOutput formats tool result output for display
+func formatToolOutput(output string) string {
+	return truncateString(output, 70)
+}
+
+// formatToolError formats tool error output for display
+func formatToolError(output string) string {
+	// Show first line of error, truncated
+	lines := strings.SplitN(output, "\n", 2)
+	errMsg := strings.TrimSpace(lines[0])
+	return truncateString(errMsg, 60)
+}
+
+// truncateString truncates a string to maxLen, adding "..." if truncated
+func truncateString(s string, maxLen int) string {
+	// Replace newlines with spaces for single-line display
+	s = strings.ReplaceAll(s, "\n", " ")
+	s = strings.Join(strings.Fields(s), " ") // Normalize whitespace
+	if len(s) > maxLen {
+		return s[:maxLen-3] + "..."
+	}
+	return s
+}
+
+// truncatePath truncates a file path, keeping the end (most relevant part)
+func truncatePath(path string, maxLen int) string {
+	if len(path) <= maxLen {
+		return path
+	}
+	return "..." + path[len(path)-maxLen+3:]
 }

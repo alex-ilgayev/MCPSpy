@@ -34,6 +34,8 @@ const (
 	EventTypeSecurityAlert EventType = 106
 	// Detected a parsed LLM API message (OpenAI, Anthropic, Gemini, etc.)
 	EventTypeLLMMessage EventType = 107
+	// Detected a tool usage event (invocation or result)
+	EventTypeToolUsage EventType = 108
 )
 
 type HttpVersion uint8
@@ -85,6 +87,8 @@ func (e EventType) String() string {
 		return "security_alert"
 	case EventTypeLLMMessage:
 		return "llm_message"
+	case EventTypeToolUsage:
+		return "tool_usage"
 	default:
 		return "unknown"
 	}
