@@ -18,6 +18,21 @@ const (
 	maxMessages = 1000
 )
 
+// messageSource distinguishes between MCP and LLM events (internal to TUI)
+type messageSource int
+
+const (
+	sourceTypeMCP messageSource = iota
+	sourceTypeLLM
+)
+
+// displayMessage wraps either MCP or LLM events for rendering
+type displayMessage struct {
+	source   messageSource
+	mcpEvent *event.MCPEvent
+	llmEvent *event.LLMEvent
+}
+
 // TUIDisplay handles the TUI output using Bubbletea
 type TUIDisplay struct {
 	program  *tea.Program
@@ -43,7 +58,7 @@ const (
 
 // model is the Bubbletea model for the TUI
 type model struct {
-	messages          []*event.MCPEvent
+	messages          []*displayMessage
 	selectedIndex     int
 	scrollOffset      int
 	paused            bool
@@ -60,6 +75,7 @@ type model struct {
 	currentSearchIdx  int
 	filterTransport   string // "ALL", "HTTP", "STDIO"
 	filterType        string // "ALL", "REQ", "RESP", "NOTIFY", "ERROR"
+	filterApp         string // "ALL", "MCP", "LLM"
 	jsonWrap          bool
 	density           densityMode
 	requestToResponse map[string]*event.MCPEvent // Maps request key to response message
@@ -68,7 +84,7 @@ type model struct {
 
 // Bubbletea message types
 type msgReceived struct {
-	msg *event.MCPEvent
+	msg *displayMessage
 }
 
 type tickMsg time.Time
@@ -76,7 +92,7 @@ type tickMsg time.Time
 // NewTUIDisplay creates a new TUI display handler
 func NewTUIDisplay(eventBus bus.EventBus) (*TUIDisplay, error) {
 	m := &model{
-		messages:          make([]*event.MCPEvent, 0, maxMessages),
+		messages:          make([]*displayMessage, 0, maxMessages),
 		autoScroll:        true,
 		prettyJSON:        true,
 		stats:             make(map[string]int),
@@ -88,6 +104,7 @@ func NewTUIDisplay(eventBus bus.EventBus) (*TUIDisplay, error) {
 		currentSearchIdx:  -1,
 		filterTransport:   "ALL",
 		filterType:        "ALL",
+		filterApp:         "ALL",
 		jsonWrap:          true,
 		density:           densityComfort,
 		requestToResponse: make(map[string]*event.MCPEvent),
@@ -105,6 +122,11 @@ func NewTUIDisplay(eventBus bus.EventBus) (*TUIDisplay, error) {
 		return nil, err
 	}
 
+	// Subscribe to LLM events
+	if err := eventBus.Subscribe(event.EventTypeLLMMessage, d.handleLLMMessage); err != nil {
+		return nil, err
+	}
+
 	return d, nil
 }
 
@@ -115,8 +137,25 @@ func (d *TUIDisplay) handleMessage(e event.Event) {
 		return
 	}
 
-	// Send directly to Bubbletea program
-	d.program.Send(msgReceived{msg: msg})
+	// Wrap in displayMessage and send to Bubbletea program
+	d.program.Send(msgReceived{msg: &displayMessage{
+		source:   sourceTypeMCP,
+		mcpEvent: msg,
+	}})
+}
+
+// handleLLMMessage receives LLM events and sends them to the TUI
+func (d *TUIDisplay) handleLLMMessage(e event.Event) {
+	msg, ok := e.(*event.LLMEvent)
+	if !ok {
+		return
+	}
+
+	// Wrap in displayMessage and send to Bubbletea program
+	d.program.Send(msgReceived{msg: &displayMessage{
+		source:   sourceTypeLLM,
+		llmEvent: msg,
+	}})
 }
 
 // Run starts the TUI
@@ -197,13 +236,18 @@ func (m *model) handleKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				filteredMsgs := m.getFilteredMessages()
 				selectedMsg := filteredMsgs[m.selectedIndex]
 
-				// Set default tab based on message type
-				if selectedMsg.MessageType == event.JSONRPCMessageTypeRequest {
-					m.detailViewTab = "request"
-				} else if selectedMsg.MessageType == event.JSONRPCMessageTypeResponse {
-					m.detailViewTab = "response"
+				// Set default tab based on message type (MCP only)
+				if selectedMsg.source == sourceTypeMCP && selectedMsg.mcpEvent != nil {
+					if selectedMsg.mcpEvent.MessageType == event.JSONRPCMessageTypeRequest {
+						m.detailViewTab = "request"
+					} else if selectedMsg.mcpEvent.MessageType == event.JSONRPCMessageTypeResponse {
+						m.detailViewTab = "response"
+					} else {
+						// Notifications don't have tabs
+						m.detailViewTab = "request"
+					}
 				} else {
-					// Notifications don't have tabs
+					// LLM events don't have tabs (no correlation yet)
 					m.detailViewTab = "request"
 				}
 
@@ -243,11 +287,26 @@ func (m *model) handleKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			case "REQ":
 				m.filterType = "RESP"
 			case "RESP":
+				m.filterType = "STREAM"
+			case "STREAM":
 				m.filterType = "NOTIFY"
 			case "NOTIFY":
 				m.filterType = "ERROR"
 			case "ERROR":
 				m.filterType = "ALL"
+			}
+			m.selectedIndex = 0
+			m.scrollOffset = 0
+
+		case "a":
+			// Cycle app filter
+			switch m.filterApp {
+			case "ALL":
+				m.filterApp = "MCP"
+			case "MCP":
+				m.filterApp = "LLM"
+			case "LLM":
+				m.filterApp = "ALL"
 			}
 			m.selectedIndex = 0
 			m.scrollOffset = 0
@@ -315,22 +374,25 @@ func (m *model) handleKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.detailScroll = 0
 
 		case "r":
-			// Switch between request and response tabs
+			// Switch between request and response tabs (MCP only)
 			filteredMsgs := m.getFilteredMessages()
 			if len(filteredMsgs) > 0 {
 				selectedMsg := filteredMsgs[m.selectedIndex]
-				// Don't switch for notifications
-				if selectedMsg.MessageType != event.JSONRPCMessageTypeNotification {
-					if m.detailViewTab == "request" {
-						// Check if response exists
-						paired := m.findPairedMessage(selectedMsg)
-						if paired != nil || selectedMsg.MessageType == event.JSONRPCMessageTypeResponse {
-							m.detailViewTab = "response"
+				// Only for MCP events, not LLM
+				if selectedMsg.source == sourceTypeMCP && selectedMsg.mcpEvent != nil {
+					// Don't switch for notifications
+					if selectedMsg.mcpEvent.MessageType != event.JSONRPCMessageTypeNotification {
+						if m.detailViewTab == "request" {
+							// Check if response exists
+							paired := m.findPairedMessage(selectedMsg)
+							if paired != nil || selectedMsg.mcpEvent.MessageType == event.JSONRPCMessageTypeResponse {
+								m.detailViewTab = "response"
+								m.detailScroll = 0
+							}
+						} else {
+							m.detailViewTab = "request"
 							m.detailScroll = 0
 						}
-					} else {
-						m.detailViewTab = "request"
-						m.detailScroll = 0
 					}
 				}
 			}
@@ -341,15 +403,26 @@ func (m *model) handleKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 // getFilteredMessages returns messages that match current filters
-func (m *model) getFilteredMessages() []*event.MCPEvent {
-	var filtered []*event.MCPEvent
+func (m *model) getFilteredMessages() []*displayMessage {
+	var filtered []*displayMessage
 	for _, msg := range m.messages {
-		// Transport filter
-		if m.filterTransport != "ALL" {
-			if m.filterTransport == "HTTP" && msg.TransportType != event.TransportTypeHTTP {
+		// App filter
+		if m.filterApp != "ALL" {
+			if m.filterApp == "MCP" && msg.source != sourceTypeMCP {
 				continue
 			}
-			if m.filterTransport == "STDIO" && msg.TransportType != event.TransportTypeStdio {
+			if m.filterApp == "LLM" && msg.source != sourceTypeLLM {
+				continue
+			}
+		}
+
+		// Transport filter
+		if m.filterTransport != "ALL" {
+			transportType := m.getTransportType(msg)
+			if m.filterTransport == "HTTP" && transportType != "HTTP" {
+				continue
+			}
+			if m.filterTransport == "STDIO" && transportType != "STDIO" {
 				continue
 			}
 		}
@@ -367,48 +440,92 @@ func (m *model) getFilteredMessages() []*event.MCPEvent {
 	return filtered
 }
 
-// getMessageTypeString returns the message type as a string
-func (m *model) getMessageTypeString(msg *event.MCPEvent) string {
-	switch msg.MessageType {
-	case event.JSONRPCMessageTypeRequest:
-		return "REQ"
-	case event.JSONRPCMessageTypeResponse:
-		if msg.Error.Message != "" {
-			return "ERROR"
+// getTransportType returns the transport type for a displayMessage
+func (m *model) getTransportType(msg *displayMessage) string {
+	switch msg.source {
+	case sourceTypeMCP:
+		if msg.mcpEvent != nil {
+			if msg.mcpEvent.TransportType == event.TransportTypeHTTP {
+				return "HTTP"
+			}
+			return "STDIO"
 		}
-		return "RESP"
-	case event.JSONRPCMessageTypeNotification:
-		return "NOTIFY"
-	default:
-		return "UNKNOWN"
+	case sourceTypeLLM:
+		return "HTTP" // LLM events are always HTTP
 	}
+	return ""
+}
+
+// getMessageTypeString returns the message type as a string
+func (m *model) getMessageTypeString(msg *displayMessage) string {
+	switch msg.source {
+	case sourceTypeMCP:
+		if msg.mcpEvent == nil {
+			return "UNKNOWN"
+		}
+		switch msg.mcpEvent.MessageType {
+		case event.JSONRPCMessageTypeRequest:
+			return "REQ"
+		case event.JSONRPCMessageTypeResponse:
+			if msg.mcpEvent.Error.Message != "" {
+				return "ERROR"
+			}
+			return "RESP"
+		case event.JSONRPCMessageTypeNotification:
+			return "NOTIFY"
+		default:
+			return "UNKNOWN"
+		}
+	case sourceTypeLLM:
+		if msg.llmEvent == nil {
+			return "UNKNOWN"
+		}
+		switch msg.llmEvent.MessageType {
+		case event.LLMMessageTypeRequest:
+			return "REQ"
+		case event.LLMMessageTypeResponse:
+			if msg.llmEvent.Error != "" {
+				return "ERROR"
+			}
+			return "RESP"
+		case event.LLMMessageTypeStreamChunk:
+			return "STREAM"
+		default:
+			return "UNKNOWN"
+		}
+	}
+	return "UNKNOWN"
 }
 
 // addMessage adds a message to the circular buffer
-func (m *model) addMessage(msg *event.MCPEvent) {
+func (m *model) addMessage(msg *displayMessage) {
 	m.messages = append(m.messages, msg)
 
-	// Update request-response mapping for responses
-	if msg.MessageType == event.JSONRPCMessageTypeResponse {
-		pairingKey := getPairingKey(msg)
-		if pairingKey != "" {
-			m.requestToResponse[pairingKey] = msg
+	// Update request-response mapping for MCP responses only
+	if msg.source == sourceTypeMCP && msg.mcpEvent != nil {
+		if msg.mcpEvent.MessageType == event.JSONRPCMessageTypeResponse {
+			pairingKey := getPairingKey(msg.mcpEvent)
+			if pairingKey != "" {
+				m.requestToResponse[pairingKey] = msg.mcpEvent
+			}
 		}
-	}
 
-	// Update statistics
-	if msg.MessageType == event.JSONRPCMessageTypeRequest || msg.MessageType == event.JSONRPCMessageTypeNotification {
-		m.stats[msg.Method]++
+		// Update statistics for MCP messages
+		if msg.mcpEvent.MessageType == event.JSONRPCMessageTypeRequest || msg.mcpEvent.MessageType == event.JSONRPCMessageTypeNotification {
+			m.stats[msg.mcpEvent.Method]++
+		}
 	}
 
 	// Circular buffer: remove oldest if over limit
 	if len(m.messages) > maxMessages {
 		oldestMsg := m.messages[0]
-		// Clean up request-response mapping if removing a response
-		if oldestMsg.MessageType == event.JSONRPCMessageTypeResponse && oldestMsg.ID != nil {
-			pairingKey := getPairingKey(oldestMsg)
-			if pairingKey != "" {
-				delete(m.requestToResponse, pairingKey)
+		// Clean up request-response mapping if removing an MCP response
+		if oldestMsg.source == sourceTypeMCP && oldestMsg.mcpEvent != nil {
+			if oldestMsg.mcpEvent.MessageType == event.JSONRPCMessageTypeResponse && oldestMsg.mcpEvent.ID != nil {
+				pairingKey := getPairingKey(oldestMsg.mcpEvent)
+				if pairingKey != "" {
+					delete(m.requestToResponse, pairingKey)
+				}
 			}
 		}
 
@@ -567,6 +684,9 @@ func (m *model) renderHeader() string {
 		if m.filterTransport != "ALL" {
 			filters = append(filters, fmt.Sprintf("T:%s", m.filterTransport))
 		}
+		if m.filterApp != "ALL" {
+			filters = append(filters, fmt.Sprintf("A:%s", m.filterApp))
+		}
 		if m.filterType != "ALL" {
 			filters = append(filters, fmt.Sprintf("Y:%s", m.filterType))
 		}
@@ -639,32 +759,33 @@ func (m *model) renderHeader() string {
 }
 
 // getColumnWidths calculates responsive column widths based on window width
-func (m *model) getColumnWidths() (time, transport, msgType, id, from, to, method int) {
+func (m *model) getColumnWidths() (time, transport, app, msgType, id, from, to, method int) {
 	// Minimum widths
 	minTime := 12
 	minTransport := 9
+	minApp := 3
 	minType := 6
 	minID := 4
 	minFrom := 15
 	minTo := 15
 	minMethod := 20
 
-	// Fixed elements: prefix(2) + arrow(3) + spaces(8) = 13
-	fixedWidth := 13
+	// Fixed elements: prefix(2) + arrow(3) + spaces(9) = 14 (one more space for app column)
+	fixedWidth := 14
 
 	availableWidth := m.width - fixedWidth
 	if availableWidth < 80 {
 		// Very narrow terminal - use minimum widths
-		return minTime, minTransport, minType, minID, minFrom, minTo, minMethod
+		return minTime, minTransport, minApp, minType, minID, minFrom, minTo, minMethod
 	}
 
 	// Allocate widths proportionally
-	totalMin := minTime + minTransport + minType + minID + minFrom + minTo + minMethod
+	totalMin := minTime + minTransport + minApp + minType + minID + minFrom + minTo + minMethod
 	extraSpace := availableWidth - totalMin
 
 	if extraSpace < 0 {
 		// Terminal too narrow, use minimums
-		return minTime, minTransport, minType, minID, minFrom, minTo, minMethod
+		return minTime, minTransport, minApp, minType, minID, minFrom, minTo, minMethod
 	}
 
 	// Distribute extra space (prioritize method column)
@@ -673,7 +794,7 @@ func (m *model) getColumnWidths() (time, transport, msgType, id, from, to, metho
 	toExtra := (extraSpace * 20) / 100
 	remaining := extraSpace - methodExtra - fromExtra - toExtra
 
-	return minTime, minTransport + remaining/4, minType + remaining/4, minID,
+	return minTime, minTransport + remaining/4, minApp, minType + remaining/4, minID,
 		minFrom + fromExtra, minTo + toExtra, minMethod + methodExtra
 }
 
@@ -709,7 +830,7 @@ func (m *model) renderTableHeader() string {
 		Foreground(lipgloss.Color("#9E9E9E")).
 		Bold(true)
 
-	timeW, transportW, typeW, idW, fromW, toW, _ := m.getColumnWidths()
+	timeW, transportW, appW, typeW, idW, fromW, toW, _ := m.getColumnWidths()
 
 	// Pad each field, then concatenate
 	var b strings.Builder
@@ -717,6 +838,8 @@ func (m *model) renderTableHeader() string {
 	b.WriteString(padStringRight("TIME", timeW))
 	b.WriteString(" ")
 	b.WriteString(padString("TRANSPORT", transportW))
+	b.WriteString(" ")
+	b.WriteString(padString("APP", appW))
 	b.WriteString(" ")
 	b.WriteString(padString("TYPE", typeW))
 	b.WriteString(" ")
@@ -728,7 +851,7 @@ func (m *model) renderTableHeader() string {
 	b.WriteString(" ")
 	b.WriteString(padString("TO", toW))
 	b.WriteString(" ")
-	b.WriteString("METHOD / DETAILS") // No padding - extends to edge
+	b.WriteString("DETAILS") // No padding - extends to edge
 
 	return headerStyle.Render(b.String())
 }
@@ -753,77 +876,119 @@ func (m *model) renderMessages() string {
 }
 
 // renderMessageLine renders a single message line
-func (m *model) renderMessageLine(msg *event.MCPEvent, selected bool) string {
-	// Check if this message's pair is selected (for subtle highlighting)
-	isPairHighlighted := m.isPairHighlighted(msg)
+func (m *model) renderMessageLine(msg *displayMessage, selected bool) string {
+	// Check if this message's pair is selected (for subtle highlighting) - only for MCP
+	isPairHighlighted := false
+	if msg.source == sourceTypeMCP && msg.mcpEvent != nil {
+		isPairHighlighted = m.isPairHighlighted(msg)
+	}
 
 	// Get dynamic column widths
-	timeW, transportW, typeW, idW, fromW, toW, _ := m.getColumnWidths()
+	timeW, transportW, appW, typeW, idW, fromW, toW, _ := m.getColumnWidths()
+
+	// Get timestamp
+	var timestamp time.Time
+	if msg.source == sourceTypeMCP && msg.mcpEvent != nil {
+		timestamp = msg.mcpEvent.Timestamp
+	} else if msg.source == sourceTypeLLM && msg.llmEvent != nil {
+		timestamp = msg.llmEvent.Timestamp
+	}
 
 	// Colorblind-safe palette
 	// Time - same as transport for better visibility on gray background
 	timeStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#9E9E9E"))
-	timeStr := padStringRight(msg.Timestamp.Format("15:04:05.000"), timeW)
+	timeStr := padStringRight(timestamp.Format("15:04:05.000"), timeW)
 
 	// Transport - neutral gray
-	var transportStyle lipgloss.Style
-	var transportStr string
-	if msg.TransportType == event.TransportTypeHTTP {
-		transportStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#9E9E9E"))
-		transportStr = padString("HTTP", transportW)
+	transportStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#9E9E9E"))
+	transportType := m.getTransportType(msg)
+	transportStr := padString(transportType, transportW)
+
+	// App - color coded with unique colors
+	var appStyle lipgloss.Style
+	var appStr string
+	if msg.source == sourceTypeMCP {
+		appStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#87CEEB")) // Sky Blue (unique)
+		appStr = padString("MCP", appW)
 	} else {
-		transportStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#9E9E9E"))
-		transportStr = padString("STDIO", transportW)
+		appStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#DA70D6")) // Orchid/Pink (unique)
+		appStr = padString("LLM", appW)
 	}
 
 	// Type - colorblind-safe palette
+	msgTypeStr := m.getMessageTypeString(msg)
 	var typeStyle lipgloss.Style
 	var typeStr string
 	var isError bool
-	switch msg.MessageType {
-	case event.JSONRPCMessageTypeRequest:
-		typeStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#5F87FF")) // Blue for requests
+	switch msgTypeStr {
+	case "REQ":
+		typeStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#5F87FF")) // Blue
 		typeStr = padString("REQ", typeW)
-	case event.JSONRPCMessageTypeResponse:
-		if msg.Error.Message != "" {
-			typeStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#FF0000")).Bold(true) // Red for errors
-			typeStr = padString("ERROR", typeW)
-			isError = true
-		} else {
-			typeStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#5FD787")) // Green for responses
-			typeStr = padString("RESP", typeW)
-		}
-	case event.JSONRPCMessageTypeNotification:
-		typeStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#FF8700")) // Orange for notifications
+	case "RESP":
+		typeStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#5FD787")) // Green
+		typeStr = padString("RESP", typeW)
+	case "ERROR":
+		typeStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#FF0000")).Bold(true) // Red
+		typeStr = padString("ERROR", typeW)
+		isError = true
+	case "NOTIFY":
+		typeStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#FF8700")) // Orange
 		typeStr = padString("NOTIFY", typeW)
+	case "STREAM":
+		typeStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#AF87FF")) // Purple
+		typeStr = padString("STREAM", typeW)
+	default:
+		typeStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#9E9E9E"))
+		typeStr = padString(msgTypeStr, typeW)
 	}
 
 	// ID - same as transport for better visibility on gray background
 	idStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#9E9E9E"))
-	idStr := fmt.Sprintf("%v", msg.ID)
-	if msg.MessageType == event.JSONRPCMessageTypeNotification {
-		idStr = "-"
+	var idStr string
+	if msg.source == sourceTypeMCP && msg.mcpEvent != nil {
+		idStr = fmt.Sprintf("%v", msg.mcpEvent.ID)
+		if msg.mcpEvent.MessageType == event.JSONRPCMessageTypeNotification {
+			idStr = "-"
+		}
+	} else {
+		idStr = "-" // LLM messages have no ID
 	}
 	idStr = padString(idStr, idW)
 
-	// From/To - dim the prefixes and brackets, highlight process name
+	// From/To - follows console pattern
 	processNameStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#D0D0D0"))
 	var fromStr, toStr string
-	switch msg.TransportType {
-	case event.TransportTypeStdio:
-		fromPlain := fmt.Sprintf("%s[%d]", msg.FromComm, msg.FromPID)
-		toPlain := fmt.Sprintf("%s[%d]", msg.ToComm, msg.ToPID)
-		fromStr = padString(fromPlain, fromW)
-		toStr = padString(toPlain, toW)
-	case event.TransportTypeHTTP:
-		if msg.HttpTransport.IsRequest {
-			fromPlain := fmt.Sprintf("%s[%d]", msg.HttpTransport.Comm, msg.HttpTransport.PID)
-			toPlain := msg.HttpTransport.Host
+
+	if msg.source == sourceTypeMCP && msg.mcpEvent != nil {
+		switch msg.mcpEvent.TransportType {
+		case event.TransportTypeStdio:
+			fromPlain := fmt.Sprintf("%s[%d]", msg.mcpEvent.FromComm, msg.mcpEvent.FromPID)
+			toPlain := fmt.Sprintf("%s[%d]", msg.mcpEvent.ToComm, msg.mcpEvent.ToPID)
+			fromStr = padString(fromPlain, fromW)
+			toStr = padString(toPlain, toW)
+		case event.TransportTypeHTTP:
+			if msg.mcpEvent.HttpTransport.IsRequest {
+				fromPlain := fmt.Sprintf("%s[%d]", msg.mcpEvent.HttpTransport.Comm, msg.mcpEvent.HttpTransport.PID)
+				toPlain := msg.mcpEvent.HttpTransport.Host
+				fromStr = padString(fromPlain, fromW)
+				toStr = padString(toPlain, toW)
+			} else {
+				fromPlain := msg.mcpEvent.HttpTransport.Host
+				toPlain := fmt.Sprintf("%s[%d]", msg.mcpEvent.HttpTransport.Comm, msg.mcpEvent.HttpTransport.PID)
+				fromStr = padString(fromPlain, fromW)
+				toStr = padString(toPlain, toW)
+			}
+		}
+	} else if msg.source == sourceTypeLLM && msg.llmEvent != nil {
+		// LLM: request goes PID→host, response/stream goes host→PID
+		if msg.llmEvent.MessageType == event.LLMMessageTypeRequest {
+			fromPlain := fmt.Sprintf("%s[%d]", msg.llmEvent.Comm, msg.llmEvent.PID)
+			toPlain := msg.llmEvent.Host
 			fromStr = padString(fromPlain, fromW)
 			toStr = padString(toPlain, toW)
 		} else {
-			fromPlain := msg.HttpTransport.Host
-			toPlain := fmt.Sprintf("%s[%d]", msg.HttpTransport.Comm, msg.HttpTransport.PID)
+			fromPlain := msg.llmEvent.Host
+			toPlain := fmt.Sprintf("%s[%d]", msg.llmEvent.Comm, msg.llmEvent.PID)
 			fromStr = padString(fromPlain, fromW)
 			toStr = padString(toPlain, toW)
 		}
@@ -832,29 +997,46 @@ func (m *model) renderMessageLine(msg *event.MCPEvent, selected bool) string {
 	// Method/Details - no fixed padding, let it extend to terminal edge
 	methodStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#FFFFFF"))
 	var detailsStr string
-	switch msg.MessageType {
-	case event.JSONRPCMessageTypeRequest:
-		detailsStr = msg.Method
-		if toolName := msg.ExtractToolName(); toolName != "" {
-			detailsStr += fmt.Sprintf(" (%s)", toolName)
-		} else if uri := msg.ExtractResourceURI(); uri != "" {
-			detailsStr += fmt.Sprintf(" (%s)", uri)
+
+	if msg.source == sourceTypeMCP && msg.mcpEvent != nil {
+		switch msg.mcpEvent.MessageType {
+		case event.JSONRPCMessageTypeRequest:
+			detailsStr = msg.mcpEvent.Method
+			if toolName := msg.mcpEvent.ExtractToolName(); toolName != "" {
+				detailsStr += fmt.Sprintf(" (%s)", toolName)
+			} else if uri := msg.mcpEvent.ExtractResourceURI(); uri != "" {
+				detailsStr += fmt.Sprintf(" (%s)", uri)
+			}
+		case event.JSONRPCMessageTypeResponse:
+			if msg.mcpEvent.Error.Message != "" {
+				detailsStr = fmt.Sprintf("%s (Code: %d)", msg.mcpEvent.Error.Message, msg.mcpEvent.Error.Code)
+			} else {
+				detailsStr = "OK"
+			}
+		case event.JSONRPCMessageTypeNotification:
+			detailsStr = msg.mcpEvent.Method
 		}
-	case event.JSONRPCMessageTypeResponse:
-		if msg.Error.Message != "" {
-			detailsStr = fmt.Sprintf("%s (Code: %d)", msg.Error.Message, msg.Error.Code)
-		} else {
-			detailsStr = "OK"
+	} else if msg.source == sourceTypeLLM && msg.llmEvent != nil {
+		// LLM: [model] "content" - build complete string first, then trim to fit
+		model := msg.llmEvent.Model
+		content := strings.ReplaceAll(msg.llmEvent.Content, "\n", " ") // Replace newlines with spaces
+
+		// Build the full details string
+		if model != "" && content != "" {
+			detailsStr = fmt.Sprintf("[%s] \"%s\"", model, content)
+		} else if model != "" {
+			detailsStr = fmt.Sprintf("[%s]", model)
+		} else if content != "" {
+			detailsStr = fmt.Sprintf("\"%s\"", content)
 		}
-	case event.JSONRPCMessageTypeNotification:
-		detailsStr = msg.Method
+		// Trimming will happen below based on available width
 	}
 
 	// Calculate remaining space for details (to prevent overflow)
-	// prefix(2) + timeW + transport + typeW + idW + fromW + arrow + toW + spaces(7)
+	// prefix(2) + timeW + transport + app + typeW + idW + fromW + arrow + toW + spaces(8)
 	// Note: arrow "→" is 3 bytes in UTF-8 but displays as 1 character width
 	arrowWidth := 1 // Display width of arrow
-	usedWidth := 2 + timeW + 1 + transportW + 1 + typeW + 1 + idW + 1 + fromW + 1 + arrowWidth + 1 + toW + 1
+	usedWidth := 2 + timeW + 1 + transportW + 1 + appW + 1 + typeW + 1 + idW + 1 + fromW + 1 + arrowWidth + 1 + toW + 1
 	remainingWidth := m.width - usedWidth
 	if len(detailsStr) > remainingWidth && remainingWidth > 3 {
 		detailsStr = detailsStr[:remainingWidth-3] + "..."
@@ -882,6 +1064,8 @@ func (m *model) renderMessageLine(msg *event.MCPEvent, selected bool) string {
 		b.WriteString(" ")
 		b.WriteString(transportStr)
 		b.WriteString(" ")
+		b.WriteString(appStr)
+		b.WriteString(" ")
 		b.WriteString(typeStr)
 		b.WriteString(" ")
 		b.WriteString(idStr)
@@ -895,7 +1079,7 @@ func (m *model) renderMessageLine(msg *event.MCPEvent, selected bool) string {
 		b.WriteString(detailsStr)
 
 		// Pad to full terminal width to extend highlight to the right edge
-		currentLen := len(prefix) + len(timeStr) + 1 + len(transportStr) + 1 + len(typeStr) + 1 +
+		currentLen := len(prefix) + len(timeStr) + 1 + len(transportStr) + 1 + len(appStr) + 1 + len(typeStr) + 1 +
 			len(idStr) + 1 + len(fromStr) + 1 + 1 + 1 + len(toStr) + 1 + len(detailsStr)
 		if currentLen < m.width {
 			b.WriteString(strings.Repeat(" ", m.width-currentLen))
@@ -918,6 +1102,7 @@ func (m *model) renderMessageLine(msg *event.MCPEvent, selected bool) string {
 		// Apply background to all styles
 		timeStyleBg := timeStyle.Background(bgColor)
 		transportStyleBg := transportStyle.Background(bgColor)
+		appStyleBg := appStyle.Background(bgColor)
 		typeStyleBg := typeStyle.Background(bgColor)
 		idStyleBg := idStyle.Background(bgColor)
 		processNameStyleBg := processNameStyle.Background(bgColor)
@@ -932,6 +1117,8 @@ func (m *model) renderMessageLine(msg *event.MCPEvent, selected bool) string {
 		b.WriteString(lipgloss.NewStyle().Background(bgColor).Render(" "))
 		b.WriteString(transportStyleBg.Render(transportStr))
 		b.WriteString(lipgloss.NewStyle().Background(bgColor).Render(" "))
+		b.WriteString(appStyleBg.Render(appStr))
+		b.WriteString(lipgloss.NewStyle().Background(bgColor).Render(" "))
 		b.WriteString(typeStyleBg.Render(typeStr))
 		b.WriteString(lipgloss.NewStyle().Background(bgColor).Render(" "))
 		b.WriteString(idStyleBg.Render(idStr))
@@ -945,7 +1132,7 @@ func (m *model) renderMessageLine(msg *event.MCPEvent, selected bool) string {
 		b.WriteString(methodStyleBg.Render(detailsStr))
 
 		// Pad to full width with background
-		currentLen := len(prefix) + len(timeStr) + 1 + len(transportStr) + 1 + len(typeStr) + 1 +
+		currentLen := len(prefix) + len(timeStr) + 1 + len(transportStr) + 1 + len(appStr) + 1 + len(typeStr) + 1 +
 			len(idStr) + 1 + len(fromStr) + 1 + 1 + 1 + len(toStr) + 1 + len(detailsStr)
 		if currentLen < m.width {
 			b.WriteString(lipgloss.NewStyle().Background(bgColor).Render(strings.Repeat(" ", m.width-currentLen)))
@@ -966,6 +1153,8 @@ func (m *model) renderMessageLine(msg *event.MCPEvent, selected bool) string {
 	b.WriteString(timeStyle.Render(timeStr))
 	b.WriteString(" ")
 	b.WriteString(transportStyle.Render(transportStr))
+	b.WriteString(" ")
+	b.WriteString(appStyle.Render(appStr))
 	b.WriteString(" ")
 	b.WriteString(typeStyle.Render(typeStr))
 	b.WriteString(" ")
@@ -1036,6 +1225,7 @@ func (m *model) renderFooter() string {
 			keyStyle.Render("Enter"),
 			keyStyle.Render("p"),
 			keyStyle.Render("t"),
+			keyStyle.Render("a"),
 			keyStyle.Render("y"),
 			keyStyle.Render("d"),
 			keyStyle.Render("b"),
@@ -1048,6 +1238,7 @@ func (m *model) renderFooter() string {
 			keyStyle.Render("Enter:Detail"),
 			keyStyle.Render("p:Pause"),
 			keyStyle.Render("t:Transport"),
+			keyStyle.Render("a:App"),
 			keyStyle.Render("y:Type"),
 			keyStyle.Render("d:Density"),
 			keyStyle.Render("b:Banner"),
@@ -1061,6 +1252,7 @@ func (m *model) renderFooter() string {
 			keyStyle.Render("Enter:Details"),
 			keyStyle.Render("p:Pause"),
 			keyStyle.Render("t:TransportFilter"),
+			keyStyle.Render("a:AppFilter"),
 			keyStyle.Render("y:TypeFilter"),
 			keyStyle.Render("d:Density"),
 			keyStyle.Render("b:Banner"),
@@ -1082,6 +1274,9 @@ func (m *model) renderFooter() string {
 		if m.filterTransport != "ALL" {
 			filterInfo = append(filterInfo, fmt.Sprintf("Transport=%s", m.filterTransport))
 		}
+		if m.filterApp != "ALL" {
+			filterInfo = append(filterInfo, fmt.Sprintf("App=%s", m.filterApp))
+		}
 		if m.filterType != "ALL" {
 			filterInfo = append(filterInfo, fmt.Sprintf("Type=%s", m.filterType))
 		}
@@ -1102,9 +1297,14 @@ func (m *model) renderFooter() string {
 }
 
 // renderTabBar renders the tab navigation bar for request/response switching
-func (m *model) renderTabBar(msg *event.MCPEvent) string {
+func (m *model) renderTabBar(msg *displayMessage) string {
+	// Only for MCP events
+	if msg.source != sourceTypeMCP || msg.mcpEvent == nil {
+		return ""
+	}
+
 	// Don't show tabs for notifications
-	if msg.MessageType == event.JSONRPCMessageTypeNotification {
+	if msg.mcpEvent.MessageType == event.JSONRPCMessageTypeNotification {
 		return ""
 	}
 
@@ -1128,12 +1328,12 @@ func (m *model) renderTabBar(msg *event.MCPEvent) string {
 	responseLabel := "Response"
 
 	paired := m.findPairedMessage(msg)
-	if msg.MessageType == event.JSONRPCMessageTypeResponse {
+	if msg.mcpEvent.MessageType == event.JSONRPCMessageTypeResponse {
 		hasResponse = true
-		if msg.Error.Message != "" {
+		if msg.mcpEvent.Error.Message != "" {
 			responseLabel = "Response (error)"
 		}
-	} else if msg.MessageType == event.JSONRPCMessageTypeRequest {
+	} else if msg.mcpEvent.MessageType == event.JSONRPCMessageTypeRequest {
 		if paired != nil {
 			hasResponse = true
 			// Check if response is an error
@@ -1190,13 +1390,15 @@ func (m *model) renderDetailView() string {
 	b.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#9E9E9E")).Render(strings.Repeat("━", m.width)))
 	b.WriteString("\n")
 
-	// Tab bar (if applicable)
-	tabBar := m.renderTabBar(msg)
-	if tabBar != "" {
-		b.WriteString(tabBar)
-		b.WriteString("\n")
-		b.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#4E4E4E")).Render(strings.Repeat("─", m.width)))
-		b.WriteString("\n")
+	// Tab bar (only for MCP events, not LLM)
+	if msg.source == sourceTypeMCP && msg.mcpEvent != nil {
+		tabBar := m.renderTabBar(msg)
+		if tabBar != "" {
+			b.WriteString(tabBar)
+			b.WriteString("\n")
+			b.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#4E4E4E")).Render(strings.Repeat("─", m.width)))
+			b.WriteString("\n")
+		}
 	}
 
 	// Overview section
@@ -1213,9 +1415,16 @@ func (m *model) renderDetailView() string {
 	// Footer
 	keyStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#00D7FF"))
 
-	// Show 'r' keybind only for messages with pairs (not notifications)
+	// Show 'r' keybind only for MCP messages with pairs (not notifications or LLM)
 	var footer string
-	if msg.MessageType != event.JSONRPCMessageTypeNotification {
+	showSwitch := false
+	if msg.source == sourceTypeMCP && msg.mcpEvent != nil {
+		if msg.mcpEvent.MessageType != event.JSONRPCMessageTypeNotification {
+			showSwitch = true
+		}
+	}
+
+	if showSwitch {
 		footer = fmt.Sprintf("%s  %s  %s  %s  %s",
 			keyStyle.Render("Tab:Format"),
 			keyStyle.Render("r:Switch"),
@@ -1235,7 +1444,7 @@ func (m *model) renderDetailView() string {
 }
 
 // renderOverview renders the overview section in detail view
-func (m *model) renderOverview(msg *event.MCPEvent) string {
+func (m *model) renderOverview(msg *displayMessage) string {
 	var b strings.Builder
 
 	labelStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#9E9E9E"))
@@ -1256,98 +1465,125 @@ func (m *model) renderOverview(msg *event.MCPEvent) string {
 		b.WriteString("\n")
 	}
 
-	// Determine which message to show based on active tab (same logic as renderRawJSON)
-	var displayMsg *event.MCPEvent
+	// Handle MCP events
+	if msg.source == sourceTypeMCP && msg.mcpEvent != nil {
+		// Determine which MCP message to show based on active tab
+		var displayMsg *event.MCPEvent
 
-	if msg.MessageType == event.JSONRPCMessageTypeNotification {
-		displayMsg = msg
-	} else {
-		// For request-response pairs, show content based on active tab
-		if m.detailViewTab == "request" {
-			if msg.MessageType == event.JSONRPCMessageTypeRequest {
-				displayMsg = msg
-			} else if msg.MessageType == event.JSONRPCMessageTypeResponse {
-				// Show the paired request
-				paired := m.findPairedMessage(msg)
-				if paired != nil {
-					displayMsg = paired
-				} else if msg.Request != nil {
-					// Create a temporary message from embedded request for display
-					displayMsg = &event.MCPEvent{
-						Timestamp:      msg.Timestamp, // Use response timestamp as fallback
-						TransportType:  msg.TransportType,
-						StdioTransport: msg.StdioTransport,
-						HttpTransport:  msg.HttpTransport,
-						JSONRPCMessage: *msg.Request,
-						Raw:            "",
+		if msg.mcpEvent.MessageType == event.JSONRPCMessageTypeNotification {
+			displayMsg = msg.mcpEvent
+		} else {
+			// For request-response pairs, show content based on active tab
+			if m.detailViewTab == "request" {
+				if msg.mcpEvent.MessageType == event.JSONRPCMessageTypeRequest {
+					displayMsg = msg.mcpEvent
+				} else if msg.mcpEvent.MessageType == event.JSONRPCMessageTypeResponse {
+					// Show the paired request
+					paired := m.findPairedMessage(msg)
+					if paired != nil {
+						displayMsg = paired
+					} else if msg.mcpEvent.Request != nil {
+						// Create a temporary message from embedded request for display
+						displayMsg = &event.MCPEvent{
+							Timestamp:      msg.mcpEvent.Timestamp,
+							TransportType:  msg.mcpEvent.TransportType,
+							StdioTransport: msg.mcpEvent.StdioTransport,
+							HttpTransport:  msg.mcpEvent.HttpTransport,
+							JSONRPCMessage: *msg.mcpEvent.Request,
+							Raw:            "",
+						}
+					} else {
+						displayMsg = msg.mcpEvent // Fallback
 					}
-				} else {
-					displayMsg = msg // Fallback
 				}
-			}
-		} else {
-			// Show response
-			if msg.MessageType == event.JSONRPCMessageTypeResponse {
-				displayMsg = msg
-			} else if msg.MessageType == event.JSONRPCMessageTypeRequest {
-				// Show the paired response
-				paired := m.findPairedMessage(msg)
-				if paired != nil {
-					displayMsg = paired
-				} else {
-					displayMsg = nil // No response yet
+			} else {
+				// Show response
+				if msg.mcpEvent.MessageType == event.JSONRPCMessageTypeResponse {
+					displayMsg = msg.mcpEvent
+				} else if msg.mcpEvent.MessageType == event.JSONRPCMessageTypeRequest {
+					// Show the paired response
+					paired := m.findPairedMessage(msg)
+					if paired != nil {
+						displayMsg = paired
+					} else {
+						displayMsg = nil // No response yet
+					}
 				}
 			}
 		}
-	}
 
-	// If no message to display (e.g., pending response)
-	if displayMsg == nil {
-		renderField("Status:        ", "(Response pending)")
-		return b.String()
-	}
-
-	// Timestamp
-	renderField("Timestamp:     ", displayMsg.Timestamp.Format("2006-01-02 15:04:05.000"))
-
-	// Transport
-	renderField("Transport:     ", string(displayMsg.TransportType))
-
-	// Message Type
-	renderField("Message Type:  ", string(displayMsg.MessageType))
-
-	// Message ID
-	idStr := fmt.Sprintf("%v", displayMsg.ID)
-	if displayMsg.MessageType == event.JSONRPCMessageTypeNotification {
-		idStr = "-"
-	}
-	renderField("Message ID:    ", idStr)
-
-	// Status
-	if displayMsg.MessageType == event.JSONRPCMessageTypeResponse {
-		status := "OK"
-		if displayMsg.Error.Message != "" {
-			status = fmt.Sprintf("Error: %s", displayMsg.Error.Message)
+		// If no message to display (e.g., pending response)
+		if displayMsg == nil {
+			renderField("Status:        ", "(Response pending)")
+			return b.String()
 		}
-		renderField("Status:        ", status)
-	}
 
-	// From/To Process
-	switch displayMsg.TransportType {
-	case event.TransportTypeStdio:
-		fromStr := fmt.Sprintf("%s (PID: %d)", displayMsg.FromComm, displayMsg.FromPID)
-		renderField("From Process:  ", fromStr)
+		// MCP event fields
+		renderField("Timestamp:     ", displayMsg.Timestamp.Format("2006-01-02 15:04:05.000"))
+		renderField("Transport:     ", string(displayMsg.TransportType))
+		renderField("App:           ", "MCP")
+		renderField("Message Type:  ", string(displayMsg.MessageType))
 
-		toStr := fmt.Sprintf("%s (PID: %d)", displayMsg.ToComm, displayMsg.ToPID)
-		renderField("To Process:    ", toStr)
-	case event.TransportTypeHTTP:
-		if displayMsg.HttpTransport.IsRequest {
-			fromStr := fmt.Sprintf("%s (PID: %d)", displayMsg.HttpTransport.Comm, displayMsg.HttpTransport.PID)
+		idStr := fmt.Sprintf("%v", displayMsg.ID)
+		if displayMsg.MessageType == event.JSONRPCMessageTypeNotification {
+			idStr = "-"
+		}
+		renderField("Message ID:    ", idStr)
+
+		if displayMsg.MessageType == event.JSONRPCMessageTypeResponse {
+			status := "OK"
+			if displayMsg.Error.Message != "" {
+				status = fmt.Sprintf("Error: %s", displayMsg.Error.Message)
+			}
+			renderField("MCP Status:    ", status)
+		}
+
+		// From/To Process
+		switch displayMsg.TransportType {
+		case event.TransportTypeStdio:
+			fromStr := fmt.Sprintf("%s (PID: %d)", displayMsg.FromComm, displayMsg.FromPID)
 			renderField("From Process:  ", fromStr)
-			renderField("To Host:       ", displayMsg.HttpTransport.Host)
+
+			toStr := fmt.Sprintf("%s (PID: %d)", displayMsg.ToComm, displayMsg.ToPID)
+			renderField("To Process:    ", toStr)
+		case event.TransportTypeHTTP:
+			if displayMsg.HttpTransport.IsRequest {
+				fromStr := fmt.Sprintf("%s (PID: %d)", displayMsg.HttpTransport.Comm, displayMsg.HttpTransport.PID)
+				renderField("From Process:  ", fromStr)
+				renderField("To Host:       ", displayMsg.HttpTransport.Host)
+			} else {
+				renderField("From Host:     ", displayMsg.HttpTransport.Host)
+				toStr := fmt.Sprintf("%s (PID: %d)", displayMsg.HttpTransport.Comm, displayMsg.HttpTransport.PID)
+				renderField("To Process:    ", toStr)
+			}
+		}
+	} else if msg.source == sourceTypeLLM && msg.llmEvent != nil {
+		// Handle LLM events (aligned with HTTP MCP structure)
+		renderField("Timestamp:     ", msg.llmEvent.Timestamp.Format("2006-01-02 15:04:05.000"))
+		renderField("Transport:     ", "HTTP")
+		renderField("App:           ", "LLM")
+		renderField("Message Type:  ", string(msg.llmEvent.MessageType))
+		renderField("Message ID:    ", "-")
+
+		if msg.llmEvent.Model != "" {
+			renderField("Model:         ", msg.llmEvent.Model)
+		}
+
+		// Error field - only show if there's an error
+		if msg.llmEvent.Error != "" {
+			renderField("Error:         ", msg.llmEvent.Error)
+		}
+
+		// From/To - aligned with HTTP MCP pattern
+		if msg.llmEvent.MessageType == event.LLMMessageTypeRequest {
+			// Request: From Process → To Host
+			fromStr := fmt.Sprintf("%s (PID: %d)", msg.llmEvent.Comm, msg.llmEvent.PID)
+			renderField("From Process:  ", fromStr)
+			renderField("To Host:       ", msg.llmEvent.Host)
 		} else {
-			renderField("From Host:     ", displayMsg.HttpTransport.Host)
-			toStr := fmt.Sprintf("%s (PID: %d)", displayMsg.HttpTransport.Comm, displayMsg.HttpTransport.PID)
+			// Response/Stream: From Host → To Process
+			renderField("From Host:     ", msg.llmEvent.Host)
+			toStr := fmt.Sprintf("%s (PID: %d)", msg.llmEvent.Comm, msg.llmEvent.PID)
 			renderField("To Process:    ", toStr)
 		}
 	}
@@ -1356,61 +1592,146 @@ func (m *model) renderOverview(msg *event.MCPEvent) string {
 }
 
 // renderRawJSON renders the raw JSON section
-func (m *model) renderRawJSON(msg *event.MCPEvent) string {
+func (m *model) renderRawJSON(msg *displayMessage) string {
 	var b strings.Builder
 
 	labelStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#9E9E9E"))
 	sepStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#4E4E4E"))
 	hintStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#00D7FF"))
 
-	// Determine which message to show based on active tab
-	var displayMsg *event.MCPEvent
+	var jsonStr string
 	var contentLabel string
 
-	if msg.MessageType == event.JSONRPCMessageTypeNotification {
-		// Notifications don't have tabs
-		displayMsg = msg
+	// Handle LLM events (simpler - no tabs, use raw JSON from HTTP payload)
+	if msg.source == sourceTypeLLM && msg.llmEvent != nil {
 		contentLabel = "RAW JSON"
-	} else {
-		// For request-response pairs, show content based on active tab
-		if m.detailViewTab == "request" {
-			if msg.MessageType == event.JSONRPCMessageTypeRequest {
-				displayMsg = msg
-			} else if msg.MessageType == event.JSONRPCMessageTypeResponse {
-				// Show the paired request
-				paired := m.findPairedMessage(msg)
-				if paired != nil {
-					displayMsg = paired
-				} else if msg.Request != nil {
-					// Create a temporary message from embedded request for display
-					displayMsg = &event.MCPEvent{
-						JSONRPCMessage: *msg.Request,
-						Raw:            "", // We'll generate this
-					}
-					// Generate raw JSON for embedded request
-					if rawBytes, err := json.Marshal(msg.Request); err == nil {
-						displayMsg.Raw = string(rawBytes)
-					}
-				} else {
-					displayMsg = msg // Fallback
-				}
-			}
-			contentLabel = "REQUEST JSON"
-		} else {
-			// Show response
-			if msg.MessageType == event.JSONRPCMessageTypeResponse {
-				displayMsg = msg
-			} else if msg.MessageType == event.JSONRPCMessageTypeRequest {
-				// Show the paired response
-				paired := m.findPairedMessage(msg)
-				if paired != nil {
-					displayMsg = paired
-				} else {
-					displayMsg = nil // No response yet
-				}
-			}
-			contentLabel = "RESPONSE JSON"
+
+		// Use the original HTTP payload JSON
+		rawJSON := msg.llmEvent.RawJSON
+		if rawJSON == "" {
+			// Fallback for stream chunks which don't have raw JSON
+			rawJSON = m.reconstructLLMJSON(msg.llmEvent)
 		}
+
+		// Apply formatting based on prettyJSON toggle
+		var jsonObj interface{}
+		if err := json.Unmarshal([]byte(rawJSON), &jsonObj); err == nil {
+			if m.prettyJSON {
+				// Pretty print with indentation
+				if prettyBytes, err := json.MarshalIndent(jsonObj, "", "  "); err == nil {
+					jsonStr = string(prettyBytes)
+				} else {
+					jsonStr = rawJSON
+				}
+			} else {
+				// Compact JSON (single line)
+				if compactBytes, err := json.Marshal(jsonObj); err == nil {
+					jsonStr = string(compactBytes)
+				} else {
+					jsonStr = rawJSON
+				}
+			}
+		} else {
+			jsonStr = rawJSON
+		}
+	} else if msg.source == sourceTypeMCP && msg.mcpEvent != nil {
+		// MCP event - original logic with tab support
+		// Determine which message to show based on active tab
+		var displayMsg *event.MCPEvent
+
+		if msg.mcpEvent.MessageType == event.JSONRPCMessageTypeNotification {
+			// Notifications don't have tabs
+			displayMsg = msg.mcpEvent
+			contentLabel = "RAW JSON"
+		} else {
+			// For request-response pairs, show content based on active tab
+			if m.detailViewTab == "request" {
+				if msg.mcpEvent.MessageType == event.JSONRPCMessageTypeRequest {
+					displayMsg = msg.mcpEvent
+				} else if msg.mcpEvent.MessageType == event.JSONRPCMessageTypeResponse {
+					// Show the paired request
+					paired := m.findPairedMessage(msg)
+					if paired != nil {
+						displayMsg = paired
+					} else if msg.mcpEvent.Request != nil {
+						// Create a temporary message from embedded request for display
+						displayMsg = &event.MCPEvent{
+							JSONRPCMessage: *msg.mcpEvent.Request,
+							Raw:            "", // We'll generate this
+						}
+						// Generate raw JSON for embedded request
+						if rawBytes, err := json.Marshal(msg.mcpEvent.Request); err == nil {
+							displayMsg.Raw = string(rawBytes)
+						}
+					} else {
+						displayMsg = msg.mcpEvent // Fallback
+					}
+				}
+				contentLabel = "REQUEST JSON"
+			} else {
+				// Show response
+				if msg.mcpEvent.MessageType == event.JSONRPCMessageTypeResponse {
+					displayMsg = msg.mcpEvent
+				} else if msg.mcpEvent.MessageType == event.JSONRPCMessageTypeRequest {
+					// Show the paired response
+					paired := m.findPairedMessage(msg)
+					if paired != nil {
+						displayMsg = paired
+					} else {
+						displayMsg = nil // No response yet
+					}
+				}
+				contentLabel = "RESPONSE JSON"
+			}
+		}
+
+		// If no message to display (e.g., pending response)
+		if displayMsg == nil {
+			// Simple header with hints
+			wrapStatus := "OFF"
+			if m.jsonWrap {
+				wrapStatus = "ON"
+			}
+			headerLabel := labelStyle.Bold(true).Render(contentLabel)
+			header := fmt.Sprintf("%s  %s  %s",
+				headerLabel,
+				hintStyle.Render("[Tab:Format]"),
+				hintStyle.Render(fmt.Sprintf("[w:Wrap=%s]", wrapStatus)))
+			b.WriteString(header)
+			b.WriteString("\n")
+			b.WriteString(sepStyle.Render(strings.Repeat("─", m.width)))
+			b.WriteString("\n")
+			b.WriteString("  ")
+			b.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#9E9E9E")).Render("(Response pending)"))
+			b.WriteString("\n")
+			return b.String()
+		}
+
+		// Format JSON from Raw field based on prettyJSON toggle
+		var jsonObj interface{}
+		if err := json.Unmarshal([]byte(displayMsg.Raw), &jsonObj); err == nil {
+			if m.prettyJSON {
+				// Pretty print with indentation
+				if prettyBytes, err := json.MarshalIndent(jsonObj, "", "  "); err == nil {
+					jsonStr = string(prettyBytes)
+				} else {
+					jsonStr = displayMsg.Raw
+				}
+			} else {
+				// Compact JSON (single line)
+				if compactBytes, err := json.Marshal(jsonObj); err == nil {
+					jsonStr = string(compactBytes)
+				} else {
+					jsonStr = displayMsg.Raw
+				}
+			}
+		} else {
+			jsonStr = displayMsg.Raw
+		}
+	} else {
+		// Fallback for unknown type
+		contentLabel = "RAW JSON"
+		jsonStr = "{}"
 	}
 
 	// Simple header with hints
@@ -1427,31 +1748,6 @@ func (m *model) renderRawJSON(msg *event.MCPEvent) string {
 	b.WriteString("\n")
 	b.WriteString(sepStyle.Render(strings.Repeat("─", m.width)))
 	b.WriteString("\n")
-
-	// If no message to display (e.g., pending response)
-	if displayMsg == nil {
-		b.WriteString("  ")
-		b.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#9E9E9E")).Render("(Response pending)"))
-		b.WriteString("\n")
-		return b.String()
-	}
-
-	// Format JSON
-	var jsonStr string
-	if m.prettyJSON {
-		var jsonObj interface{}
-		if err := json.Unmarshal([]byte(displayMsg.Raw), &jsonObj); err == nil {
-			if prettyBytes, err := json.MarshalIndent(jsonObj, "", "  "); err == nil {
-				jsonStr = string(prettyBytes)
-			} else {
-				jsonStr = displayMsg.Raw
-			}
-		} else {
-			jsonStr = displayMsg.Raw
-		}
-	} else {
-		jsonStr = displayMsg.Raw
-	}
 
 	// Split into lines and apply scrolling
 	lines := strings.Split(jsonStr, "\n")
@@ -1472,8 +1768,9 @@ func (m *model) renderRawJSON(msg *event.MCPEvent) string {
 		line := lines[i]
 		maxWidth := m.width - 4 // Account for indentation
 
-		// Handle wrapping
-		if m.jsonWrap {
+		// Handle wrapping - always wrap when pretty printing is enabled OR when explicitly enabled
+		shouldWrap := m.jsonWrap || m.prettyJSON
+		if shouldWrap {
 			// Wrap long lines
 			if len(line) > maxWidth {
 				wrapped := wrapText(line, maxWidth)
@@ -1485,7 +1782,7 @@ func (m *model) renderRawJSON(msg *event.MCPEvent) string {
 				continue
 			}
 		} else {
-			// Truncate long lines
+			// Truncate long lines only when not pretty-printing
 			if len(line) > maxWidth {
 				line = line[:max(0, maxWidth-3)] + "..."
 			}
@@ -1499,6 +1796,44 @@ func (m *model) renderRawJSON(msg *event.MCPEvent) string {
 	return b.String()
 }
 
+// reconstructLLMJSON creates a JSON representation from LLM event fields
+// Returns compact JSON (without indentation) - caller can pretty print if needed
+func (m *model) reconstructLLMJSON(evt *event.LLMEvent) string {
+	// Create a simple JSON structure with available fields
+	jsonMap := make(map[string]interface{})
+
+	jsonMap["session_id"] = evt.SessionID
+	jsonMap["timestamp"] = evt.Timestamp.Format("2006-01-02T15:04:05.000Z07:00")
+	jsonMap["message_type"] = string(evt.MessageType)
+	jsonMap["pid"] = evt.PID
+	jsonMap["comm"] = evt.Comm
+	jsonMap["host"] = evt.Host
+
+	if evt.Model != "" {
+		jsonMap["model"] = evt.Model
+	}
+
+	if evt.Path != "" {
+		jsonMap["path"] = evt.Path
+	}
+
+	if evt.Content != "" {
+		jsonMap["content"] = evt.Content
+	}
+
+	if evt.Error != "" {
+		jsonMap["error"] = evt.Error
+	}
+
+	// Marshal to compact JSON (without indentation)
+	jsonBytes, err := json.Marshal(jsonMap)
+	if err != nil {
+		return "{}"
+	}
+
+	return string(jsonBytes)
+}
+
 // getMaxDetailScroll calculates the maximum scroll position for the detail view
 func (m *model) getMaxDetailScroll() int {
 	filteredMsgs := m.getFilteredMessages()
@@ -1508,63 +1843,99 @@ func (m *model) getMaxDetailScroll() int {
 
 	msg := filteredMsgs[m.selectedIndex]
 
-	// Determine which message to show based on active tab (same logic as renderRawJSON)
-	var displayMsg *event.MCPEvent
+	// Get JSON string based on message source
+	var jsonStr string
 
-	if msg.MessageType == event.JSONRPCMessageTypeNotification {
-		displayMsg = msg
-	} else {
-		if m.detailViewTab == "request" {
-			if msg.MessageType == event.JSONRPCMessageTypeRequest {
-				displayMsg = msg
-			} else if msg.MessageType == event.JSONRPCMessageTypeResponse {
-				paired := m.findPairedMessage(msg)
-				if paired != nil {
-					displayMsg = paired
-				} else if msg.Request != nil {
-					displayMsg = &event.MCPEvent{
-						JSONRPCMessage: *msg.Request,
-					}
-					if rawBytes, err := json.Marshal(msg.Request); err == nil {
-						displayMsg.Raw = string(rawBytes)
-					}
+	if msg.source == sourceTypeLLM && msg.llmEvent != nil {
+		// LLM events - use raw JSON from HTTP payload
+		rawJSON := msg.llmEvent.RawJSON
+		if rawJSON == "" {
+			// Fallback for stream chunks
+			rawJSON = m.reconstructLLMJSON(msg.llmEvent)
+		}
+		// Apply formatting based on prettyJSON toggle
+		var jsonObj interface{}
+		if err := json.Unmarshal([]byte(rawJSON), &jsonObj); err == nil {
+			if m.prettyJSON {
+				if prettyBytes, err := json.MarshalIndent(jsonObj, "", "  "); err == nil {
+					jsonStr = string(prettyBytes)
 				} else {
-					displayMsg = msg
+					jsonStr = rawJSON
+				}
+			} else {
+				if compactBytes, err := json.Marshal(jsonObj); err == nil {
+					jsonStr = string(compactBytes)
+				} else {
+					jsonStr = rawJSON
 				}
 			}
 		} else {
-			if msg.MessageType == event.JSONRPCMessageTypeResponse {
-				displayMsg = msg
-			} else if msg.MessageType == event.JSONRPCMessageTypeRequest {
-				paired := m.findPairedMessage(msg)
-				if paired != nil {
-					displayMsg = paired
-				} else {
-					return 0 // No response yet
+			jsonStr = rawJSON
+		}
+	} else if msg.source == sourceTypeMCP && msg.mcpEvent != nil {
+		// MCP events - use raw JSON with tab logic
+		var displayMsg *event.MCPEvent
+
+		if msg.mcpEvent.MessageType == event.JSONRPCMessageTypeNotification {
+			displayMsg = msg.mcpEvent
+		} else {
+			if m.detailViewTab == "request" {
+				if msg.mcpEvent.MessageType == event.JSONRPCMessageTypeRequest {
+					displayMsg = msg.mcpEvent
+				} else if msg.mcpEvent.MessageType == event.JSONRPCMessageTypeResponse {
+					paired := m.findPairedMessage(msg)
+					if paired != nil {
+						displayMsg = paired
+					} else if msg.mcpEvent.Request != nil {
+						displayMsg = &event.MCPEvent{
+							JSONRPCMessage: *msg.mcpEvent.Request,
+						}
+						if rawBytes, err := json.Marshal(msg.mcpEvent.Request); err == nil {
+							displayMsg.Raw = string(rawBytes)
+						}
+					} else {
+						displayMsg = msg.mcpEvent
+					}
+				}
+			} else {
+				if msg.mcpEvent.MessageType == event.JSONRPCMessageTypeResponse {
+					displayMsg = msg.mcpEvent
+				} else if msg.mcpEvent.MessageType == event.JSONRPCMessageTypeRequest {
+					paired := m.findPairedMessage(msg)
+					if paired != nil {
+						displayMsg = paired
+					} else {
+						return 0 // No response yet
+					}
 				}
 			}
 		}
-	}
 
-	if displayMsg == nil {
-		return 0
-	}
+		if displayMsg == nil {
+			return 0
+		}
 
-	// Format JSON the same way as renderRawJSON
-	var jsonStr string
-	if m.prettyJSON {
+		// Format JSON the same way as renderRawJSON
 		var jsonObj interface{}
 		if err := json.Unmarshal([]byte(displayMsg.Raw), &jsonObj); err == nil {
-			if prettyBytes, err := json.MarshalIndent(jsonObj, "", "  "); err == nil {
-				jsonStr = string(prettyBytes)
+			if m.prettyJSON {
+				if prettyBytes, err := json.MarshalIndent(jsonObj, "", "  "); err == nil {
+					jsonStr = string(prettyBytes)
+				} else {
+					jsonStr = displayMsg.Raw
+				}
 			} else {
-				jsonStr = displayMsg.Raw
+				if compactBytes, err := json.Marshal(jsonObj); err == nil {
+					jsonStr = string(compactBytes)
+				} else {
+					jsonStr = displayMsg.Raw
+				}
 			}
 		} else {
 			jsonStr = displayMsg.Raw
 		}
 	} else {
-		jsonStr = displayMsg.Raw
+		return 0
 	}
 
 	// Count lines
@@ -1749,22 +2120,27 @@ func getPairingKey(msg *event.MCPEvent) string {
 }
 
 // findPairedMessage finds the paired message (request for response, response for request)
-func (m *model) findPairedMessage(msg *event.MCPEvent) *event.MCPEvent {
-	if msg.MessageType == event.JSONRPCMessageTypeNotification {
+func (m *model) findPairedMessage(msg *displayMessage) *event.MCPEvent {
+	// Only MCP events have pairing
+	if msg.source != sourceTypeMCP || msg.mcpEvent == nil {
+		return nil
+	}
+
+	if msg.mcpEvent.MessageType == event.JSONRPCMessageTypeNotification {
 		return nil // Notifications have no pairs
 	}
 
-	pairingKey := getPairingKey(msg)
+	pairingKey := getPairingKey(msg.mcpEvent)
 	if pairingKey == "" {
 		return nil
 	}
 
-	if msg.MessageType == event.JSONRPCMessageTypeResponse {
+	if msg.mcpEvent.MessageType == event.JSONRPCMessageTypeResponse {
 		// For responses, find the request with matching pairing key
 		for _, m := range m.messages {
-			if m.MessageType == event.JSONRPCMessageTypeRequest {
-				if getPairingKey(m) == pairingKey {
-					return m
+			if m.source == sourceTypeMCP && m.mcpEvent != nil && m.mcpEvent.MessageType == event.JSONRPCMessageTypeRequest {
+				if getPairingKey(m.mcpEvent) == pairingKey {
+					return m.mcpEvent
 				}
 			}
 		}
@@ -1779,7 +2155,12 @@ func (m *model) findPairedMessage(msg *event.MCPEvent) *event.MCPEvent {
 }
 
 // isPairHighlighted checks if this message's pair is currently selected
-func (m *model) isPairHighlighted(msg *event.MCPEvent) bool {
+func (m *model) isPairHighlighted(msg *displayMessage) bool {
+	// Only MCP events have pairing
+	if msg.source != sourceTypeMCP || msg.mcpEvent == nil {
+		return false
+	}
+
 	paired := m.findPairedMessage(msg)
 	if paired == nil {
 		return false
@@ -1789,7 +2170,9 @@ func (m *model) isPairHighlighted(msg *event.MCPEvent) bool {
 	filteredMsgs := m.getFilteredMessages()
 	if m.selectedIndex >= 0 && m.selectedIndex < len(filteredMsgs) {
 		selectedMsg := filteredMsgs[m.selectedIndex]
-		return selectedMsg == paired
+		if selectedMsg.source == sourceTypeMCP && selectedMsg.mcpEvent != nil {
+			return selectedMsg.mcpEvent == paired
+		}
 	}
 	return false
 }

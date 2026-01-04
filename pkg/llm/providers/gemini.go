@@ -90,6 +90,7 @@ func (p *GeminiParser) ParseRequest(req *event.HttpRequestEvent) (*event.LLMEven
 		Path:        req.Path,
 		Model:       model,
 		Content:     extractGeminiUserPrompt(geminiReq.Contents),
+		RawJSON:     string(req.RequestPayload),
 	}, nil
 }
 
@@ -115,6 +116,7 @@ func (p *GeminiParser) ParseResponse(resp *event.HttpResponseEvent) (*event.LLME
 		Host:        resp.Host,
 		Path:        resp.Path,
 		Model:       model,
+		RawJSON:     string(resp.ResponsePayload),
 	}
 
 	// Check for error response
@@ -156,6 +158,7 @@ func (p *GeminiParser) ParseStreamEvent(sse *event.SSEEvent) (*event.LLMEvent, b
 		Host:        sse.Host,
 		Path:        sse.Path,
 		Model:       model,
+		RawJSON:     data, // Original SSE JSON payload
 	}
 
 	// Check for error

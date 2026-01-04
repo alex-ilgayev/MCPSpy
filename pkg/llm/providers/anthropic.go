@@ -136,6 +136,7 @@ func (p *AnthropicParser) ParseRequest(req *event.HttpRequestEvent) (*event.LLME
 		Path:        req.Path,
 		Model:       anthropicReq.Model,
 		Content:     extractUserPrompt(anthropicReq.Messages),
+		RawJSON:     string(req.RequestPayload),
 	}, nil
 }
 
@@ -155,6 +156,7 @@ func (p *AnthropicParser) ParseResponse(resp *event.HttpResponseEvent) (*event.L
 		Host:        resp.Host,
 		Path:        resp.Path,
 		Model:       anthropicResp.Model,
+		RawJSON:     string(resp.ResponsePayload),
 	}
 
 	// Check for error response (type: "error" at root level)
@@ -192,6 +194,7 @@ func (p *AnthropicParser) ParseStreamEvent(sse *event.SSEEvent) (*event.LLMEvent
 		Comm:        sse.Comm(),
 		Host:        sse.Host,
 		Path:        sse.Path,
+		RawJSON:     data, // Original SSE JSON payload
 	}
 
 	// Extract model from message_start

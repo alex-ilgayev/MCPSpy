@@ -27,6 +27,7 @@ type LLMEvent struct {
 	Model       string         `json:"model,omitempty"`
 	Content     string         `json:"content,omitempty"` // Request: user prompt, StreamChunk: delta, Response: full content
 	Error       string         `json:"error,omitempty"`
+	RawJSON     string         `json:"raw_json,omitempty"` // Original HTTP payload JSON (for requests/responses, not stream chunks)
 }
 
 func (e *LLMEvent) Type() EventType { return EventTypeLLMMessage }
