@@ -15,20 +15,14 @@ make test-e2e-stdio      # Stdio transport
 make test-e2e-https      # HTTPS transport
 ```
 
-### Run Specific Transport without MCPSpy
+### Run Scenario Only (no MCPSpy)
 
 ```bash
-make test-e2e-mcp-stdio      # Stdio transport
-make test-e2e-mcp-https      # HTTPS transport
-make test-e2e-mcp-security   # Security/injection test
-make test-e2e-mcp-llm        # LLM API monitoring test
-make test-e2e-mcp-claude     # Claude Code (MCP + tools + LLM)
-```
-
-### Run Claude Code E2E Test
-
-```bash
-make test-e2e-claude  # Comprehensive test: MCP + tool usage + LLM API
+make test-scenario-stdio          # Stdio transport
+make test-scenario-https          # HTTPS transport
+make test-scenario-security       # Security/injection test
+make test-scenario-llm-anthropic  # Anthropic LLM API test
+make test-scenario-llm-gemini     # Gemini LLM API test
 ```
 
 ### Run Security/Prompt Injection E2E Test
@@ -39,32 +33,28 @@ Requires `HF_TOKEN` environment variable:
 HF_TOKEN=your_huggingface_token make test-e2e-security
 ```
 
-Update expected output:
+### Run LLM API Monitoring E2E Tests
+
+**Anthropic Claude API** (requires `CLAUDE_CODE_OAUTH_TOKEN`):
 
 ```bash
-HF_TOKEN=your_token make test-e2e-update-security
+CLAUDE_CODE_OAUTH_TOKEN=your_api_key make test-e2e-llm-anthropic
 ```
 
-### Run LLM API Monitoring E2E Test
-
-Requires `CLAUDE_CODE_OAUTH_TOKEN` environment variable:
+**Google Gemini API** (requires `GEMINI_API_KEY`):
 
 ```bash
-CLAUDE_CODE_OAUTH_TOKEN=your_api_key make test-e2e-llm
-```
-
-Update expected output:
-
-```bash
-CLAUDE_CODE_OAUTH_TOKEN=your_api_key make test-e2e-update-llm
+GEMINI_API_KEY=your_api_key make test-e2e-llm-gemini
 ```
 
 ### Update Expected Outputs
 
 ```bash
-make test-e2e-update              # All scenarios
-make test-e2e-update-stdio        # Specific scenario
-make test-e2e-update-https
+make test-update-all              # All scenarios
+make test-update-stdio            # Specific scenario
+make test-update-https
+make test-update-llm-anthropic
+make test-update-llm-gemini
 ```
 
 ---
@@ -93,11 +83,11 @@ python tests/e2e_test.py --config tests/e2e_config.yaml --verbose
 
 | Argument            | Type   | Required | Description                                                                                                           |
 | ------------------- | ------ | -------- | --------------------------------------------------------------------------------------------------------------------- |
-| `--config`          | Path   | ✅ Yes   | Path to YAML configuration file                                                                                       |
-| `--scenario`        | String | ❌ No    | Run specific scenario by name (default: all scenarios)                                                                |
-| `--update-expected` | Flag   | ❌ No    | Update expected output files instead of validating                                                                    |
-| `--verbose`, `-v`   | Flag   | ❌ No    | Enable verbose logging output                                                                                         |
-| `--skip-mcpspy`     | Flag   | ❌ No    | Skip MCPSpy monitoring - only run traffic generation and pre/post commands (useful for debugging MCP implementations) |
+| `--config`          | Path   | Yes      | Path to YAML configuration file                                                                                       |
+| `--scenario`        | String | No       | Run specific scenario by name (default: all scenarios)                                                                |
+| `--update-expected` | Flag   | No       | Update expected output files instead of validating                                                                    |
+| `--verbose`, `-v`   | Flag   | No       | Enable verbose logging output                                                                                         |
+| `--skip-mcpspy`     | Flag   | No       | Skip MCPSpy monitoring - only run traffic generation and pre/post commands (useful for debugging MCP implementations) |
 
 ---
 

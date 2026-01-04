@@ -22,10 +22,10 @@ The security package (`pkg/security/`) provides prompt injection detection using
 
 ```bash
 # Run integration tests (requires HF_TOKEN environment variable)
-HF_TOKEN=hf_xxx make test-security-integration
+HF_TOKEN=hf_xxx make test-integration
 
 # Run with custom model
-HF_TOKEN=hf_xxx HF_MODEL=protectai/deberta-v3-base-prompt-injection-v2 make test-security-integration
+HF_TOKEN=hf_xxx HF_MODEL=protectai/deberta-v3-base-prompt-injection-v2 make test-integration
 
 # Run unit tests only (no API calls, uses mock server)
 go test -v ./pkg/security/...

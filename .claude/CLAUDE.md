@@ -104,12 +104,12 @@ make test-e2e-https
 make test-e2e
 ```
 
-Running solely the mcp e2e tests (without mcpspy):
+Running scenario tests (without mcpspy):
 
 ```bash
-make test-e2e-mcp-stdio
-make test-e2e-mcp-https
-make test-e2e-mcp-security  # Security/injection test
+make test-scenario-stdio
+make test-scenario-https
+make test-scenario-security  # Security/injection test
 ```
 
 **Note:** E2E tests automatically run MCPSpy in static mode (`--tui=false`) to capture output for validation. The test configuration is in `tests/e2e_config.yaml`.
@@ -119,11 +119,8 @@ make test-e2e-mcp-security  # Security/injection test
 Integration tests verify functionality with real external services. Currently includes security/prompt injection detection tests with HuggingFace API:
 
 ```bash
-# Run all integration tests (requires HF_TOKEN)
+# Run integration tests (requires HF_TOKEN)
 HF_TOKEN=hf_xxx make test-integration
-
-# Run only security integration tests
-HF_TOKEN=hf_xxx make test-integration-security
 
 # Override the model (default: protectai/deberta-v3-base-prompt-injection-v2)
 HF_TOKEN=hf_xxx HF_MODEL=your-model-name make test-integration
