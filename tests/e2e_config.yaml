@@ -100,20 +100,30 @@ scenarios:
         min: 20
         max: 30
 
-  # Claude Code CLI scenario
-  - name: "claude-code-init"
-    description: "Test Claude Code CLI initialization with MCP servers"
+  # Claude Code CLI scenario - comprehensive test for MCP, tools, and LLM
+  - name: "claude-code"
+    description: "Test Claude Code CLI with MCP servers, tool usage (Read, Bash), and LLM API calls"
+
+    mcpspy:
+      # Enable LLM monitoring to capture Anthropic API calls from Claude Code
+      flags: ["--tui=false", "--log-level", "trace", "--llm"]
 
     traffic:
-      # Run Claude Code with the test config - it will initialize and connect to MCP servers
-      # Provide a simple prompt and exit immediately to trigger MCP initialization
+      # Run Claude Code with explicit tool usage instructions
+      # This triggers:
+      # 1. MCP server initialization (filesystem and deepwiki servers)
+      # 2. Tool usage (Read to read test file, Bash to run echo)
+      # 3. LLM API calls (Claude processing the prompt and generating response)
+      # Using --print flag for non-interactive output
       command:
         [
           "bash",
           "-c",
-          "echo 'exit' | npx -y @anthropic-ai/claude-code --strict-mcp-config --mcp-config tests/claude_config.json 2>&1",
+          "npx -y @anthropic-ai/claude-code --print -p 'Execute these exact steps in order: 1) Use the Read tool to read tests/test_tool_data.txt and report its content. 2) Use Bash to run: echo MCPSPY-TEST-COMPLETE. Report both results concisely.' --strict-mcp-config --mcp-config tests/claude_config.json 2>&1",
         ]
       timeout_seconds: 30
+      # Wait for tool execution and LLM response to complete
+      post_traffic_wait_seconds: 5
 
     validation:
       message_count:
@@ -160,7 +170,12 @@ scenarios:
 
     traffic:
       command:
-        ["tests/venv/bin/python", "tests/llm_gemini_client.py", "--mode", "both"]
+        [
+          "tests/venv/bin/python",
+          "tests/llm_gemini_client.py",
+          "--mode",
+          "both",
+        ]
       working_directory: "."
       timeout_seconds: 120
       # Wait for API responses to complete

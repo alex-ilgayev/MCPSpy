@@ -1,0 +1,3 @@
+MCPSpy E2E Test File
+This file is used for predictable tool usage testing.
+Content: ALPHA-BRAVO-CHARLIE
