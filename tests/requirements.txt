@@ -6,3 +6,4 @@ pyyaml
 pydantic>=2.0.0
 httpx
 google-genai
+openai

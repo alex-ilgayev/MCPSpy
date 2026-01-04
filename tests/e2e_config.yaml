@@ -293,3 +293,96 @@ scenarios:
           - "root\\[\\d+\\]\\['mcp_event'\\]\\['timestamp'\\]"
           - "root\\[\\d+\\]\\['mcp_event'\\]\\['stdio_transport'\\]"
           - "root\\[\\d+\\]\\['mcp_event'\\]\\['raw'\\]"
+
+  # LLM API monitoring scenario (OpenAI)
+  # This test requires OPENAI_API_KEY environment variable to be set
+  - name: "llm-openai"
+    description: "Test LLM API monitoring with OpenAI (streaming and non-streaming)"
+
+    pre_commands:
+      - command:
+          [
+            "bash",
+            "-c",
+            'if [ -z "$OPENAI_API_KEY" ]; then echo ''ERROR: OPENAI_API_KEY environment variable is required''; exit 1; fi',
+          ]
+        timeout_seconds: 5
+
+    mcpspy:
+      # Enable LLM monitoring
+      flags: ["--tui=false", "--log-level", "trace", "--llm"]
+
+    traffic:
+      command:
+        [
+          "tests/venv/bin/python",
+          "tests/llm_openai_client.py",
+          "--mode",
+          "both",
+        ]
+      working_directory: "."
+      timeout_seconds: 120
+      # Wait for API responses to complete
+      post_traffic_wait_seconds: 5
+
+    validation:
+      expected_output_file: "expected_output_llm_openai.jsonl"
+      message_count:
+        min: 3
+        max: 50
+      deepdiff:
+        ignore_order: true
+        exclude_regex_paths:
+          # Exclude dynamic fields
+          - "root\\[\\d+\\]\\['timestamp'\\]"
+          - "root\\[\\d+\\]\\['session_id'\\]"
+          - "root\\[\\d+\\]\\['pid'\\]"
+          # Exclude raw JSON field (contains full API payload)
+          - "root\\[\\d+\\]\\['raw_json'\\]"
+
+  # Codex CLI scenario - comprehensive test for MCP, tools, and LLM
+  # This test requires OPENAI_API_KEY environment variable to be set
+  - name: "codex-cli"
+    description: "Test OpenAI Codex CLI with MCP servers, tool usage, and LLM API calls"
+
+    pre_commands:
+      - command:
+          [
+            "bash",
+            "-c",
+            'if [ -z "$OPENAI_API_KEY" ]; then echo ''ERROR: OPENAI_API_KEY environment variable is required''; exit 1; fi',
+          ]
+        timeout_seconds: 5
+      # Logout from any existing Codex session and login with API key
+      - command:
+          [
+            "bash",
+            "-c",
+            "npx -y @openai/codex logout 2>/dev/null || true; printenv OPENAI_API_KEY | npx -y @openai/codex login --with-api-key",
+          ]
+        timeout_seconds: 60
+
+    mcpspy:
+      # Enable LLM monitoring to capture OpenAI API calls
+      flags: ["--tui=false", "--log-level", "trace", "--llm"]
+
+    traffic:
+      # Run Codex CLI with explicit tool usage instructions
+      # This triggers:
+      # 1. Tool usage (read file, run shell command)
+      # 2. LLM API calls (OpenAI processing the prompt and generating response)
+      # Using 'exec' subcommand for non-interactive mode
+      # Using --full-auto for automatic execution with workspace-write sandbox
+      command:
+        [
+          "bash",
+          "-c",
+          "cd tests && npx -y @openai/codex exec --full-auto -m gpt-4o-mini 'Read the file test_tool_data.txt and report its content. Then run: echo MCPSPY-TEST-COMPLETE' 2>&1",
+        ]
+      timeout_seconds: 120
+      # Wait for tool execution and LLM response to complete
+      post_traffic_wait_seconds: 5
+
+    validation:
+      message_count:
+        min: 5

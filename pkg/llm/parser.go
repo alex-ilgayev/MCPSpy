@@ -25,6 +25,7 @@ func NewParser(eventBus bus.EventBus) (*Parser, error) {
 	// Register providers
 	p.providers[ProviderAnthropic] = providers.NewAnthropicParser()
 	p.providers[ProviderGemini] = providers.NewGeminiParser()
+	p.providers[ProviderOpenAI] = providers.NewOpenAIParser()
 
 	if err := p.eventBus.Subscribe(event.EventTypeHttpRequest, p.handleRequest); err != nil {
 		return nil, err

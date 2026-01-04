@@ -25,6 +25,8 @@ make test-scenario-llm-anthropic  # Anthropic LLM API test
 make test-scenario-llm-gemini     # Gemini LLM API test
 make test-scenario-claudecode     # Claude Code test
 make test-scenario-gemini-cli     # Gemini CLI test
+make test-scenario-llm-openai     # OpenAI LLM API test
+make test-scenario-codex-cli      # Codex CLI test
 ```
 
 ### Run Security/Prompt Injection E2E Test
@@ -49,12 +51,26 @@ CLAUDE_CODE_OAUTH_TOKEN=your_api_key make test-e2e-llm-anthropic
 GEMINI_API_KEY=your_api_key make test-e2e-llm-gemini
 ```
 
+**OpenAI API** (requires `OPENAI_API_KEY`):
+
+```bash
+OPENAI_API_KEY=your_api_key make test-e2e-llm-openai
+```
+
 ### Run Gemini CLI E2E Test
 
 Requires `GEMINI_API_KEY` environment variable:
 
 ```bash
 GEMINI_API_KEY=your_api_key make test-e2e-gemini-cli
+```
+
+### Run Codex CLI E2E Test
+
+Requires `OPENAI_API_KEY` environment variable:
+
+```bash
+OPENAI_API_KEY=your_api_key make test-e2e-codex-cli
 ```
 
 ### Update Expected Outputs
@@ -65,6 +81,7 @@ make test-update-stdio            # Specific scenario
 make test-update-https
 make test-update-llm-anthropic
 make test-update-llm-gemini
+make test-update-llm-openai
 ```
 
 ---
@@ -158,6 +175,19 @@ python tests/e2e_test.py --config tests/e2e_config.yaml --verbose
 
 - `GEMINI_API_KEY` environment variable with valid Gemini API key
 
+### llm-openai
+
+**What it tests:**
+
+- LLM API monitoring with OpenAI API
+- Non-streaming API request/response capture
+- Streaming (SSE) API request/response capture
+- Model and content extraction from API calls
+
+**Requirements:**
+
+- `OPENAI_API_KEY` environment variable with valid OpenAI API key
+
 ### claude-code
 
 **What it tests:**
@@ -191,6 +221,25 @@ python tests/e2e_test.py --config tests/e2e_config.yaml --verbose
 - `tests/test_tool_data.txt` - Test file with known content for Read tool testing
 - `tests/.gemini/settings.json` - MCP server configuration
 
+### codex-cli
+
+**What it tests:**
+
+- MCP server initialization (filesystem and deepwiki HTTP servers)
+- Codex CLI tool usage (file reading, shell commands)
+- LLM API calls (OpenAI API requests/responses)
+- Predictable tool execution with known inputs/outputs
+
+**Requirements:**
+
+- `OPENAI_API_KEY` environment variable with valid OpenAI API key
+- Codex CLI installed (via `npx @openai/codex`)
+
+**Test data:**
+
+- `tests/test_tool_data.txt` - Test file with known content for file reading
+- `tests/.codex/config.json` - MCP server configuration
+
 ## File Reference
 
 | File                                  | Purpose                                                  |
@@ -202,12 +251,15 @@ python tests/e2e_test.py --config tests/e2e_config.yaml --verbose
 | `mcp_client.py`                       | MCP client that generates test traffic                   |
 | `llm_client.py`                       | LLM API client for Anthropic API testing                 |
 | `llm_gemini_client.py`                | LLM API client for Gemini API testing                    |
-| `test_tool_data.txt`                  | Test file for Claude Code Read tool testing              |
+| `llm_openai_client.py`                | LLM API client for OpenAI API testing                    |
+| `test_tool_data.txt`                  | Test file for CLI tool testing (Read tool)               |
 | `claude_config.json`                  | MCP server config for Claude Code tests                  |
 | `.gemini/settings.json`               | MCP server configuration for Gemini CLI tests            |
+| `.codex/config.json`                  | MCP server configuration for Codex CLI tests             |
 | `expected_output_stdio.jsonl`         | Expected output for stdio transport                      |
 | `expected_output_http.jsonl`          | Expected output for HTTP transport                       |
 | `expected_output_security.jsonl`      | Expected output for security/injection test              |
-| `expected_output_llm_anthropic.jsonl` | Expected output for LLM API monitoring test              |
+| `expected_output_llm_anthropic.jsonl` | Expected output for Anthropic LLM API monitoring test    |
 | `expected_output_llm_gemini.jsonl`    | Expected output for Gemini LLM API monitoring test       |
+| `expected_output_llm_openai.jsonl`    | Expected output for OpenAI LLM API monitoring test       |
 | `server.key`, `server.crt`            | Self-signed SSL certificates for HTTPS tests             |
