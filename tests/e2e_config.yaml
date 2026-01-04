@@ -153,13 +153,13 @@ scenarios:
       # 1. MCP server initialization (filesystem and deepwiki servers)
       # 2. Tool usage (Read to read test file, Bash to run echo)
       # 3. LLM API calls (Gemini processing the prompt and generating response)
-      # Using --yolo for auto-approval and --sandbox for safety
+      # Using --yolo for auto-approval (no --sandbox to avoid namespace isolation issues with eBPF)
       # The tests/.gemini/settings.json contains MCP server configuration
       command:
         [
           "bash",
           "-c",
-          "cd tests && npx -y @google/gemini-cli --yolo --sandbox -o text 'Execute these exact steps in order: 1) Use the Read tool to read test_tool_data.txt and report its content. 2) Use Bash to run: echo MCPSPY-TEST-COMPLETE. Report both results concisely.' 2>&1",
+          "cd tests && npx -y @google/gemini-cli --yolo -o text 'Execute these exact steps in order: 1) Use the Read tool to read test_tool_data.txt and report its content. 2) Use Bash to run: echo MCPSPY-TEST-COMPLETE. Report both results concisely.' 2>&1",
         ]
       timeout_seconds: 120
       # Wait for tool execution and LLM response to complete
