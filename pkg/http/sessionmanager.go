@@ -149,6 +149,13 @@ func (s *SessionManager) ProcessTlsEvent(e event.Event) {
 		if sess.request != nil && sess.request.isComplete && !sess.requestEventEmitted {
 			s.emitHttpRequestEvent(sess)
 			sess.requestEventEmitted = true
+
+			// Process any pending SSE events that were deferred while waiting
+			// for the request to complete. This ensures proper request/response
+			// correlation in the MCP parser.
+			if sess.isSSE && sess.response != nil && sess.response.isChunked {
+				s.processHTTPSSEResponse(sess)
+			}
 		}
 	case event.EventTypeTlsPayloadRecv:
 		// Server -> Client (Response)
@@ -543,10 +550,16 @@ func parseChunkedBody(data []byte) (body []byte, isComplete bool) {
 	return result.Bytes(), false
 }
 
-// processHTTPSSEResponse processes SSE events from chunked data incrementally
+// processHTTPSSEResponse processes SSE events from chunked data incrementally.
+// It defers processing until the HTTP request is complete to ensure proper
+// request/response correlation in the MCP parser.
 func (s *SessionManager) processHTTPSSEResponse(sess *session) {
-	if !sess.request.isComplete {
-		logrus.WithFields(sess.logFields()).Debug("HTTP request is not complete when SSE chunks are processed. Expect missing data.")
+	if sess.request == nil || !sess.request.isComplete {
+		// Defer SSE processing until request is complete.
+		// This prevents a race condition where SSE responses are emitted
+		// before the corresponding request, causing correlation failures.
+		logrus.WithFields(sess.logFields()).Trace("Deferring SSE processing until request is complete")
+		return
 	}
 
 	rawData := sess.responseBuf.Bytes()
