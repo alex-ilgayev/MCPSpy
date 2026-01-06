@@ -232,7 +232,7 @@ test-scenario-https: test-e2e-setup ## Run HTTPS scenario (no MCPSpy)
 .PHONY: test-scenario-claudecode
 test-scenario-claudecode: test-e2e-setup ## Run Claude Code scenario (no MCPSpy)
 	@echo "Running Claude Code scenario..."
-	$(call run-scenario,claude-code-init)
+	$(call run-scenario,claude-code)
 
 .PHONY: test-scenario-llm-anthropic
 test-scenario-llm-anthropic: test-e2e-setup ## Run Anthropic LLM scenario (no MCPSpy, requires CLAUDE_CODE_OAUTH_TOKEN)
@@ -281,7 +281,7 @@ test-e2e-https: build test-e2e-setup ## Run e2e test for HTTPS transport
 .PHONY: test-e2e-claudecode
 test-e2e-claudecode: build test-e2e-setup ## Run e2e test for Claude Code
 	@echo "Running e2e test for Claude Code..."
-	$(call run-e2e,claude-code-init)
+	$(call run-e2e,claude-code)
 
 .PHONY: test-e2e-llm-anthropic
 test-e2e-llm-anthropic: build test-e2e-setup ## Run e2e test for Anthropic LLM (requires CLAUDE_CODE_OAUTH_TOKEN)
