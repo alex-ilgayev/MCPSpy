@@ -29,6 +29,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from enum import Enum
 from pathlib import Path
 from typing import Dict, List, Any, Optional, Tuple
 
@@ -40,6 +41,14 @@ from e2e_config_schema import (
     CommandConfig,
     ValidationConfig,
 )
+
+
+class ScenarioResult(Enum):
+    """Result of a scenario execution."""
+
+    PASSED = "passed"
+    FAILED = "failed"
+    SKIPPED = "skipped"
 
 
 class CommandExecutor:
@@ -462,24 +471,30 @@ class ScenarioRunner:
         self.pre_processes: List[subprocess.Popen] = []
         self.pre_process_log_files: Dict[int, str] = {}  # pid -> log_file mapping
 
-    def run(self, update_expected: bool = False) -> bool:
+    def run(self, update_expected: bool = False) -> ScenarioResult:
         """
         Run the complete scenario.
 
         Returns:
-            True if scenario passes, False otherwise
+            ScenarioResult indicating passed, failed, or skipped
         """
         try:
             self._log(f"🚀 Running scenario: {self.scenario.name}")
             if self.scenario.description:
                 self._log(f"   {self.scenario.description}")
 
+            # Check required environment variables
+            skip_reason = self._check_required_env_vars()
+            if skip_reason:
+                print(f"⏭️  Skipping scenario '{self.scenario.name}': {skip_reason}")
+                return ScenarioResult.SKIPPED
+
             # Create temporary files
             self._create_temp_files()
 
             # Run pre-commands
             if not self._run_pre_commands():
-                return False
+                return ScenarioResult.FAILED
 
             # Skip MCPSpy if requested (traffic generation only mode)
             if self.skip_mcpspy:
@@ -493,9 +508,9 @@ class ScenarioRunner:
                         print(f"Traffic stderr:\n{stderr}")
                     if stdout:
                         print(f"Traffic stdout:\n{stdout}")
-                    return False
+                    return ScenarioResult.FAILED
                 print("✅ Traffic generated successfully (no MCPSpy validation)")
-                return True
+                return ScenarioResult.PASSED
 
             # Start MCPSpy
             self._start_mcpspy()
@@ -517,7 +532,7 @@ class ScenarioRunner:
                 if stdout:
                     print(f"Traffic stdout:\n{stdout}")
                 self._print_logs_on_failure()
-                return False
+                return ScenarioResult.FAILED
 
             # Wait for async operations to complete (e.g., security analysis)
             if self.scenario.traffic.post_traffic_wait_seconds > 0:
@@ -537,14 +552,34 @@ class ScenarioRunner:
             if not result:
                 self._print_logs_on_failure()
 
-            return result
+            return ScenarioResult.PASSED if result else ScenarioResult.FAILED
 
         except Exception as e:
             print(f"❌ Scenario failed with error: {e}")
             self._print_logs_on_failure()
-            return False
+            return ScenarioResult.FAILED
         finally:
             self._cleanup()
+
+    def _check_required_env_vars(self) -> Optional[str]:
+        """
+        Check if all required environment variables are set.
+
+        Returns:
+            None if all required env vars are set, or a skip reason message if not.
+        """
+        if not self.scenario.required_env_vars:
+            return None
+
+        missing_vars = []
+        for var in self.scenario.required_env_vars:
+            if not os.environ.get(var):
+                missing_vars.append(var)
+
+        if missing_vars:
+            return f"Missing required environment variable(s): {', '.join(missing_vars)}"
+
+        return None
 
     def _create_temp_files(self) -> None:
         """Create temporary output and log files.
@@ -766,9 +801,9 @@ class TestSuite:
         Run all scenarios sequentially.
 
         Returns:
-            True if all scenarios pass, False otherwise
+            True if all scenarios pass (skipped scenarios don't count as failures), False otherwise
         """
-        results = {}
+        results: Dict[str, ScenarioResult] = {}
 
         print("\n" + "=" * 60)
         print(f"🧪 Running {len(self.config.scenarios)} scenarios")
@@ -792,22 +827,25 @@ class TestSuite:
             result = runner.run(update_expected)
             results[scenario.name] = result
 
-            if result:
+            if result == ScenarioResult.PASSED:
                 print(f"\n✅ Scenario '{scenario.name}' PASSED\n")
+            elif result == ScenarioResult.SKIPPED:
+                print(f"\n⏭️  Scenario '{scenario.name}' SKIPPED\n")
             else:
                 print(f"\n❌ Scenario '{scenario.name}' FAILED\n")
 
         # Print summary
         self._print_summary(results)
 
-        return all(results.values())
+        # Return True if no scenarios failed (skipped scenarios are OK)
+        return all(r != ScenarioResult.FAILED for r in results.values())
 
     def run_scenario(self, scenario_name: str, update_expected: bool = False) -> bool:
         """
         Run a specific scenario by name.
 
         Returns:
-            True if scenario passes, False otherwise
+            True if scenario passes or is skipped, False if it fails
         """
         scenario = self.config.get_scenario(scenario_name)
         if not scenario:
@@ -831,28 +869,45 @@ class TestSuite:
 
         result = runner.run(update_expected)
 
-        if result:
+        if result == ScenarioResult.PASSED:
             print(f"\n✅ Scenario '{scenario.name}' PASSED")
+        elif result == ScenarioResult.SKIPPED:
+            print(f"\n⏭️  Scenario '{scenario.name}' SKIPPED")
         else:
             print(f"\n❌ Scenario '{scenario.name}' FAILED")
 
-        return result
+        # Skipped scenarios are not considered failures
+        return result != ScenarioResult.FAILED
 
-    def _print_summary(self, results: Dict[str, bool]) -> None:
+    def _print_summary(self, results: Dict[str, ScenarioResult]) -> None:
         """Print test summary."""
         print("\n" + "=" * 60)
         print("📊 Test Summary")
         print("=" * 60)
 
-        passed = sum(1 for r in results.values() if r)
-        failed = sum(1 for r in results.values() if not r)
+        passed = sum(1 for r in results.values() if r == ScenarioResult.PASSED)
+        failed = sum(1 for r in results.values() if r == ScenarioResult.FAILED)
+        skipped = sum(1 for r in results.values() if r == ScenarioResult.SKIPPED)
 
         for name, result in results.items():
-            status = "✅ PASSED" if result else "❌ FAILED"
+            if result == ScenarioResult.PASSED:
+                status = "✅ PASSED"
+            elif result == ScenarioResult.SKIPPED:
+                status = "⏭️  SKIPPED"
+            else:
+                status = "❌ FAILED"
             print(f"  {status}: {name}")
 
         print("\n" + "=" * 60)
-        print(f"Total: {len(results)} | Passed: {passed} | Failed: {failed}")
+        summary_parts = [f"Total: {len(results)}", f"Passed: {passed}"]
+        if skipped > 0:
+            summary_parts.append(f"Skipped: {skipped}")
+        summary_parts.append(f"Failed: {failed}")
+        print(" | ".join(summary_parts))
+
+        if skipped > 0:
+            print("\n⚠️  Some scenarios were skipped due to missing environment variables.")
+            print("   Set the required environment variables to run all scenarios.")
         print("=" * 60)
 
 
