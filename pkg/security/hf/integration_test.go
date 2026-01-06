@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -59,17 +60,37 @@ func loadTestSamples(t *testing.T) *TestSamples {
 	return &samples
 }
 
+// integrationTestTimeout is the max time to wait for a single API call before skipping
+const integrationTestTimeout = 15 * time.Second
+
 func getHFToken(t *testing.T) string {
 	t.Helper()
 	token := os.Getenv("HF_TOKEN")
 	if token == "" {
 		t.Skip("HF_TOKEN environment variable not set, skipping integration test")
 	}
-	// Skip in CI unless explicitly enabled (these tests are slow due to API rate limits)
-	if os.Getenv("CI") != "" && os.Getenv("RUN_INTEGRATION_TESTS") == "" {
-		t.Skip("Skipping slow integration test in CI (set RUN_INTEGRATION_TESTS=1 to enable)")
-	}
 	return token
+}
+
+// analyzeWithTimeout calls client.Analyze and skips on timeout/rate-limit errors
+func analyzeWithTimeout(t *testing.T, client *Client, text string) *Result {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), integrationTestTimeout)
+	defer cancel()
+
+	result, err := client.Analyze(ctx, text)
+	if err != nil {
+		if ctx.Err() != nil {
+			t.Skipf("API timed out after %v (likely rate-limited), skipping", integrationTestTimeout)
+		}
+		// Check for rate limit or model loading errors
+		errStr := err.Error()
+		if strings.Contains(errStr, "rate limit") || strings.Contains(errStr, "model loading") || strings.Contains(errStr, "max retries") {
+			t.Skipf("API error (likely rate-limited): %v, skipping", err)
+		}
+		t.Fatalf("Analyze failed: %v", err)
+	}
+	return result
 }
 
 func getTestModel() string {
