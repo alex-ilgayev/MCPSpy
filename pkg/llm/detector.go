@@ -9,6 +9,7 @@ const (
 	ProviderUnknown   Provider = ""
 	ProviderAnthropic Provider = "anthropic"
 	ProviderGemini    Provider = "gemini"
+	ProviderOpenAI    Provider = "openai"
 )
 
 // DetectProvider detects the LLM provider from HTTP request parameters
@@ -31,6 +32,12 @@ func DetectProvider(host, path string) Provider {
 		strings.HasPrefix(path, "/v1beta/models/") &&
 		(strings.Contains(path, ":generateContent") || strings.Contains(path, ":streamGenerateContent")) {
 		return ProviderGemini
+	}
+
+	// OpenAI detection
+	// Endpoint: /v1/chat/completions
+	if host == "api.openai.com" && path == "/v1/chat/completions" {
+		return ProviderOpenAI
 	}
 
 	return ProviderUnknown

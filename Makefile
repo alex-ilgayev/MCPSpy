@@ -254,6 +254,16 @@ test-scenario-gemini-cli: test-e2e-setup ## Run Gemini CLI scenario (no MCPSpy, 
 	@echo "Running Gemini CLI scenario..."
 	$(call run-scenario,gemini-cli)
 
+.PHONY: test-scenario-llm-openai
+test-scenario-llm-openai: test-e2e-setup ## Run OpenAI LLM scenario (no MCPSpy, requires OPENAI_API_KEY)
+	@echo "Running OpenAI LLM scenario..."
+	$(call run-scenario,llm-openai)
+
+.PHONY: test-scenario-codex-cli
+test-scenario-codex-cli: test-e2e-setup ## Run Codex CLI scenario (no MCPSpy, requires OPENAI_API_KEY)
+	@echo "Running Codex CLI scenario..."
+	$(call run-scenario,codex-cli)
+
 # =============================================================================
 ##@ E2E Tests (with MCPSpy)
 # =============================================================================
@@ -293,6 +303,16 @@ test-e2e-gemini-cli: build test-e2e-setup ## Run e2e test for Gemini CLI (requir
 	@echo "Running Gemini CLI e2e test..."
 	$(call run-e2e,gemini-cli)
 
+.PHONY: test-e2e-llm-openai
+test-e2e-llm-openai: build test-e2e-setup ## Run e2e test for OpenAI LLM (requires OPENAI_API_KEY)
+	@echo "Running OpenAI LLM e2e test..."
+	$(call run-e2e,llm-openai)
+
+.PHONY: test-e2e-codex-cli
+test-e2e-codex-cli: build test-e2e-setup ## Run e2e test for Codex CLI (requires OPENAI_API_KEY)
+	@echo "Running Codex CLI e2e test..."
+	$(call run-e2e,codex-cli)
+
 .PHONY: test-e2e
 test-e2e: build test-e2e-setup ## Run all e2e test scenarios
 	@echo "Running all e2e test scenarios..."
@@ -322,6 +342,11 @@ test-update-llm-anthropic: build test-e2e-setup ## Update expected output for An
 test-update-llm-gemini: build test-e2e-setup ## Update expected output for Gemini LLM
 	@echo "Updating expected output for Gemini LLM..."
 	$(call run-update,llm-gemini)
+
+.PHONY: test-update-llm-openai
+test-update-llm-openai: build test-e2e-setup ## Update expected output for OpenAI LLM
+	@echo "Updating expected output for OpenAI LLM..."
+	$(call run-update,llm-openai)
 
 .PHONY: test-update-all
 test-update-all: build test-e2e-setup ## Update expected output for all scenarios

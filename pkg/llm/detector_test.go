@@ -88,6 +88,31 @@ func TestDetectProvider(t *testing.T) {
 			path: "/v1/models/gemini-2.0-flash:generateContent",
 			want: ProviderUnknown,
 		},
+		// OpenAI test cases
+		{
+			name: "valid openai chat completions endpoint",
+			host: "api.openai.com",
+			path: "/v1/chat/completions",
+			want: ProviderOpenAI,
+		},
+		{
+			name: "openai case insensitive host",
+			host: "API.OPENAI.COM",
+			path: "/v1/chat/completions",
+			want: ProviderOpenAI,
+		},
+		{
+			name: "openai wrong endpoint",
+			host: "api.openai.com",
+			path: "/v1/completions",
+			want: ProviderUnknown,
+		},
+		{
+			name: "openai wrong host",
+			host: "api.azure.com",
+			path: "/v1/chat/completions",
+			want: ProviderUnknown,
+		},
 	}
 
 	for _, tt := range tests {
@@ -123,6 +148,12 @@ func TestIsLLMRequest(t *testing.T) {
 			name: "gemini is LLM",
 			host: "generativelanguage.googleapis.com",
 			path: "/v1beta/models/gemini-2.0-flash:generateContent",
+			want: true,
+		},
+		{
+			name: "openai is LLM",
+			host: "api.openai.com",
+			path: "/v1/chat/completions",
 			want: true,
 		},
 	}
