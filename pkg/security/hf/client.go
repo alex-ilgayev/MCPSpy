@@ -13,7 +13,9 @@ import (
 )
 
 const (
-	defaultBaseURL = "https://router.huggingface.co/hf-inference/models"
+	defaultBaseURL    = "https://router.huggingface.co/hf-inference/models"
+	defaultMaxRetries = 3
+	defaultRetryDelay = 2 * time.Second
 )
 
 // Result represents the detection result from the HF API
@@ -31,6 +33,8 @@ type Client struct {
 	baseURL    string
 	token      string
 	model      string
+	maxRetries int
+	retryDelay time.Duration
 }
 
 // NewClient creates a new HF Inference API client
@@ -40,6 +44,8 @@ func NewClient(token, model string, timeout time.Duration) *Client {
 		baseURL:    defaultBaseURL,
 		token:      token,
 		model:      model,
+		maxRetries: defaultMaxRetries,
+		retryDelay: defaultRetryDelay,
 	}
 }
 
@@ -50,6 +56,8 @@ func NewClientWithBaseURL(baseURL, token, model string, timeout time.Duration) *
 		baseURL:    baseURL,
 		token:      token,
 		model:      model,
+		maxRetries: defaultMaxRetries,
+		retryDelay: defaultRetryDelay,
 	}
 }
 
@@ -70,11 +78,11 @@ type errorResponse struct {
 	EstimatedTime float64 `json:"estimated_time,omitempty"`
 }
 
-// Analyze sends text to HF API and returns detection result
+// Analyze sends text to HF API and returns detection result with retry logic
 func (c *Client) Analyze(ctx context.Context, text string) (*Result, error) {
 	start := time.Now()
 
-	// Build request
+	// Build request body once
 	reqBody := classifyRequest{Inputs: text}
 	jsonBody, err := json.Marshal(reqBody)
 	if err != nil {
@@ -83,15 +91,53 @@ func (c *Client) Analyze(ctx context.Context, text string) (*Result, error) {
 
 	url := fmt.Sprintf("%s/%s", c.baseURL, c.model)
 
+	var lastErr error
+	for attempt := 0; attempt <= c.maxRetries; attempt++ {
+		// Check context before making request
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+
+		// Wait before retry (exponential backoff)
+		if attempt > 0 {
+			backoff := c.retryDelay * time.Duration(1<<(attempt-1)) // 2s, 4s, 8s
+			logrus.WithFields(logrus.Fields{
+				"attempt": attempt,
+				"backoff": backoff,
+			}).Debug("Retrying HuggingFace API request")
+
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(backoff):
+			}
+		}
+
+		result, err, shouldRetry := c.doRequest(ctx, url, jsonBody, start)
+		if err == nil {
+			return result, nil
+		}
+
+		lastErr = err
+		if !shouldRetry {
+			return nil, err
+		}
+	}
+
+	return nil, fmt.Errorf("max retries exceeded: %w", lastErr)
+}
+
+// doRequest performs a single API request and returns whether it should be retried
+func (c *Client) doRequest(ctx context.Context, url string, jsonBody []byte, start time.Time) (*Result, error, bool) {
 	logrus.WithFields(logrus.Fields{
 		"url":         url,
 		"model":       c.model,
-		"text_length": len(text),
+		"text_length": len(jsonBody),
 	}).Trace("Sending request to HuggingFace API")
 
 	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(jsonBody))
 	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
+		return nil, fmt.Errorf("failed to create request: %w", err), false
 	}
 
 	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", c.token))
@@ -101,13 +147,13 @@ func (c *Client) Analyze(ctx context.Context, text string) (*Result, error) {
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		logrus.WithError(err).WithField("url", url).Debug("HuggingFace API request failed")
-		return nil, fmt.Errorf("API request failed: %w", err)
+		return nil, fmt.Errorf("API request failed: %w", err), true // Retry network errors
 	}
 	defer resp.Body.Close()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read response: %w", err)
+		return nil, fmt.Errorf("failed to read response: %w", err), false
 	}
 
 	logrus.WithFields(logrus.Fields{
@@ -120,39 +166,46 @@ func (c *Client) Analyze(ctx context.Context, text string) (*Result, error) {
 	if resp.StatusCode != http.StatusOK {
 		var errResp errorResponse
 		if json.Unmarshal(body, &errResp) == nil && errResp.Error != "" {
-			// Model loading - HF warms up models on demand
+			// Model loading - HF warms up models on demand (503)
 			if resp.StatusCode == http.StatusServiceUnavailable {
 				logrus.WithFields(logrus.Fields{
 					"estimated_time": errResp.EstimatedTime,
-				}).Debug("HuggingFace model is loading")
-				return &Result{
-					Latency: time.Since(start),
-					Error:   fmt.Sprintf("Model loading, retry in %.0fs", errResp.EstimatedTime),
-				}, nil
+				}).Debug("HuggingFace model is loading, will retry")
+				return nil, fmt.Errorf("model loading: %s", errResp.Error), true
+			}
+			// Rate limiting (429)
+			if resp.StatusCode == http.StatusTooManyRequests {
+				logrus.Debug("HuggingFace API rate limited, will retry")
+				return nil, fmt.Errorf("rate limited: %s", errResp.Error), true
 			}
 			logrus.WithFields(logrus.Fields{
 				"status_code": resp.StatusCode,
 				"error":       errResp.Error,
 			}).Debug("HuggingFace API returned error")
-			return nil, fmt.Errorf("API error: %s", errResp.Error)
+			return nil, fmt.Errorf("API error: %s", errResp.Error), false
+		}
+		// Also retry 429 and 503 even without error body
+		if resp.StatusCode == http.StatusServiceUnavailable || resp.StatusCode == http.StatusTooManyRequests {
+			logrus.WithField("status_code", resp.StatusCode).Debug("HuggingFace API returned retryable status")
+			return nil, fmt.Errorf("API returned status %d: %s", resp.StatusCode, string(body)), true
 		}
 		logrus.WithFields(logrus.Fields{
 			"status_code": resp.StatusCode,
 			"body":        string(body),
 		}).Debug("HuggingFace API returned non-OK status")
-		return nil, fmt.Errorf("API returned status %d: %s", resp.StatusCode, string(body))
+		return nil, fmt.Errorf("API returned status %d: %s", resp.StatusCode, string(body)), false
 	}
 
 	// Parse response - HF returns array of arrays: [[{label, score}, ...]]
 	var apiResult [][]labelScore
 	if err := json.Unmarshal(body, &apiResult); err != nil {
 		logrus.WithError(err).WithField("body", string(body)).Debug("Failed to parse HuggingFace response")
-		return nil, fmt.Errorf("failed to parse response: %w", err)
+		return nil, fmt.Errorf("failed to parse response: %w", err), false
 	}
 
 	if len(apiResult) == 0 || len(apiResult[0]) == 0 {
 		logrus.WithField("body", string(body)).Debug("Empty response from HuggingFace API")
-		return nil, fmt.Errorf("empty response from API")
+		return nil, fmt.Errorf("empty response from API"), false
 	}
 
 	// Build result from the labels
@@ -165,7 +218,7 @@ func (c *Client) Analyze(ctx context.Context, text string) (*Result, error) {
 		"latency":         result.Latency,
 	}).Debug("HuggingFace analysis result")
 
-	return result, nil
+	return result, nil, false
 }
 
 // buildResult creates a Result from API response

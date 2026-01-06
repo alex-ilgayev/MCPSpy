@@ -80,8 +80,46 @@ func TestClient_Analyze_Jailbreak(t *testing.T) {
 	assert.GreaterOrEqual(t, result.MaliciousScore, 0.8)
 }
 
-func TestClient_Analyze_ModelLoading(t *testing.T) {
+func TestClient_Analyze_ModelLoading_EventualSuccess(t *testing.T) {
+	// Simulate model loading: return 503 twice, then succeed
+	attempts := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		if attempts <= 2 {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			response := map[string]interface{}{
+				"error":          "Model is currently loading",
+				"estimated_time": 1.0,
+			}
+			json.NewEncoder(w).Encode(response)
+			return
+		}
+		// Success on third attempt
+		response := [][]map[string]interface{}{
+			{
+				{"label": "BENIGN", "score": 0.95},
+				{"label": "MALICIOUS", "score": 0.05},
+			},
+		}
+		json.NewEncoder(w).Encode(response)
+	}))
+	defer server.Close()
+
+	client := NewClientWithBaseURL(server.URL, "test-token", "test-model", 5*time.Second)
+	// Use shorter retry delay for faster tests
+	client.retryDelay = 10 * time.Millisecond
+	result, err := client.Analyze(context.Background(), "test")
+
+	require.NoError(t, err)
+	assert.Equal(t, "BENIGN", result.TopLabel)
+	assert.Equal(t, 3, attempts, "expected 3 attempts (2 retries + 1 success)")
+}
+
+func TestClient_Analyze_ModelLoading_MaxRetries(t *testing.T) {
+	// Simulate model loading that never succeeds
+	attempts := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
 		w.WriteHeader(http.StatusServiceUnavailable)
 		response := map[string]interface{}{
 			"error":          "Model is currently loading",
@@ -92,10 +130,47 @@ func TestClient_Analyze_ModelLoading(t *testing.T) {
 	defer server.Close()
 
 	client := NewClientWithBaseURL(server.URL, "test-token", "test-model", 5*time.Second)
+	// Use shorter retry delay for faster tests
+	client.retryDelay = 10 * time.Millisecond
+	_, err := client.Analyze(context.Background(), "test")
+
+	require.Error(t, err, "expected error after max retries")
+	assert.Contains(t, err.Error(), "max retries exceeded")
+	assert.Equal(t, 4, attempts, "expected 4 attempts (1 initial + 3 retries)")
+}
+
+func TestClient_Analyze_RateLimiting(t *testing.T) {
+	// Simulate rate limiting: return 429 twice, then succeed
+	attempts := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		if attempts <= 2 {
+			w.WriteHeader(http.StatusTooManyRequests)
+			response := map[string]interface{}{
+				"error": "Rate limit exceeded",
+			}
+			json.NewEncoder(w).Encode(response)
+			return
+		}
+		// Success on third attempt
+		response := [][]map[string]interface{}{
+			{
+				{"label": "BENIGN", "score": 0.95},
+				{"label": "MALICIOUS", "score": 0.05},
+			},
+		}
+		json.NewEncoder(w).Encode(response)
+	}))
+	defer server.Close()
+
+	client := NewClientWithBaseURL(server.URL, "test-token", "test-model", 5*time.Second)
+	// Use shorter retry delay for faster tests
+	client.retryDelay = 10 * time.Millisecond
 	result, err := client.Analyze(context.Background(), "test")
 
 	require.NoError(t, err)
-	assert.NotEmpty(t, result.Error, "expected error message for model loading")
+	assert.Equal(t, "BENIGN", result.TopLabel)
+	assert.Equal(t, 3, attempts, "expected 3 attempts (2 retries + 1 success)")
 }
 
 func TestClient_Analyze_APIError(t *testing.T) {
@@ -127,7 +202,9 @@ func TestClient_Analyze_EmptyResponse(t *testing.T) {
 }
 
 func TestClient_Analyze_Timeout(t *testing.T) {
+	attempts := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
 		time.Sleep(100 * time.Millisecond)
 		response := [][]map[string]interface{}{
 			{{"label": "BENIGN", "score": 0.95}},
@@ -137,7 +214,11 @@ func TestClient_Analyze_Timeout(t *testing.T) {
 	defer server.Close()
 
 	client := NewClientWithBaseURL(server.URL, "test-token", "test-model", 10*time.Millisecond)
+	// Use shorter retry delay for faster tests
+	client.retryDelay = 10 * time.Millisecond
 	_, err := client.Analyze(context.Background(), "test")
 
 	require.Error(t, err, "expected timeout error")
+	assert.Contains(t, err.Error(), "max retries exceeded")
+	assert.Equal(t, 4, attempts, "expected 4 attempts (1 initial + 3 retries)")
 }

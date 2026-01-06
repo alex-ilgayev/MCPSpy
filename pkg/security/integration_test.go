@@ -226,8 +226,8 @@ func TestIntegration_AnalyzerWithEventBus_MaliciousToolCall(t *testing.T) {
 
 	eventBus.Publish(mcpEvent)
 
-	// Wait for processing
-	if !collector.WaitForAlerts(1, 10*time.Second) {
+	// Wait for processing (increased timeout to account for retry logic with backoff)
+	if !collector.WaitForAlerts(1, 45*time.Second) {
 		t.Logf("Stats: %+v", analyzer.Stats())
 		t.Fatal("Expected at least 1 alert for malicious content, got none")
 	}
@@ -272,7 +272,7 @@ func TestIntegration_AnalyzerWithEventBus_MultipleSamples(t *testing.T) {
 	samples := loadTestSamples(t)
 	expectedAlerts := 0
 
-	// Send benign tool calls
+	// Send tool calls with small delay between them to avoid rate limiting
 	for i, sample := range samples.MCPToolCalls {
 		params := sample.Params
 		mcpEvent := createMCPEvent(sample.Method, params)
@@ -282,10 +282,14 @@ func TestIntegration_AnalyzerWithEventBus_MultipleSamples(t *testing.T) {
 		if sample.ExpectedDetected {
 			expectedAlerts++
 		}
+
+		// Small delay between events to reduce rate limiting
+		time.Sleep(500 * time.Millisecond)
 	}
 
-	// Wait for processing
-	time.Sleep(time.Duration(len(samples.MCPToolCalls)*3) * time.Second)
+	// Wait for processing (increased timeout to account for retry logic with backoff)
+	// Each request can take up to 30s (timeout) + 14s (backoff) in worst case
+	time.Sleep(time.Duration(len(samples.MCPToolCalls)*15) * time.Second)
 
 	alerts := collector.Alerts()
 	t.Logf("Expected %d alerts, got %d", expectedAlerts, len(alerts))
@@ -376,7 +380,7 @@ func TestIntegration_AnalyzerAsyncMode(t *testing.T) {
 	}
 	defer analyzer.Close()
 
-	// Send multiple events quickly (async should handle them in parallel)
+	// Send multiple events with small delay to avoid rate limiting
 	for i := 0; i < 3; i++ {
 		mcpEvent := createMCPEvent("tools/call", map[string]interface{}{
 			"name": "test_tool",
@@ -386,10 +390,11 @@ func TestIntegration_AnalyzerAsyncMode(t *testing.T) {
 		})
 		mcpEvent.ID = int64(i + 1)
 		eventBus.Publish(mcpEvent)
+		time.Sleep(500 * time.Millisecond) // Small delay to reduce rate limiting
 	}
 
-	// Wait for async processing
-	if !collector.WaitForAlerts(3, 30*time.Second) {
+	// Wait for async processing (increased timeout to account for retry logic)
+	if !collector.WaitForAlerts(3, 60*time.Second) {
 		t.Logf("Stats: %+v", analyzer.Stats())
 		t.Fatalf("Expected 3 alerts in async mode, got %d", len(collector.Alerts()))
 	}
