@@ -184,14 +184,14 @@ test-unit: ## Run unit tests
 	$(GO) test $(TEST_FLAGS) ./...
 
 .PHONY: test-integration
-test-integration: ## Run integration tests (requires HF_TOKEN)
+test-integration: ## Run integration tests (requires HF_TOKEN, skips if missing)
 	@echo "Running integration tests..."
 	@if [ -z "$$HF_TOKEN" ]; then \
-		echo "Error: HF_TOKEN environment variable is not set"; \
-		echo "Usage: HF_TOKEN=hf_xxx make test-integration"; \
-		exit 1; \
+		echo "⏭️  Skipping integration tests: HF_TOKEN environment variable is not set"; \
+		echo "   Set HF_TOKEN to run these tests: HF_TOKEN=hf_xxx make test-integration"; \
+	else \
+		$(GO) test -v -tags=integration -timeout=300s ./pkg/security/...; \
 	fi
-	$(GO) test -v -tags=integration -timeout=300s ./pkg/security/...
 
 # =============================================================================
 ##@ Test Setup & Utilities
@@ -284,9 +284,8 @@ test-e2e-llm-gemini: build test-e2e-setup ## Run e2e test for Gemini LLM (requir
 	$(call run-e2e,llm-gemini)
 
 .PHONY: test-e2e-security
-test-e2e-security: build test-e2e-setup ## Run e2e test for security (requires HF_TOKEN)
+test-e2e-security: build test-e2e-setup ## Run e2e test for security (requires HF_TOKEN, skips if missing)
 	@echo "Running security e2e test..."
-	@if [ -z "$$HF_TOKEN" ]; then echo "ERROR: HF_TOKEN environment variable is required"; exit 1; fi
 	$(call run-e2e,security-injection)
 
 .PHONY: test-e2e-gemini-cli
