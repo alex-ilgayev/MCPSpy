@@ -259,11 +259,6 @@ test-scenario-llm-openai: test-e2e-setup ## Run OpenAI LLM scenario (no MCPSpy, 
 	@echo "Running OpenAI LLM scenario..."
 	$(call run-scenario,llm-openai)
 
-.PHONY: test-scenario-codex-cli
-test-scenario-codex-cli: test-e2e-setup ## Run Codex CLI scenario (no MCPSpy, requires OPENAI_API_KEY)
-	@echo "Running Codex CLI scenario..."
-	$(call run-scenario,codex-cli)
-
 # =============================================================================
 ##@ E2E Tests (with MCPSpy)
 # =============================================================================
@@ -307,11 +302,6 @@ test-e2e-gemini-cli: build test-e2e-setup ## Run e2e test for Gemini CLI (requir
 test-e2e-llm-openai: build test-e2e-setup ## Run e2e test for OpenAI LLM (requires OPENAI_API_KEY)
 	@echo "Running OpenAI LLM e2e test..."
 	$(call run-e2e,llm-openai)
-
-.PHONY: test-e2e-codex-cli
-test-e2e-codex-cli: build test-e2e-setup ## Run e2e test for Codex CLI (requires OPENAI_API_KEY)
-	@echo "Running Codex CLI e2e test..."
-	$(call run-e2e,codex-cli)
 
 .PHONY: test-e2e
 test-e2e: build test-e2e-setup ## Run all e2e test scenarios
