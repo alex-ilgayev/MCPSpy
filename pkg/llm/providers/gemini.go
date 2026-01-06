@@ -245,12 +245,20 @@ func extractGeminiResponseText(candidates []geminiCandidate) string {
 	return ""
 }
 
-// ExtractToolUsage extracts tool usage events from request or response payload
-func (p *GeminiParser) ExtractToolUsage(payload []byte, sessionID uint64, isRequest bool) []*event.ToolUsageEvent {
-	if isRequest {
-		return p.extractFunctionResponses(payload, sessionID)
+// ExtractToolUsage extracts tool usage events from HTTP events.
+// Accepts *event.HttpRequestEvent (for function responses), *event.HttpResponseEvent (for function calls),
+// or *event.SSEEvent (for streaming function calls).
+func (p *GeminiParser) ExtractToolUsage(e event.Event) []*event.ToolUsageEvent {
+	switch ev := e.(type) {
+	case *event.HttpRequestEvent:
+		return p.extractFunctionResponses(ev.RequestPayload, ev.SSLContext)
+	case *event.HttpResponseEvent:
+		return p.extractFunctionCalls(ev.ResponsePayload, ev.SSLContext)
+	case *event.SSEEvent:
+		return p.extractToolUsageFromSSE(ev)
+	default:
+		return nil
 	}
-	return p.extractFunctionCalls(payload, sessionID)
 }
 
 // extractFunctionCalls extracts functionCall from response candidates
@@ -308,10 +316,10 @@ func (p *GeminiParser) extractFunctionResponses(payload []byte, sessionID uint64
 	return events
 }
 
-// ExtractToolUsageFromSSE extracts tool usage from streaming SSE events
+// extractToolUsageFromSSE extracts tool usage from streaming SSE events
 // For Gemini, function calls in streaming come as complete objects in each chunk,
 // so we extract them directly from the SSE data.
-func (p *GeminiParser) ExtractToolUsageFromSSE(sse *event.SSEEvent) []*event.ToolUsageEvent {
+func (p *GeminiParser) extractToolUsageFromSSE(sse *event.SSEEvent) []*event.ToolUsageEvent {
 	data := strings.TrimSpace(string(sse.Data))
 	if data == "" {
 		return nil

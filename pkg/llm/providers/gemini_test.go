@@ -493,3 +493,289 @@ func TestGeminiParser_ExtractModelFromPath(t *testing.T) {
 		})
 	}
 }
+
+func TestGeminiParser_ExtractToolUsage_FromResponse(t *testing.T) {
+	parser := NewGeminiParser()
+
+	tests := []struct {
+		name          string
+		payload       string
+		expectedTools []struct {
+			usageType event.ToolUsageType
+			toolName  string
+			input     string
+		}
+	}{
+		{
+			name: "single functionCall",
+			payload: `{
+				"candidates": [{
+					"content": {
+						"role": "model",
+						"parts": [
+							{"functionCall": {"name": "get_weather", "args": {"location": "NYC"}}}
+						]
+					}
+				}]
+			}`,
+			expectedTools: []struct {
+				usageType event.ToolUsageType
+				toolName  string
+				input     string
+			}{
+				{event.ToolUsageTypeInvocation, "get_weather", `{"location": "NYC"}`},
+			},
+		},
+		{
+			name: "multiple functionCalls",
+			payload: `{
+				"candidates": [{
+					"content": {
+						"role": "model",
+						"parts": [
+							{"functionCall": {"name": "search", "args": {"query": "weather"}}},
+							{"functionCall": {"name": "read_file", "args": {"path": "/tmp/test"}}}
+						]
+					}
+				}]
+			}`,
+			expectedTools: []struct {
+				usageType event.ToolUsageType
+				toolName  string
+				input     string
+			}{
+				{event.ToolUsageTypeInvocation, "search", `{"query": "weather"}`},
+				{event.ToolUsageTypeInvocation, "read_file", `{"path": "/tmp/test"}`},
+			},
+		},
+		{
+			name: "no functionCalls (text only)",
+			payload: `{
+				"candidates": [{
+					"content": {
+						"role": "model",
+						"parts": [{"text": "Hello, world!"}]
+					}
+				}]
+			}`,
+			expectedTools: nil,
+		},
+		{
+			name:          "invalid JSON",
+			payload:       `{invalid`,
+			expectedTools: nil,
+		},
+		{
+			name: "empty candidates",
+			payload: `{
+				"candidates": []
+			}`,
+			expectedTools: nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resp := &event.HttpResponseEvent{
+				HttpRequestEvent: event.HttpRequestEvent{
+					EventHeader: makeEventHeader(1234, "test"),
+					Host:        "generativelanguage.googleapis.com",
+					Path:        "/v1beta/models/gemini-2.0-flash:generateContent",
+				},
+				SSLContext:      12345,
+				ResponsePayload: []byte(tt.payload),
+			}
+
+			result := parser.ExtractToolUsage(resp)
+
+			if tt.expectedTools == nil {
+				assert.Empty(t, result)
+				return
+			}
+
+			require.Len(t, result, len(tt.expectedTools))
+			for i, expected := range tt.expectedTools {
+				assert.Equal(t, expected.usageType, result[i].UsageType)
+				assert.Equal(t, expected.toolName, result[i].ToolName)
+				assert.Equal(t, expected.input, result[i].Input)
+				assert.Equal(t, uint64(12345), result[i].SessionID)
+			}
+		})
+	}
+}
+
+func TestGeminiParser_ExtractToolUsage_FromRequest(t *testing.T) {
+	parser := NewGeminiParser()
+
+	tests := []struct {
+		name          string
+		payload       string
+		expectedTools []struct {
+			usageType event.ToolUsageType
+			toolName  string
+			output    string
+		}
+	}{
+		{
+			name: "single functionResponse",
+			payload: `{
+				"contents": [{
+					"role": "user",
+					"parts": [
+						{"functionResponse": {"name": "get_weather", "response": {"temperature": 72, "condition": "sunny"}}}
+					]
+				}]
+			}`,
+			expectedTools: []struct {
+				usageType event.ToolUsageType
+				toolName  string
+				output    string
+			}{
+				{event.ToolUsageTypeResult, "get_weather", `{"temperature": 72, "condition": "sunny"}`},
+			},
+		},
+		{
+			name: "multiple functionResponses",
+			payload: `{
+				"contents": [{
+					"role": "user",
+					"parts": [
+						{"functionResponse": {"name": "search", "response": {"results": ["a", "b"]}}},
+						{"functionResponse": {"name": "read_file", "response": {"content": "file contents"}}}
+					]
+				}]
+			}`,
+			expectedTools: []struct {
+				usageType event.ToolUsageType
+				toolName  string
+				output    string
+			}{
+				{event.ToolUsageTypeResult, "search", `{"results": ["a", "b"]}`},
+				{event.ToolUsageTypeResult, "read_file", `{"content": "file contents"}`},
+			},
+		},
+		{
+			name: "no functionResponse (text only)",
+			payload: `{
+				"contents": [{
+					"role": "user",
+					"parts": [{"text": "Hello"}]
+				}]
+			}`,
+			expectedTools: nil,
+		},
+		{
+			name:          "invalid JSON",
+			payload:       `{invalid`,
+			expectedTools: nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := &event.HttpRequestEvent{
+				EventHeader:    makeEventHeader(1234, "test"),
+				SSLContext:     12345,
+				Host:           "generativelanguage.googleapis.com",
+				Path:           "/v1beta/models/gemini-2.0-flash:generateContent",
+				RequestPayload: []byte(tt.payload),
+			}
+
+			result := parser.ExtractToolUsage(req)
+
+			if tt.expectedTools == nil {
+				assert.Empty(t, result)
+				return
+			}
+
+			require.Len(t, result, len(tt.expectedTools))
+			for i, expected := range tt.expectedTools {
+				assert.Equal(t, expected.usageType, result[i].UsageType)
+				assert.Equal(t, expected.toolName, result[i].ToolName)
+				assert.Equal(t, expected.output, result[i].Output)
+				assert.Equal(t, uint64(12345), result[i].SessionID)
+			}
+		})
+	}
+}
+
+func TestGeminiParser_ExtractToolUsage_SSE(t *testing.T) {
+	parser := NewGeminiParser()
+
+	tests := []struct {
+		name          string
+		data          string
+		expectedTools []struct {
+			usageType event.ToolUsageType
+			toolName  string
+			input     string
+		}
+	}{
+		{
+			name: "streaming chunk with functionCall",
+			data: `{
+				"candidates": [{
+					"content": {
+						"role": "model",
+						"parts": [
+							{"functionCall": {"name": "search", "args": {"query": "weather"}}}
+						]
+					}
+				}]
+			}`,
+			expectedTools: []struct {
+				usageType event.ToolUsageType
+				toolName  string
+				input     string
+			}{
+				{event.ToolUsageTypeInvocation, "search", `{"query": "weather"}`},
+			},
+		},
+		{
+			name: "streaming chunk with text (no tools)",
+			data: `{
+				"candidates": [{
+					"content": {
+						"role": "model",
+						"parts": [{"text": "Hello"}]
+					}
+				}]
+			}`,
+			expectedTools: nil,
+		},
+		{
+			name:          "empty data",
+			data:          "",
+			expectedTools: nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			sse := &event.SSEEvent{
+				HttpRequestEvent: event.HttpRequestEvent{
+					EventHeader: makeEventHeader(1234, "test"),
+					Host:        "generativelanguage.googleapis.com",
+					Path:        "/v1beta/models/gemini-2.0-flash:streamGenerateContent",
+				},
+				SSLContext: 12345,
+				Data:       []byte(tt.data),
+			}
+
+			result := parser.ExtractToolUsage(sse)
+
+			if tt.expectedTools == nil {
+				assert.Empty(t, result)
+				return
+			}
+
+			require.Len(t, result, len(tt.expectedTools))
+			for i, expected := range tt.expectedTools {
+				assert.Equal(t, expected.usageType, result[i].UsageType)
+				assert.Equal(t, expected.toolName, result[i].ToolName)
+				assert.Equal(t, expected.input, result[i].Input)
+				assert.Equal(t, uint64(12345), result[i].SessionID)
+			}
+		})
+	}
+}

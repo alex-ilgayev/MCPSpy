@@ -80,8 +80,6 @@ func (s *SessionManager) ProcessFSEvent(e *event.FSDataEvent) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// fmt.Println("ProcessFSEvent:", e.Type(), string(e.Buffer()))
-
 	// Create session key
 	key := sessionKey{
 		pid:           e.PID,
@@ -178,8 +176,6 @@ func (s *SessionManager) emitJsonEvent(sess *session, key sessionKey, payload []
 	if key.origEventType == event.EventTypeFSWrite {
 		newEventType = event.EventTypeFSAggregatedWrite
 	}
-
-	// fmt.Println("emitJsonEvent:", string(payload))
 
 	evt := event.NewFSAggregatedEvent(
 		newEventType,

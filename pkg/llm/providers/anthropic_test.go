@@ -526,3 +526,402 @@ func TestExtractResponseText(t *testing.T) {
 		})
 	}
 }
+
+func TestAnthropicParser_ExtractToolUsage_FromResponse(t *testing.T) {
+	parser := NewAnthropicParser()
+
+	tests := []struct {
+		name          string
+		payload       string
+		expectedTools []struct {
+			usageType event.ToolUsageType
+			toolID    string
+			toolName  string
+			input     string
+		}
+	}{
+		{
+			name: "single tool_use block",
+			payload: `{
+				"content": [
+					{"type": "text", "text": "Let me search for that."},
+					{"type": "tool_use", "id": "toolu_123", "name": "search", "input": {"query": "weather"}}
+				]
+			}`,
+			expectedTools: []struct {
+				usageType event.ToolUsageType
+				toolID    string
+				toolName  string
+				input     string
+			}{
+				{event.ToolUsageTypeInvocation, "toolu_123", "search", `{"query": "weather"}`},
+			},
+		},
+		{
+			name: "multiple tool_use blocks",
+			payload: `{
+				"content": [
+					{"type": "tool_use", "id": "toolu_1", "name": "read_file", "input": {"path": "/tmp/test.txt"}},
+					{"type": "tool_use", "id": "toolu_2", "name": "write_file", "input": {"path": "/tmp/out.txt", "content": "hello"}}
+				]
+			}`,
+			expectedTools: []struct {
+				usageType event.ToolUsageType
+				toolID    string
+				toolName  string
+				input     string
+			}{
+				{event.ToolUsageTypeInvocation, "toolu_1", "read_file", `{"path": "/tmp/test.txt"}`},
+				{event.ToolUsageTypeInvocation, "toolu_2", "write_file", `{"path": "/tmp/out.txt", "content": "hello"}`},
+			},
+		},
+		{
+			name: "no tool_use blocks",
+			payload: `{
+				"content": [
+					{"type": "text", "text": "Hello, world!"}
+				]
+			}`,
+			expectedTools: nil,
+		},
+		{
+			name:          "invalid JSON",
+			payload:       `{invalid`,
+			expectedTools: nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resp := &event.HttpResponseEvent{
+				EventHeader: makeEventHeader(1234, "python"),
+				HttpRequestEvent: event.HttpRequestEvent{
+					Host: "api.anthropic.com",
+					Path: "/v1/messages",
+				},
+				SSLContext:      12345,
+				ResponsePayload: []byte(tt.payload),
+			}
+
+			result := parser.ExtractToolUsage(resp)
+
+			if tt.expectedTools == nil {
+				assert.Empty(t, result)
+				return
+			}
+
+			require.Len(t, result, len(tt.expectedTools))
+			for i, expected := range tt.expectedTools {
+				assert.Equal(t, expected.usageType, result[i].UsageType)
+				assert.Equal(t, expected.toolID, result[i].ToolID)
+				assert.Equal(t, expected.toolName, result[i].ToolName)
+				assert.Equal(t, expected.input, result[i].Input)
+				assert.Equal(t, uint64(12345), result[i].SessionID)
+			}
+		})
+	}
+}
+
+func TestAnthropicParser_ExtractToolUsage_FromRequest(t *testing.T) {
+	tests := []struct {
+		name          string
+		payload       string
+		expectedTools []struct {
+			usageType event.ToolUsageType
+			toolID    string
+			output    string
+			isError   bool
+		}
+	}{
+		{
+			name: "single tool_result block",
+			payload: `{
+				"messages": [
+					{
+						"role": "user",
+						"content": [
+							{"type": "tool_result", "tool_use_id": "toolu_123", "content": "Search results: sunny, 72F"}
+						]
+					}
+				]
+			}`,
+			expectedTools: []struct {
+				usageType event.ToolUsageType
+				toolID    string
+				output    string
+				isError   bool
+			}{
+				{event.ToolUsageTypeResult, "toolu_123", `"Search results: sunny, 72F"`, false},
+			},
+		},
+		{
+			name: "tool_result with error",
+			payload: `{
+				"messages": [
+					{
+						"role": "user",
+						"content": [
+							{"type": "tool_result", "tool_use_id": "toolu_456", "content": "File not found", "is_error": true}
+						]
+					}
+				]
+			}`,
+			expectedTools: []struct {
+				usageType event.ToolUsageType
+				toolID    string
+				output    string
+				isError   bool
+			}{
+				{event.ToolUsageTypeResult, "toolu_456", `"File not found"`, true},
+			},
+		},
+		{
+			name: "no tool_result blocks",
+			payload: `{
+				"messages": [
+					{
+						"role": "user",
+						"content": [
+							{"type": "text", "text": "Hello"}
+						]
+					}
+				]
+			}`,
+			expectedTools: nil,
+		},
+		{
+			name: "tool_result in assistant message (should be ignored)",
+			payload: `{
+				"messages": [
+					{
+						"role": "assistant",
+						"content": [
+							{"type": "tool_result", "tool_use_id": "toolu_789", "content": "result"}
+						]
+					}
+				]
+			}`,
+			expectedTools: nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Use a fresh parser for each test to avoid dedup interference
+			parser := NewAnthropicParser()
+
+			req := &event.HttpRequestEvent{
+				EventHeader:    makeEventHeader(1234, "python"),
+				SSLContext:     12345,
+				Host:           "api.anthropic.com",
+				Path:           "/v1/messages",
+				RequestPayload: []byte(tt.payload),
+			}
+
+			result := parser.ExtractToolUsage(req)
+
+			if tt.expectedTools == nil {
+				assert.Empty(t, result)
+				return
+			}
+
+			require.Len(t, result, len(tt.expectedTools))
+			for i, expected := range tt.expectedTools {
+				assert.Equal(t, expected.usageType, result[i].UsageType)
+				assert.Equal(t, expected.toolID, result[i].ToolID)
+				assert.Equal(t, expected.output, result[i].Output)
+				assert.Equal(t, expected.isError, result[i].IsError)
+				assert.Equal(t, uint64(12345), result[i].SessionID)
+			}
+		})
+	}
+}
+
+func TestAnthropicParser_ExtractToolUsage_Deduplication(t *testing.T) {
+	parser := NewAnthropicParser()
+
+	payload := `{
+		"messages": [
+			{
+				"role": "user",
+				"content": [
+					{"type": "tool_result", "tool_use_id": "toolu_dedup", "content": "result1"}
+				]
+			}
+		]
+	}`
+
+	req := &event.HttpRequestEvent{
+		EventHeader:    makeEventHeader(1234, "python"),
+		SSLContext:     12345,
+		Host:           "api.anthropic.com",
+		Path:           "/v1/messages",
+		RequestPayload: []byte(payload),
+	}
+
+	// First extraction should return the tool result
+	result1 := parser.ExtractToolUsage(req)
+	require.Len(t, result1, 1)
+	assert.Equal(t, "toolu_dedup", result1[0].ToolID)
+
+	// Second extraction of same result should be deduplicated
+	result2 := parser.ExtractToolUsage(req)
+	assert.Empty(t, result2, "second extraction should be deduplicated")
+}
+
+func TestAnthropicParser_ExtractToolUsage_SessionIsolation(t *testing.T) {
+	parser := NewAnthropicParser()
+
+	payload := `{
+		"messages": [
+			{
+				"role": "user",
+				"content": [
+					{"type": "tool_result", "tool_use_id": "toolu_session", "content": "result"}
+				]
+			}
+		]
+	}`
+
+	// Request from session 1
+	req1 := &event.HttpRequestEvent{
+		EventHeader:    makeEventHeader(1234, "python"),
+		SSLContext:     11111,
+		Host:           "api.anthropic.com",
+		Path:           "/v1/messages",
+		RequestPayload: []byte(payload),
+	}
+
+	// Request from session 2 (same tool_use_id)
+	req2 := &event.HttpRequestEvent{
+		EventHeader:    makeEventHeader(1234, "python"),
+		SSLContext:     22222,
+		Host:           "api.anthropic.com",
+		Path:           "/v1/messages",
+		RequestPayload: []byte(payload),
+	}
+
+	// Both should return the tool result (different sessions)
+	result1 := parser.ExtractToolUsage(req1)
+	require.Len(t, result1, 1)
+	assert.Equal(t, uint64(11111), result1[0].SessionID)
+
+	result2 := parser.ExtractToolUsage(req2)
+	require.Len(t, result2, 1, "same tool_use_id in different session should not be deduplicated")
+	assert.Equal(t, uint64(22222), result2[0].SessionID)
+}
+
+func TestAnthropicParser_ExtractToolUsage_ToolNameCorrelation(t *testing.T) {
+	parser := NewAnthropicParser()
+
+	// First, simulate a response with tool_use
+	responsePayload := `{
+		"content": [
+			{"type": "tool_use", "id": "toolu_corr", "name": "read_file", "input": {"path": "/test"}}
+		]
+	}`
+	resp := &event.HttpResponseEvent{
+		EventHeader: makeEventHeader(1234, "python"),
+		HttpRequestEvent: event.HttpRequestEvent{
+			Host: "api.anthropic.com",
+			Path: "/v1/messages",
+		},
+		SSLContext:      12345,
+		ResponsePayload: []byte(responsePayload),
+	}
+
+	toolCalls := parser.ExtractToolUsage(resp)
+	require.Len(t, toolCalls, 1)
+	assert.Equal(t, "read_file", toolCalls[0].ToolName)
+
+	// Then, simulate the following request with tool_result
+	requestPayload := `{
+		"messages": [
+			{
+				"role": "user",
+				"content": [
+					{"type": "tool_result", "tool_use_id": "toolu_corr", "content": "file contents"}
+				]
+			}
+		]
+	}`
+	req := &event.HttpRequestEvent{
+		EventHeader:    makeEventHeader(1234, "python"),
+		SSLContext:     12345,
+		Host:           "api.anthropic.com",
+		Path:           "/v1/messages",
+		RequestPayload: []byte(requestPayload),
+	}
+
+	toolResults := parser.ExtractToolUsage(req)
+	require.Len(t, toolResults, 1)
+	assert.Equal(t, "read_file", toolResults[0].ToolName, "tool name should be correlated from previous tool_use")
+}
+
+func TestAnthropicParser_ExtractToolUsage_SSE(t *testing.T) {
+	parser := NewAnthropicParser()
+	sessionID := uint64(99999)
+
+	// Simulate streaming tool_use sequence
+	contentBlockStart := `{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_stream","name":"search"}}`
+	contentBlockDelta1 := `{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"query\":"}}`
+	contentBlockDelta2 := `{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"\"weather\"}"}}`
+	contentBlockStop := `{"type":"content_block_stop","index":0}`
+
+	// content_block_start - should return nil (accumulating)
+	sse1 := &event.SSEEvent{
+		EventHeader: makeEventHeader(1234, "node"),
+		HttpRequestEvent: event.HttpRequestEvent{
+			Host: "api.anthropic.com",
+			Path: "/v1/messages",
+		},
+		SSLContext: sessionID,
+		Data:       []byte(contentBlockStart),
+	}
+	result1 := parser.ExtractToolUsage(sse1)
+	assert.Empty(t, result1)
+
+	// content_block_delta - should return nil (accumulating)
+	sse2 := &event.SSEEvent{
+		EventHeader: makeEventHeader(1234, "node"),
+		HttpRequestEvent: event.HttpRequestEvent{
+			Host: "api.anthropic.com",
+			Path: "/v1/messages",
+		},
+		SSLContext: sessionID,
+		Data:       []byte(contentBlockDelta1),
+	}
+	result2 := parser.ExtractToolUsage(sse2)
+	assert.Empty(t, result2)
+
+	// second delta
+	sse3 := &event.SSEEvent{
+		EventHeader: makeEventHeader(1234, "node"),
+		HttpRequestEvent: event.HttpRequestEvent{
+			Host: "api.anthropic.com",
+			Path: "/v1/messages",
+		},
+		SSLContext: sessionID,
+		Data:       []byte(contentBlockDelta2),
+	}
+	result3 := parser.ExtractToolUsage(sse3)
+	assert.Empty(t, result3)
+
+	// content_block_stop - should return completed tool event
+	sse4 := &event.SSEEvent{
+		EventHeader: makeEventHeader(1234, "node"),
+		HttpRequestEvent: event.HttpRequestEvent{
+			Host: "api.anthropic.com",
+			Path: "/v1/messages",
+		},
+		SSLContext: sessionID,
+		Data:       []byte(contentBlockStop),
+	}
+	result4 := parser.ExtractToolUsage(sse4)
+	require.Len(t, result4, 1)
+	assert.Equal(t, event.ToolUsageTypeInvocation, result4[0].UsageType)
+	assert.Equal(t, "toolu_stream", result4[0].ToolID)
+	assert.Equal(t, "search", result4[0].ToolName)
+	assert.Equal(t, `{"query":"weather"}`, result4[0].Input)
+	assert.Equal(t, sessionID, result4[0].SessionID)
+}

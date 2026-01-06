@@ -2,11 +2,18 @@ package providers
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/alex-ilgayev/mcpspy/pkg/event"
+)
+
+const (
+	// emittedResultsTTL is the time-to-live for entries in emittedResults map
+	// After this duration, entries are eligible for cleanup
+	emittedResultsTTL = 10 * time.Minute
 )
 
 // AnthropicStreamEventType represents SSE event types in Anthropic's streaming API.
@@ -76,13 +83,19 @@ type streamingToolBlock struct {
 	input     strings.Builder
 }
 
+// emittedResultEntry tracks when a tool result was emitted for TTL-based cleanup
+type emittedResultEntry struct {
+	timestamp time.Time
+}
+
 // AnthropicParser parses Anthropic Claude API requests and responses
 type AnthropicParser struct {
-	// toolNames maps tool_use_id to tool name for correlating tool results
+	// toolNames maps "sessionID:tool_use_id" to tool name for correlating tool results
 	toolNames sync.Map
-	// streamingTools maps content block index to in-progress tool_use blocks
+	// streamingTools maps "sessionID:index" to in-progress tool_use blocks
 	streamingTools sync.Map
-	// emittedResults tracks tool_use_ids for which we've already emitted results (dedup)
+	// emittedResults maps "sessionID:tool_use_id" to emittedResultEntry for deduplication
+	// Entries are cleaned up after emittedResultsTTL
 	emittedResults sync.Map
 }
 
@@ -307,12 +320,20 @@ type anthropicRequestForTools struct {
 	} `json:"messages"`
 }
 
-// ExtractToolUsage extracts tool usage events from request or response payload
-func (p *AnthropicParser) ExtractToolUsage(payload []byte, sessionID uint64, isRequest bool) []*event.ToolUsageEvent {
-	if isRequest {
-		return p.extractToolResults(payload, sessionID)
+// ExtractToolUsage extracts tool usage events from HTTP events.
+// Accepts *event.HttpRequestEvent (for tool results), *event.HttpResponseEvent (for tool invocations),
+// or *event.SSEEvent (for streaming tool invocations).
+func (p *AnthropicParser) ExtractToolUsage(e event.Event) []*event.ToolUsageEvent {
+	switch ev := e.(type) {
+	case *event.HttpRequestEvent:
+		return p.extractToolResults(ev.RequestPayload, ev.SSLContext)
+	case *event.HttpResponseEvent:
+		return p.extractToolCalls(ev.ResponsePayload, ev.SSLContext)
+	case *event.SSEEvent:
+		return p.extractToolUsageFromSSE(ev)
+	default:
+		return nil
 	}
-	return p.extractToolCalls(payload, sessionID)
 }
 
 // extractToolCalls extracts tool_use blocks from response content
@@ -341,8 +362,9 @@ func (p *AnthropicParser) extractToolCalls(payload []byte, sessionID uint64) []*
 			continue
 		}
 
-		// Store tool name for correlation with tool_result
-		p.toolNames.Store(block.ID, block.Name)
+		// Store tool name for correlation with tool_result (session-scoped key)
+		toolNameKey := fmt.Sprintf("%d:%s", sessionID, block.ID)
+		p.toolNames.Store(toolNameKey, block.Name)
 
 		events = append(events, &event.ToolUsageEvent{
 			SessionID: sessionID,
@@ -361,6 +383,9 @@ func (p *AnthropicParser) extractToolCalls(payload []byte, sessionID uint64) []*
 // Uses deduplication by tool_use_id to avoid emitting the same result multiple times
 // as conversation history accumulates.
 func (p *AnthropicParser) extractToolResults(payload []byte, sessionID uint64) []*event.ToolUsageEvent {
+	// Cleanup expired entries before processing
+	p.cleanupExpiredResults()
+
 	var req anthropicRequestForTools
 	if err := json.Unmarshal(payload, &req); err != nil {
 		return nil
@@ -391,17 +416,20 @@ func (p *AnthropicParser) extractToolResults(payload []byte, sessionID uint64) [
 				continue
 			}
 
-			// Skip if we've already emitted this result (dedup)
-			if _, alreadyEmitted := p.emittedResults.LoadOrStore(block.ToolUseID, true); alreadyEmitted {
+			// Skip if we've already emitted this result (dedup with session-scoped key)
+			emittedKey := fmt.Sprintf("%d:%s", sessionID, block.ToolUseID)
+			entry := emittedResultEntry{timestamp: time.Now()}
+			if _, alreadyEmitted := p.emittedResults.LoadOrStore(emittedKey, entry); alreadyEmitted {
 				continue
 			}
 
-			// Look up tool name from previous tool_use
+			// Look up tool name from previous tool_use (session-scoped key)
+			toolNameKey := fmt.Sprintf("%d:%s", sessionID, block.ToolUseID)
 			toolName := ""
-			if name, ok := p.toolNames.Load(block.ToolUseID); ok {
+			if name, ok := p.toolNames.Load(toolNameKey); ok {
 				toolName = name.(string)
 				// Clean up after use to prevent memory growth
-				p.toolNames.Delete(block.ToolUseID)
+				p.toolNames.Delete(toolNameKey)
 			}
 
 			events = append(events, &event.ToolUsageEvent{
@@ -417,6 +445,19 @@ func (p *AnthropicParser) extractToolResults(payload []byte, sessionID uint64) [
 	}
 
 	return events
+}
+
+// cleanupExpiredResults removes entries from emittedResults that are older than emittedResultsTTL
+func (p *AnthropicParser) cleanupExpiredResults() {
+	now := time.Now()
+	p.emittedResults.Range(func(key, value interface{}) bool {
+		if entry, ok := value.(emittedResultEntry); ok {
+			if now.Sub(entry.timestamp) > emittedResultsTTL {
+				p.emittedResults.Delete(key)
+			}
+		}
+		return true
+	})
 }
 
 // SSE event structures for tool extraction
@@ -447,8 +488,8 @@ type sseContentBlockStop struct {
 	Index int    `json:"index"`
 }
 
-// ExtractToolUsageFromSSE extracts tool usage from streaming SSE events
-func (p *AnthropicParser) ExtractToolUsageFromSSE(sse *event.SSEEvent) []*event.ToolUsageEvent {
+// extractToolUsageFromSSE extracts tool usage from streaming SSE events
+func (p *AnthropicParser) extractToolUsageFromSSE(sse *event.SSEEvent) []*event.ToolUsageEvent {
 	data := strings.TrimSpace(string(sse.Data))
 	if data == "" {
 		return nil
@@ -466,10 +507,10 @@ func (p *AnthropicParser) ExtractToolUsageFromSSE(sse *event.SSEEvent) []*event.
 	case AnthropicStreamEventTypeContentBlockStart:
 		return p.handleContentBlockStart(data, sse.SSLContext)
 	case AnthropicStreamEventTypeContentBlockDelta:
-		p.handleContentBlockDelta(data)
+		p.handleContentBlockDelta(data, sse.SSLContext)
 		return nil
 	case AnthropicStreamEventTypeContentBlockStop:
-		return p.handleContentBlockStop(data)
+		return p.handleContentBlockStop(data, sse.SSLContext)
 	default:
 		return nil
 	}
@@ -493,16 +534,18 @@ func (p *AnthropicParser) handleContentBlockStart(data string, sessionID uint64)
 		name:      ev.ContentBlock.Name,
 	}
 
-	// Store for delta accumulation
-	p.streamingTools.Store(ev.Index, block)
+	// Store for delta accumulation (session-scoped key)
+	streamingKey := fmt.Sprintf("%d:%d", sessionID, ev.Index)
+	p.streamingTools.Store(streamingKey, block)
 
-	// Store tool name for result correlation
-	p.toolNames.Store(ev.ContentBlock.ID, ev.ContentBlock.Name)
+	// Store tool name for result correlation (session-scoped key)
+	toolNameKey := fmt.Sprintf("%d:%s", sessionID, ev.ContentBlock.ID)
+	p.toolNames.Store(toolNameKey, ev.ContentBlock.Name)
 
 	return nil
 }
 
-func (p *AnthropicParser) handleContentBlockDelta(data string) {
+func (p *AnthropicParser) handleContentBlockDelta(data string, sessionID uint64) {
 	var ev sseContentBlockDelta
 	if err := json.Unmarshal([]byte(data), &ev); err != nil {
 		return
@@ -513,8 +556,9 @@ func (p *AnthropicParser) handleContentBlockDelta(data string) {
 		return
 	}
 
-	// Look up the streaming tool block
-	blockI, ok := p.streamingTools.Load(ev.Index)
+	// Look up the streaming tool block (session-scoped key)
+	streamingKey := fmt.Sprintf("%d:%d", sessionID, ev.Index)
+	blockI, ok := p.streamingTools.Load(streamingKey)
 	if !ok {
 		return
 	}
@@ -527,14 +571,15 @@ func (p *AnthropicParser) handleContentBlockDelta(data string) {
 	}
 }
 
-func (p *AnthropicParser) handleContentBlockStop(data string) []*event.ToolUsageEvent {
+func (p *AnthropicParser) handleContentBlockStop(data string, sessionID uint64) []*event.ToolUsageEvent {
 	var ev sseContentBlockStop
 	if err := json.Unmarshal([]byte(data), &ev); err != nil {
 		return nil
 	}
 
-	// Look up and remove the streaming tool block
-	blockI, ok := p.streamingTools.LoadAndDelete(ev.Index)
+	// Look up and remove the streaming tool block (session-scoped key)
+	streamingKey := fmt.Sprintf("%d:%d", sessionID, ev.Index)
+	blockI, ok := p.streamingTools.LoadAndDelete(streamingKey)
 	if !ok {
 		return nil
 	}

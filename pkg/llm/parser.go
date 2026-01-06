@@ -86,7 +86,7 @@ func (p *Parser) handleRequest(e event.Event) {
 
 	// Extract and publish tool results from request
 	if p.config.PublishToolEvents {
-		toolEvents := parser.ExtractToolUsage(httpEvent.RequestPayload, httpEvent.SSLContext, true)
+		toolEvents := parser.ExtractToolUsage(httpEvent)
 		for _, te := range toolEvents {
 			// Add process context from HTTP event
 			te.PID = httpEvent.PID
@@ -132,7 +132,7 @@ func (p *Parser) handleResponse(e event.Event) {
 
 	// Extract and publish tool invocations from response
 	if p.config.PublishToolEvents {
-		toolEvents := parser.ExtractToolUsage(httpEvent.ResponsePayload, httpEvent.SSLContext, false)
+		toolEvents := parser.ExtractToolUsage(httpEvent)
 		for _, te := range toolEvents {
 			// Add process context from HTTP event
 			te.PID = httpEvent.PID
@@ -171,7 +171,7 @@ func (p *Parser) handleSSE(e event.Event) {
 
 	// Extract and publish tool invocations from streaming SSE
 	if p.config.PublishToolEvents {
-		toolEvents := parser.ExtractToolUsageFromSSE(sseEvent)
+		toolEvents := parser.ExtractToolUsage(sseEvent)
 		for _, te := range toolEvents {
 			// Add process context from SSE event
 			te.PID = sseEvent.PID
