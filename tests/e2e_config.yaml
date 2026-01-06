@@ -339,15 +339,6 @@ scenarios:
             'if [ -z "$OPENAI_API_KEY" ]; then echo ''ERROR: OPENAI_API_KEY environment variable is required''; exit 1; fi',
           ]
         timeout_seconds: 5
-      # Logout from any existing Codex session and login with API key
-      # Note: Use printenv pipe syntax as recommended by Codex docs
-      - command:
-          [
-            "bash",
-            "-c",
-            "npx -y @openai/codex logout 2>/dev/null || true; printenv OPENAI_API_KEY | npx -y @openai/codex login --with-api-key && npx -y @openai/codex login status",
-          ]
-        timeout_seconds: 60
 
     mcpspy:
       # Enable LLM monitoring to capture OpenAI API calls
@@ -360,11 +351,12 @@ scenarios:
       # 2. LLM API calls (OpenAI processing the prompt and generating response)
       # Using 'exec' subcommand for non-interactive mode
       # Using --full-auto for automatic execution with workspace-write sandbox
+      # Using CODEX_API_KEY env var for CI authentication (recommended over login flow)
       command:
         [
           "bash",
           "-c",
-          "cd tests && npx -y @openai/codex exec --full-auto -m gpt-4o-mini 'Read the file test_tool_data.txt and report its content. Then run: echo MCPSPY-TEST-COMPLETE' 2>&1",
+          "cd tests && CODEX_API_KEY=$OPENAI_API_KEY npx -y @openai/codex exec --full-auto -m gpt-4o-mini 'Read the file test_tool_data.txt and report its content. Then run: echo MCPSPY-TEST-COMPLETE' 2>&1",
         ]
       timeout_seconds: 120
       # Wait for tool execution and LLM response to complete
