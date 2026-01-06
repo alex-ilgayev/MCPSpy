@@ -65,6 +65,10 @@ func getHFToken(t *testing.T) string {
 	if token == "" {
 		t.Skip("HF_TOKEN environment variable not set, skipping integration test")
 	}
+	// Skip in CI unless explicitly enabled (these tests are slow due to API rate limits)
+	if os.Getenv("CI") != "" && os.Getenv("RUN_INTEGRATION_TESTS") == "" {
+		t.Skip("Skipping slow integration test in CI (set RUN_INTEGRATION_TESTS=1 to enable)")
+	}
 	return token
 }
 
