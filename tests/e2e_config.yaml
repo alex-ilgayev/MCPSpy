@@ -340,11 +340,12 @@ scenarios:
           ]
         timeout_seconds: 5
       # Logout from any existing Codex session and login with API key
+      # Note: Use printenv pipe syntax as recommended by Codex docs
       - command:
           [
             "bash",
             "-c",
-            "npx -y @openai/codex logout 2>/dev/null || true; npx -y @openai/codex login --with-api-key <<< \"$OPENAI_API_KEY\"",
+            "npx -y @openai/codex logout 2>/dev/null || true; printenv OPENAI_API_KEY | npx -y @openai/codex login --with-api-key && npx -y @openai/codex login status",
           ]
         timeout_seconds: 60
 
