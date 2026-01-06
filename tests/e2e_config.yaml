@@ -133,15 +133,7 @@ scenarios:
   # This test requires GEMINI_API_KEY environment variable to be set
   - name: "gemini-cli"
     description: "Test Gemini CLI with MCP servers, tool usage (Read, Bash), and LLM API calls"
-
-    pre_commands:
-      - command:
-          [
-            "bash",
-            "-c",
-            'if [ -z "$GEMINI_API_KEY" ]; then echo ''ERROR: GEMINI_API_KEY environment variable is required''; exit 1; fi',
-          ]
-        timeout_seconds: 5
+    required_env_vars: ["GEMINI_API_KEY"]
 
     mcpspy:
       # Enable LLM monitoring to capture Gemini API calls
@@ -173,6 +165,7 @@ scenarios:
   # This test requires CLAUDE_CODE_OAUTH_TOKEN environment variable to be set
   - name: "llm-anthropic"
     description: "Test LLM API monitoring with Anthropic (streaming and non-streaming)"
+    required_env_vars: ["CLAUDE_CODE_OAUTH_TOKEN"]
 
     mcpspy:
       # Enable LLM monitoring
@@ -205,6 +198,7 @@ scenarios:
   # This test requires GEMINI_API_KEY environment variable to be set
   - name: "llm-gemini"
     description: "Test LLM API monitoring with Google Gemini (streaming and non-streaming)"
+    required_env_vars: ["GEMINI_API_KEY"]
 
     mcpspy:
       # Enable LLM monitoring
@@ -242,15 +236,7 @@ scenarios:
   # This test requires HF_TOKEN environment variable to be set
   - name: "security-injection"
     description: "Test prompt injection detection with security monitoring enabled"
-
-    pre_commands:
-      - command:
-          [
-            "bash",
-            "-c",
-            'if [ -z "$HF_TOKEN" ]; then echo ''ERROR: HF_TOKEN environment variable is required''; exit 1; fi',
-          ]
-        timeout_seconds: 5
+    required_env_vars: ["HF_TOKEN"]
 
     mcpspy:
       # Additional flags for security features - token comes from wrapper script

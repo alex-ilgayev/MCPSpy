@@ -54,15 +54,22 @@ jobs:
         run: make test-smoke
 
       - name: Run integration tests
+        # Integration tests require HF_TOKEN. They will be skipped with a warning
+        # if the secret is not available (e.g., in PRs from forks).
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: make test-integration
 
       - name: Run end-to-end tests
+        # E2E tests run all scenarios. Scenarios that require secrets
+        # (CLAUDE_CODE_OAUTH_TOKEN, GEMINI_API_KEY, HF_TOKEN, OPENAI_API_KEY) will be
+        # skipped with a warning if the secrets are not available.
+        # This allows PRs from forks to pass CI without access to secrets.
         env:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: make test-e2e
 
   # Job to build cross-platform binaries as release assets

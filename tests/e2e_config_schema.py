@@ -120,6 +120,10 @@ class Scenario(BaseModel):
     description: Optional[str] = Field(
         default=None, description="Human-readable description"
     )
+    required_env_vars: Optional[List[str]] = Field(
+        default=None,
+        description="Environment variables required for this scenario. If any are missing, the scenario will be skipped with a warning instead of failing.",
+    )
     pre_commands: Optional[List[CommandConfig]] = Field(
         default=None, description="Commands to run before MCPSpy starts"
     )
