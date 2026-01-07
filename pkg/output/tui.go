@@ -25,13 +25,15 @@ type messageSource int
 const (
 	sourceTypeMCP messageSource = iota
 	sourceTypeLLM
+	sourceTypeTool
 )
 
-// displayMessage wraps either MCP or LLM events for rendering
+// displayMessage wraps either MCP, LLM, or Tool events for rendering
 type displayMessage struct {
-	source   messageSource
-	mcpEvent *event.MCPEvent
-	llmEvent *event.LLMEvent
+	source    messageSource
+	mcpEvent  *event.MCPEvent
+	llmEvent  *event.LLMEvent
+	toolEvent *event.ToolUsageEvent
 }
 
 // TUIDisplay handles the TUI output using Bubbletea
@@ -76,11 +78,12 @@ type model struct {
 	currentSearchIdx  int
 	filterTransport   string // "ALL", "HTTP", "STDIO"
 	filterType        string // "ALL", "REQ", "RESP", "NOTIFY", "ERROR"
-	filterApp         string // "ALL", "MCP", "LLM"
+	filterApp         string // "ALL", "MCP", "LLM", "TOOL"
 	jsonWrap          bool
 	density           densityMode
-	requestToResponse map[string]*event.MCPEvent // Maps request key to response message
-	detailViewTab     string                     // "request" or "response"
+	requestToResponse   map[string]*event.MCPEvent      // Maps request key to response message
+	invocationToResult  map[string]*event.ToolUsageEvent // Maps tool ID to result message
+	detailViewTab       string                           // "request" or "response" (also "invocation" or "result" for tools)
 }
 
 // Bubbletea message types
@@ -108,8 +111,9 @@ func NewTUIDisplay(eventBus bus.EventBus) (*TUIDisplay, error) {
 		filterApp:         "ALL",
 		jsonWrap:          true,
 		density:           densityComfort,
-		requestToResponse: make(map[string]*event.MCPEvent),
-		detailViewTab:     "request",
+		requestToResponse:  make(map[string]*event.MCPEvent),
+		invocationToResult: make(map[string]*event.ToolUsageEvent),
+		detailViewTab:      "request",
 	}
 
 	d := &TUIDisplay{
@@ -125,6 +129,11 @@ func NewTUIDisplay(eventBus bus.EventBus) (*TUIDisplay, error) {
 
 	// Subscribe to LLM events
 	if err := eventBus.Subscribe(event.EventTypeLLMMessage, d.handleLLMMessage); err != nil {
+		return nil, err
+	}
+
+	// Subscribe to Tool usage events
+	if err := eventBus.Subscribe(event.EventTypeToolUsage, d.handleToolMessage); err != nil {
 		return nil, err
 	}
 
@@ -156,6 +165,20 @@ func (d *TUIDisplay) handleLLMMessage(e event.Event) {
 	d.program.Send(msgReceived{msg: &displayMessage{
 		source:   sourceTypeLLM,
 		llmEvent: msg,
+	}})
+}
+
+// handleToolMessage receives Tool usage events and sends them to the TUI
+func (d *TUIDisplay) handleToolMessage(e event.Event) {
+	msg, ok := e.(*event.ToolUsageEvent)
+	if !ok {
+		return
+	}
+
+	// Wrap in displayMessage and send to Bubbletea program
+	d.program.Send(msgReceived{msg: &displayMessage{
+		source:    sourceTypeTool,
+		toolEvent: msg,
 	}})
 }
 
@@ -237,7 +260,7 @@ func (m *model) handleKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				filteredMsgs := m.getFilteredMessages()
 				selectedMsg := filteredMsgs[m.selectedIndex]
 
-				// Set default tab based on message type (MCP only)
+				// Set default tab based on message type
 				if selectedMsg.source == sourceTypeMCP && selectedMsg.mcpEvent != nil {
 					if selectedMsg.mcpEvent.MessageType == event.JSONRPCMessageTypeRequest {
 						m.detailViewTab = "request"
@@ -246,6 +269,13 @@ func (m *model) handleKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 					} else {
 						// Notifications don't have tabs
 						m.detailViewTab = "request"
+					}
+				} else if selectedMsg.source == sourceTypeTool && selectedMsg.toolEvent != nil {
+					// Tool events have invocation/result tabs
+					if selectedMsg.toolEvent.UsageType == event.ToolUsageTypeInvocation {
+						m.detailViewTab = "request" // "request" = invocation
+					} else {
+						m.detailViewTab = "response" // "response" = result
 					}
 				} else {
 					// LLM events don't have tabs (no correlation yet)
@@ -307,6 +337,8 @@ func (m *model) handleKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			case "MCP":
 				m.filterApp = "LLM"
 			case "LLM":
+				m.filterApp = "TOOL"
+			case "TOOL":
 				m.filterApp = "ALL"
 			}
 			m.selectedIndex = 0
@@ -375,11 +407,11 @@ func (m *model) handleKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.detailScroll = 0
 
 		case "r":
-			// Switch between request and response tabs (MCP only)
+			// Switch between request/response tabs (MCP) or invocation/result tabs (Tool)
 			filteredMsgs := m.getFilteredMessages()
 			if len(filteredMsgs) > 0 {
 				selectedMsg := filteredMsgs[m.selectedIndex]
-				// Only for MCP events, not LLM
+				// MCP events
 				if selectedMsg.source == sourceTypeMCP && selectedMsg.mcpEvent != nil {
 					// Don't switch for notifications
 					if selectedMsg.mcpEvent.MessageType != event.JSONRPCMessageTypeNotification {
@@ -394,6 +426,20 @@ func (m *model) handleKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 							m.detailViewTab = "request"
 							m.detailScroll = 0
 						}
+					}
+				}
+				// Tool events
+				if selectedMsg.source == sourceTypeTool && selectedMsg.toolEvent != nil {
+					if m.detailViewTab == "request" {
+						// Check if result exists
+						paired := m.findPairedToolMessage(selectedMsg)
+						if paired != nil || selectedMsg.toolEvent.UsageType == event.ToolUsageTypeResult {
+							m.detailViewTab = "response"
+							m.detailScroll = 0
+						}
+					} else {
+						m.detailViewTab = "request"
+						m.detailScroll = 0
 					}
 				}
 			}
@@ -413,6 +459,9 @@ func (m *model) getFilteredMessages() []*displayMessage {
 				continue
 			}
 			if m.filterApp == "LLM" && msg.source != sourceTypeLLM {
+				continue
+			}
+			if m.filterApp == "TOOL" && msg.source != sourceTypeTool {
 				continue
 			}
 		}
@@ -441,6 +490,43 @@ func (m *model) getFilteredMessages() []*displayMessage {
 	return filtered
 }
 
+// messagePassesFilters checks if a single message would pass the current filters
+func (m *model) messagePassesFilters(msg *displayMessage) bool {
+	// App filter
+	if m.filterApp != "ALL" {
+		if m.filterApp == "MCP" && msg.source != sourceTypeMCP {
+			return false
+		}
+		if m.filterApp == "LLM" && msg.source != sourceTypeLLM {
+			return false
+		}
+		if m.filterApp == "TOOL" && msg.source != sourceTypeTool {
+			return false
+		}
+	}
+
+	// Transport filter
+	if m.filterTransport != "ALL" {
+		transportType := m.getTransportType(msg)
+		if m.filterTransport == "HTTP" && transportType != "HTTP" {
+			return false
+		}
+		if m.filterTransport == "STDIO" && transportType != "STDIO" {
+			return false
+		}
+	}
+
+	// Type filter
+	if m.filterType != "ALL" {
+		msgType := m.getMessageTypeString(msg)
+		if msgType != m.filterType {
+			return false
+		}
+	}
+
+	return true
+}
+
 // getTransportType returns the transport type for a displayMessage
 func (m *model) getTransportType(msg *displayMessage) string {
 	switch msg.source {
@@ -453,6 +539,8 @@ func (m *model) getTransportType(msg *displayMessage) string {
 		}
 	case sourceTypeLLM:
 		return "HTTP" // LLM events are always HTTP
+	case sourceTypeTool:
+		return "HTTP" // Tool events are always via HTTP (LLM API)
 	}
 	return ""
 }
@@ -494,6 +582,21 @@ func (m *model) getMessageTypeString(msg *displayMessage) string {
 		default:
 			return "UNKNOWN"
 		}
+	case sourceTypeTool:
+		if msg.toolEvent == nil {
+			return "UNKNOWN"
+		}
+		switch msg.toolEvent.UsageType {
+		case event.ToolUsageTypeInvocation:
+			return "CALL"
+		case event.ToolUsageTypeResult:
+			if msg.toolEvent.IsError {
+				return "ERROR"
+			}
+			return "RSLT"
+		default:
+			return "UNKNOWN"
+		}
 	}
 	return "UNKNOWN"
 }
@@ -517,6 +620,13 @@ func (m *model) addMessage(msg *displayMessage) {
 		}
 	}
 
+	// Update invocation-result mapping for Tool results
+	if msg.source == sourceTypeTool && msg.toolEvent != nil {
+		if msg.toolEvent.UsageType == event.ToolUsageTypeResult && msg.toolEvent.ToolID != "" {
+			m.invocationToResult[msg.toolEvent.ToolID] = msg.toolEvent
+		}
+	}
+
 	// Circular buffer: remove oldest if over limit
 	if len(m.messages) > maxMessages {
 		oldestMsg := m.messages[0]
@@ -529,13 +639,25 @@ func (m *model) addMessage(msg *displayMessage) {
 				}
 			}
 		}
+		// Clean up invocation-result mapping if removing a Tool result
+		if oldestMsg.source == sourceTypeTool && oldestMsg.toolEvent != nil {
+			if oldestMsg.toolEvent.UsageType == event.ToolUsageTypeResult && oldestMsg.toolEvent.ToolID != "" {
+				delete(m.invocationToResult, oldestMsg.toolEvent.ToolID)
+			}
+		}
+
+		// Only adjust indices if the removed message was visible (passed filters)
+		wasVisible := m.messagePassesFilters(oldestMsg)
 
 		m.messages = m.messages[1:]
-		if m.scrollOffset > 0 {
-			m.scrollOffset--
-		}
-		if m.selectedIndex > 0 {
-			m.selectedIndex--
+
+		if wasVisible {
+			if m.scrollOffset > 0 {
+				m.scrollOffset--
+			}
+			if m.selectedIndex > 0 {
+				m.selectedIndex--
+			}
 		}
 	}
 
@@ -760,43 +882,44 @@ func (m *model) renderHeader() string {
 }
 
 // getColumnWidths calculates responsive column widths based on window width
-func (m *model) getColumnWidths() (time, transport, app, msgType, id, from, to, method int) {
+func (m *model) getColumnWidths() (time, transport, app, msgType, op, from, to, details int) {
 	// Minimum widths
 	minTime := 12
 	minTransport := 9
-	minApp := 3
-	minType := 6
-	minID := 4
+	minApp := 4  // "TOOL" is 4 chars
+	minType := 6 // "NOTIFY" is 6 chars
+	minOp := 20  // Method/tool name/API path
 	minFrom := 15
 	minTo := 15
-	minMethod := 20
+	minDetails := 20
 
-	// Fixed elements: prefix(2) + arrow(3) + spaces(9) = 14 (one more space for app column)
-	fixedWidth := 14
+	// Fixed elements: prefix(2) + arrow(3) + spaces(8) = 13
+	fixedWidth := 13
 
 	availableWidth := m.width - fixedWidth
 	if availableWidth < 80 {
 		// Very narrow terminal - use minimum widths
-		return minTime, minTransport, minApp, minType, minID, minFrom, minTo, minMethod
+		return minTime, minTransport, minApp, minType, minOp, minFrom, minTo, minDetails
 	}
 
 	// Allocate widths proportionally
-	totalMin := minTime + minTransport + minApp + minType + minID + minFrom + minTo + minMethod
+	totalMin := minTime + minTransport + minApp + minType + minOp + minFrom + minTo + minDetails
 	extraSpace := availableWidth - totalMin
 
 	if extraSpace < 0 {
 		// Terminal too narrow, use minimums
-		return minTime, minTransport, minApp, minType, minID, minFrom, minTo, minMethod
+		return minTime, minTransport, minApp, minType, minOp, minFrom, minTo, minDetails
 	}
 
-	// Distribute extra space (prioritize method column)
-	methodExtra := (extraSpace * 40) / 100
-	fromExtra := (extraSpace * 20) / 100
-	toExtra := (extraSpace * 20) / 100
-	remaining := extraSpace - methodExtra - fromExtra - toExtra
+	// Distribute extra space (prioritize details column, then OP)
+	detailsExtra := (extraSpace * 35) / 100
+	opExtra := (extraSpace * 25) / 100
+	fromExtra := (extraSpace * 15) / 100
+	toExtra := (extraSpace * 15) / 100
+	remaining := extraSpace - detailsExtra - opExtra - fromExtra - toExtra
 
-	return minTime, minTransport + remaining/4, minApp, minType + remaining/4, minID,
-		minFrom + fromExtra, minTo + toExtra, minMethod + methodExtra
+	return minTime, minTransport + remaining/3, minApp, minType + remaining/3,
+		minOp + opExtra, minFrom + fromExtra, minTo + toExtra, minDetails + detailsExtra
 }
 
 // padString pads a string to the specified width (left-aligned) and returns it
@@ -831,7 +954,7 @@ func (m *model) renderTableHeader() string {
 		Foreground(lipgloss.Color("#9E9E9E")).
 		Bold(true)
 
-	timeW, transportW, appW, typeW, idW, fromW, toW, _ := m.getColumnWidths()
+	timeW, transportW, appW, typeW, opW, fromW, toW, _ := m.getColumnWidths()
 
 	// Pad each field, then concatenate
 	var b strings.Builder
@@ -844,7 +967,7 @@ func (m *model) renderTableHeader() string {
 	b.WriteString(" ")
 	b.WriteString(padString("TYPE", typeW))
 	b.WriteString(" ")
-	b.WriteString(padString("ID", idW))
+	b.WriteString(padString("OP / MODEL", opW))
 	b.WriteString(" ")
 	b.WriteString(padString("FROM", fromW))
 	b.WriteString(" ")
@@ -878,14 +1001,16 @@ func (m *model) renderMessages() string {
 
 // renderMessageLine renders a single message line
 func (m *model) renderMessageLine(msg *displayMessage, selected bool) string {
-	// Check if this message's pair is selected (for subtle highlighting) - only for MCP
+	// Check if this message's pair is selected (for subtle highlighting)
 	isPairHighlighted := false
 	if msg.source == sourceTypeMCP && msg.mcpEvent != nil {
+		isPairHighlighted = m.isPairHighlighted(msg)
+	} else if msg.source == sourceTypeTool && msg.toolEvent != nil {
 		isPairHighlighted = m.isPairHighlighted(msg)
 	}
 
 	// Get dynamic column widths
-	timeW, transportW, appW, typeW, idW, fromW, toW, _ := m.getColumnWidths()
+	timeW, transportW, appW, typeW, opW, fromW, toW, _ := m.getColumnWidths()
 
 	// Get timestamp
 	var timestamp time.Time
@@ -893,6 +1018,8 @@ func (m *model) renderMessageLine(msg *displayMessage, selected bool) string {
 		timestamp = msg.mcpEvent.Timestamp
 	} else if msg.source == sourceTypeLLM && msg.llmEvent != nil {
 		timestamp = msg.llmEvent.Timestamp
+	} else if msg.source == sourceTypeTool && msg.toolEvent != nil {
+		timestamp = msg.toolEvent.Timestamp
 	}
 
 	// Colorblind-safe palette
@@ -908,12 +1035,16 @@ func (m *model) renderMessageLine(msg *displayMessage, selected bool) string {
 	// App - color coded with unique colors
 	var appStyle lipgloss.Style
 	var appStr string
-	if msg.source == sourceTypeMCP {
+	switch msg.source {
+	case sourceTypeMCP:
 		appStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#87CEEB")) // Sky Blue (unique)
 		appStr = padString("MCP", appW)
-	} else {
+	case sourceTypeLLM:
 		appStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#DA70D6")) // Orchid/Pink (unique)
 		appStr = padString("LLM", appW)
+	case sourceTypeTool:
+		appStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#FF00FF")) // Magenta (unique)
+		appStr = padString("TOOL", appW)
 	}
 
 	// Type - colorblind-safe palette
@@ -938,23 +1069,45 @@ func (m *model) renderMessageLine(msg *displayMessage, selected bool) string {
 	case "STREAM":
 		typeStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#AF87FF")) // Purple
 		typeStr = padString("STREAM", typeW)
+	case "CALL":
+		typeStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#00D7FF")) // Cyan
+		typeStr = padString("CALL", typeW)
+	case "RSLT":
+		typeStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#5FD787")) // Green
+		typeStr = padString("RSLT", typeW)
 	default:
 		typeStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#9E9E9E"))
 		typeStr = padString(msgTypeStr, typeW)
 	}
 
-	// ID - same as transport for better visibility on gray background
-	idStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#9E9E9E"))
-	var idStr string
+	// OP - shows method/tool name/API path
+	opStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#FFAF00")) // Amber/gold color
+	var opStr string
 	if msg.source == sourceTypeMCP && msg.mcpEvent != nil {
-		idStr = fmt.Sprintf("%v", msg.mcpEvent.ID)
-		if msg.mcpEvent.MessageType == event.JSONRPCMessageTypeNotification {
-			idStr = "-"
+		opStr = msg.mcpEvent.Method
+		// For responses without method, try to get it from the correlated request
+		if opStr == "" && msg.mcpEvent.MessageType == event.JSONRPCMessageTypeResponse {
+			if pairedRequest := m.findPairedMessage(msg); pairedRequest != nil {
+				opStr = pairedRequest.Method
+			}
 		}
-	} else {
-		idStr = "-" // LLM messages have no ID
+		if opStr == "" {
+			opStr = "-"
+		}
+	} else if msg.source == sourceTypeTool && msg.toolEvent != nil {
+		opStr = msg.toolEvent.ToolName
+		// For Task tool, append subagent_type if present (e.g., "Task/Explore")
+		if subagentType := extractSubagentType(msg.toolEvent.Input); subagentType != "" {
+			opStr += "/" + subagentType
+		}
+	} else if msg.source == sourceTypeLLM && msg.llmEvent != nil {
+		// Show model for LLM
+		opStr = msg.llmEvent.Model
+		if opStr == "" {
+			opStr = "-"
+		}
 	}
-	idStr = padString(idStr, idW)
+	opStr = padString(opStr, opW)
 
 	// From/To - follows console pattern
 	processNameStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#D0D0D0"))
@@ -993,6 +1146,19 @@ func (m *model) renderMessageLine(msg *displayMessage, selected bool) string {
 			fromStr = padString(fromPlain, fromW)
 			toStr = padString(toPlain, toW)
 		}
+	} else if msg.source == sourceTypeTool && msg.toolEvent != nil {
+		// Tool: invocation goes host→PID, result goes PID→host
+		if msg.toolEvent.UsageType == event.ToolUsageTypeInvocation {
+			fromPlain := msg.toolEvent.Host
+			toPlain := fmt.Sprintf("%s[%d]", msg.toolEvent.Comm, msg.toolEvent.PID)
+			fromStr = padString(fromPlain, fromW)
+			toStr = padString(toPlain, toW)
+		} else {
+			fromPlain := fmt.Sprintf("%s[%d]", msg.toolEvent.Comm, msg.toolEvent.PID)
+			toPlain := msg.toolEvent.Host
+			fromStr = padString(fromPlain, fromW)
+			toStr = padString(toPlain, toW)
+		}
 	}
 
 	// Method/Details - no fixed padding, let it extend to terminal edge
@@ -1018,26 +1184,32 @@ func (m *model) renderMessageLine(msg *displayMessage, selected bool) string {
 			detailsStr = msg.mcpEvent.Method
 		}
 	} else if msg.source == sourceTypeLLM && msg.llmEvent != nil {
-		// LLM: [model] "content" - build complete string first, then trim to fit
-		model := msg.llmEvent.Model
+		// LLM: show content only (model is in OP column)
 		content := strings.ReplaceAll(msg.llmEvent.Content, "\n", " ") // Replace newlines with spaces
-
-		// Build the full details string
-		if model != "" && content != "" {
-			detailsStr = fmt.Sprintf("[%s] \"%s\"", model, content)
-		} else if model != "" {
-			detailsStr = fmt.Sprintf("[%s]", model)
-		} else if content != "" {
+		if content != "" {
 			detailsStr = fmt.Sprintf("\"%s\"", content)
 		}
 		// Trimming will happen below based on available width
+	} else if msg.source == sourceTypeTool && msg.toolEvent != nil {
+		// Tool: show input/output summary only (tool name is in OP column)
+		if msg.toolEvent.UsageType == event.ToolUsageTypeInvocation {
+			detailsStr = formatToolInputForTUI(msg.toolEvent.ToolName, msg.toolEvent.Input)
+		} else {
+			if msg.toolEvent.IsError {
+				errMsg := strings.ReplaceAll(msg.toolEvent.Output, "\n", " ")
+				detailsStr = "ERROR: " + truncateStringForTUI(errMsg, 40)
+			} else {
+				output := strings.ReplaceAll(msg.toolEvent.Output, "\n", " ")
+				detailsStr = truncateStringForTUI(output, 50)
+			}
+		}
 	}
 
 	// Calculate remaining space for details (to prevent overflow)
-	// prefix(2) + timeW + transport + app + typeW + idW + fromW + arrow + toW + spaces(8)
+	// prefix(2) + timeW + transport + app + typeW + opW + fromW + arrow + toW + spaces(8)
 	// Note: arrow "→" is 3 bytes in UTF-8 but displays as 1 character width
 	arrowWidth := 1 // Display width of arrow
-	usedWidth := 2 + timeW + 1 + transportW + 1 + appW + 1 + typeW + 1 + idW + 1 + fromW + 1 + arrowWidth + 1 + toW + 1
+	usedWidth := 2 + timeW + 1 + transportW + 1 + appW + 1 + typeW + 1 + opW + 1 + fromW + 1 + arrowWidth + 1 + toW + 1
 	remainingWidth := m.width - usedWidth
 	if len(detailsStr) > remainingWidth && remainingWidth > 3 {
 		detailsStr = detailsStr[:remainingWidth-3] + "..."
@@ -1069,7 +1241,7 @@ func (m *model) renderMessageLine(msg *displayMessage, selected bool) string {
 		b.WriteString(" ")
 		b.WriteString(typeStr)
 		b.WriteString(" ")
-		b.WriteString(idStr)
+		b.WriteString(opStr)
 		b.WriteString(" ")
 		b.WriteString(fromStr)
 		b.WriteString(" ")
@@ -1081,7 +1253,7 @@ func (m *model) renderMessageLine(msg *displayMessage, selected bool) string {
 
 		// Pad to full terminal width to extend highlight to the right edge
 		currentLen := len(prefix) + len(timeStr) + 1 + len(transportStr) + 1 + len(appStr) + 1 + len(typeStr) + 1 +
-			len(idStr) + 1 + len(fromStr) + 1 + 1 + 1 + len(toStr) + 1 + len(detailsStr)
+			len(opStr) + 1 + len(fromStr) + 1 + 1 + 1 + len(toStr) + 1 + len(detailsStr)
 		if currentLen < m.width {
 			b.WriteString(strings.Repeat(" ", m.width-currentLen))
 		}
@@ -1105,7 +1277,7 @@ func (m *model) renderMessageLine(msg *displayMessage, selected bool) string {
 		transportStyleBg := transportStyle.Background(bgColor)
 		appStyleBg := appStyle.Background(bgColor)
 		typeStyleBg := typeStyle.Background(bgColor)
-		idStyleBg := idStyle.Background(bgColor)
+		opStyleBg := opStyle.Background(bgColor)
 		processNameStyleBg := processNameStyle.Background(bgColor)
 		methodStyleBg := methodStyle.Background(bgColor)
 
@@ -1122,7 +1294,7 @@ func (m *model) renderMessageLine(msg *displayMessage, selected bool) string {
 		b.WriteString(lipgloss.NewStyle().Background(bgColor).Render(" "))
 		b.WriteString(typeStyleBg.Render(typeStr))
 		b.WriteString(lipgloss.NewStyle().Background(bgColor).Render(" "))
-		b.WriteString(idStyleBg.Render(idStr))
+		b.WriteString(opStyleBg.Render(opStr))
 		b.WriteString(lipgloss.NewStyle().Background(bgColor).Render(" "))
 		b.WriteString(processNameStyleBg.Render(fromStr))
 		b.WriteString(lipgloss.NewStyle().Background(bgColor).Render(" "))
@@ -1134,7 +1306,7 @@ func (m *model) renderMessageLine(msg *displayMessage, selected bool) string {
 
 		// Pad to full width with background
 		currentLen := len(prefix) + len(timeStr) + 1 + len(transportStr) + 1 + len(appStr) + 1 + len(typeStr) + 1 +
-			len(idStr) + 1 + len(fromStr) + 1 + 1 + 1 + len(toStr) + 1 + len(detailsStr)
+			len(opStr) + 1 + len(fromStr) + 1 + 1 + 1 + len(toStr) + 1 + len(detailsStr)
 		if currentLen < m.width {
 			b.WriteString(lipgloss.NewStyle().Background(bgColor).Render(strings.Repeat(" ", m.width-currentLen)))
 		}
@@ -1159,7 +1331,7 @@ func (m *model) renderMessageLine(msg *displayMessage, selected bool) string {
 	b.WriteString(" ")
 	b.WriteString(typeStyle.Render(typeStr))
 	b.WriteString(" ")
-	b.WriteString(idStyle.Render(idStr))
+	b.WriteString(opStyle.Render(opStr))
 	b.WriteString(" ")
 	b.WriteString(processNameStyle.Render(fromStr))
 	b.WriteString(" ")
@@ -1299,16 +1471,6 @@ func (m *model) renderFooter() string {
 
 // renderTabBar renders the tab navigation bar for request/response switching
 func (m *model) renderTabBar(msg *displayMessage) string {
-	// Only for MCP events
-	if msg.source != sourceTypeMCP || msg.mcpEvent == nil {
-		return ""
-	}
-
-	// Don't show tabs for notifications
-	if msg.mcpEvent.MessageType == event.JSONRPCMessageTypeNotification {
-		return ""
-	}
-
 	var b strings.Builder
 
 	// Styles - no padding to avoid height glitches
@@ -1324,47 +1486,103 @@ func (m *model) renderTabBar(msg *displayMessage) string {
 		Background(lipgloss.Color("#1E1E1E")).
 		Foreground(lipgloss.Color("#6C6C6C"))
 
-	// Determine which tabs are available
-	hasResponse := false
-	responseLabel := "Response"
-
-	paired := m.findPairedMessage(msg)
-	if msg.mcpEvent.MessageType == event.JSONRPCMessageTypeResponse {
-		hasResponse = true
-		if msg.mcpEvent.Error.Message != "" {
-			responseLabel = "Response (error)"
+	// Handle MCP events
+	if msg.source == sourceTypeMCP && msg.mcpEvent != nil {
+		// Don't show tabs for notifications
+		if msg.mcpEvent.MessageType == event.JSONRPCMessageTypeNotification {
+			return ""
 		}
-	} else if msg.mcpEvent.MessageType == event.JSONRPCMessageTypeRequest {
-		if paired != nil {
+
+		// Determine which tabs are available
+		hasResponse := false
+		responseLabel := "Response"
+
+		paired := m.findPairedMessage(msg)
+		if msg.mcpEvent.MessageType == event.JSONRPCMessageTypeResponse {
 			hasResponse = true
-			// Check if response is an error
-			if paired.Error.Message != "" {
+			if msg.mcpEvent.Error.Message != "" {
 				responseLabel = "Response (error)"
 			}
-		} else {
-			responseLabel = "Response (pending)"
+		} else if msg.mcpEvent.MessageType == event.JSONRPCMessageTypeRequest {
+			if paired != nil {
+				hasResponse = true
+				// Check if response is an error
+				if paired.Error.Message != "" {
+					responseLabel = "Response (error)"
+				}
+			} else {
+				responseLabel = "Response (pending)"
+			}
 		}
+
+		// Render request tab (with manual padding)
+		if m.detailViewTab == "request" {
+			b.WriteString(activeTabStyle.Render(" Request "))
+		} else {
+			b.WriteString(inactiveTabStyle.Render(" Request "))
+		}
+
+		b.WriteString(" ")
+
+		// Render response tab (with manual padding)
+		if !hasResponse {
+			b.WriteString(disabledTabStyle.Render(" " + responseLabel + " "))
+		} else if m.detailViewTab == "response" {
+			b.WriteString(activeTabStyle.Render(" " + responseLabel + " "))
+		} else {
+			b.WriteString(inactiveTabStyle.Render(" " + responseLabel + " "))
+		}
+
+		return b.String()
 	}
 
-	// Render request tab (with manual padding)
-	if m.detailViewTab == "request" {
-		b.WriteString(activeTabStyle.Render(" Request "))
-	} else {
-		b.WriteString(inactiveTabStyle.Render(" Request "))
+	// Handle Tool events
+	if msg.source == sourceTypeTool && msg.toolEvent != nil {
+		// Determine which tabs are available
+		hasResult := false
+		resultLabel := "Result"
+
+		paired := m.findPairedToolMessage(msg)
+		if msg.toolEvent.UsageType == event.ToolUsageTypeResult {
+			hasResult = true
+			if msg.toolEvent.IsError {
+				resultLabel = "Result (error)"
+			}
+		} else if msg.toolEvent.UsageType == event.ToolUsageTypeInvocation {
+			if paired != nil {
+				hasResult = true
+				// Check if result is an error
+				if paired.IsError {
+					resultLabel = "Result (error)"
+				}
+			} else {
+				resultLabel = "Result (pending)"
+			}
+		}
+
+		// Render invocation tab (with manual padding)
+		if m.detailViewTab == "request" {
+			b.WriteString(activeTabStyle.Render(" Invocation "))
+		} else {
+			b.WriteString(inactiveTabStyle.Render(" Invocation "))
+		}
+
+		b.WriteString(" ")
+
+		// Render result tab (with manual padding)
+		if !hasResult {
+			b.WriteString(disabledTabStyle.Render(" " + resultLabel + " "))
+		} else if m.detailViewTab == "response" {
+			b.WriteString(activeTabStyle.Render(" " + resultLabel + " "))
+		} else {
+			b.WriteString(inactiveTabStyle.Render(" " + resultLabel + " "))
+		}
+
+		return b.String()
 	}
 
-	b.WriteString(" ")
-
-	// Render response tab (with manual padding)
-	if !hasResponse {
-		b.WriteString(disabledTabStyle.Render(" " + responseLabel + " "))
-	} else if m.detailViewTab == "response" {
-		b.WriteString(activeTabStyle.Render(" " + responseLabel + " "))
-	} else {
-		b.WriteString(inactiveTabStyle.Render(" " + responseLabel + " "))
-	}
-
-	return b.String()
+	// LLM events don't have tabs
+	return ""
 }
 
 // renderDetailView renders the detail view for a selected message
@@ -1391,8 +1609,8 @@ func (m *model) renderDetailView() string {
 	b.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#9E9E9E")).Render(strings.Repeat("━", m.width)))
 	b.WriteString("\n")
 
-	// Tab bar (only for MCP events, not LLM)
-	if msg.source == sourceTypeMCP && msg.mcpEvent != nil {
+	// Tab bar (for MCP and Tool events, not LLM)
+	if (msg.source == sourceTypeMCP && msg.mcpEvent != nil) || (msg.source == sourceTypeTool && msg.toolEvent != nil) {
 		tabBar := m.renderTabBar(msg)
 		if tabBar != "" {
 			b.WriteString(tabBar)
@@ -1587,6 +1805,78 @@ func (m *model) renderOverview(msg *displayMessage) string {
 			toStr := fmt.Sprintf("%s (PID: %d)", msg.llmEvent.Comm, msg.llmEvent.PID)
 			renderField("To Process:    ", toStr)
 		}
+	} else if msg.source == sourceTypeTool && msg.toolEvent != nil {
+		// Handle Tool events with tab support
+		var displayTool *event.ToolUsageEvent
+
+		// Determine which tool event to display based on active tab
+		if m.detailViewTab == "request" {
+			// Show invocation
+			if msg.toolEvent.UsageType == event.ToolUsageTypeInvocation {
+				displayTool = msg.toolEvent
+			} else {
+				// We're on a result, show the paired invocation
+				paired := m.findPairedToolMessage(msg)
+				if paired != nil {
+					displayTool = paired
+				} else {
+					displayTool = msg.toolEvent // Fallback
+				}
+			}
+		} else {
+			// Show result
+			if msg.toolEvent.UsageType == event.ToolUsageTypeResult {
+				displayTool = msg.toolEvent
+			} else {
+				// We're on an invocation, show the paired result
+				paired := m.findPairedToolMessage(msg)
+				if paired != nil {
+					displayTool = paired
+				} else {
+					displayTool = nil // No result yet
+				}
+			}
+		}
+
+		// If no message to display (e.g., pending result)
+		if displayTool == nil {
+			renderField("Status:        ", "(Result pending)")
+			return b.String()
+		}
+
+		renderField("Timestamp:     ", displayTool.Timestamp.Format("2006-01-02 15:04:05.000"))
+		renderField("Transport:     ", "HTTP")
+		renderField("App:           ", "TOOL")
+
+		usageTypeStr := "Invocation"
+		if displayTool.UsageType == event.ToolUsageTypeResult {
+			usageTypeStr = "Result"
+		}
+		renderField("Usage Type:    ", usageTypeStr)
+		renderField("Tool Name:     ", displayTool.ToolName)
+
+		if displayTool.ToolID != "" {
+			renderField("Tool ID:       ", displayTool.ToolID)
+		} else {
+			renderField("Tool ID:       ", "-")
+		}
+
+		if displayTool.IsError {
+			renderField("Status:        ", "Error")
+		}
+
+		// From/To based on usage type
+		if displayTool.UsageType == event.ToolUsageTypeInvocation {
+			// Invocation: From Host → To Process
+			renderField("From Host:     ", displayTool.Host)
+			toStr := fmt.Sprintf("%s (PID: %d)", displayTool.Comm, displayTool.PID)
+			renderField("To Process:    ", toStr)
+		} else {
+			// Result: From Process → To Host
+			fromStr := fmt.Sprintf("%s (PID: %d)", displayTool.Comm, displayTool.PID)
+			renderField("From Process:  ", fromStr)
+			renderField("To Host:       ", displayTool.Host)
+		}
 	}
 
 	return b.String()
@@ -1729,6 +2019,117 @@ func (m *model) renderRawJSON(msg *displayMessage) string {
 		} else {
 			jsonStr = displayMsg.Raw
 		}
+	} else if msg.source == sourceTypeTool && msg.toolEvent != nil {
+		// Tool event - support tabs for invocation/result
+		var displayTool *event.ToolUsageEvent
+		var isInvocation bool
+
+		// Determine which tool event to display based on active tab
+		if m.detailViewTab == "request" {
+			// Show invocation
+			isInvocation = true
+			if msg.toolEvent.UsageType == event.ToolUsageTypeInvocation {
+				displayTool = msg.toolEvent
+			} else {
+				// We're on a result, show the paired invocation
+				paired := m.findPairedToolMessage(msg)
+				if paired != nil {
+					displayTool = paired
+				} else {
+					displayTool = msg.toolEvent // Fallback
+				}
+			}
+		} else {
+			// Show result
+			isInvocation = false
+			if msg.toolEvent.UsageType == event.ToolUsageTypeResult {
+				displayTool = msg.toolEvent
+			} else {
+				// We're on an invocation, show the paired result
+				paired := m.findPairedToolMessage(msg)
+				if paired != nil {
+					displayTool = paired
+				} else {
+					displayTool = nil // No result yet
+				}
+			}
+		}
+
+		// If no message to display (e.g., pending result)
+		if displayTool == nil {
+			contentLabel = "TOOL OUTPUT"
+			// Simple header with hints (no format option for pending)
+			wrapStatus := "OFF"
+			if m.jsonWrap {
+				wrapStatus = "ON"
+			}
+			headerLabel := labelStyle.Bold(true).Render(contentLabel)
+			header := fmt.Sprintf("%s  %s",
+				headerLabel,
+				hintStyle.Render(fmt.Sprintf("[w:Wrap=%s]", wrapStatus)))
+			b.WriteString(header)
+			b.WriteString("\n")
+			b.WriteString(sepStyle.Render(strings.Repeat("─", m.width)))
+			b.WriteString("\n")
+			b.WriteString("  ")
+			b.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#9E9E9E")).Render("(Result pending)"))
+			b.WriteString("\n")
+			return b.String()
+		}
+
+		// Get the data string based on what we're showing
+		var dataStr string
+		if isInvocation {
+			dataStr = displayTool.Input
+		} else {
+			dataStr = displayTool.Output
+		}
+
+		// Check if content is a JSON object or array (not just a valid JSON string)
+		var jsonObj interface{}
+		isStructuredJSON := false
+		if json.Unmarshal([]byte(dataStr), &jsonObj) == nil {
+			// Only consider it JSON if it's an object or array, not a primitive
+			switch jsonObj.(type) {
+			case map[string]interface{}, []interface{}:
+				isStructuredJSON = true
+			}
+		}
+
+		if isInvocation {
+			if isStructuredJSON {
+				contentLabel = "TOOL INPUT (JSON)"
+			} else {
+				contentLabel = "TOOL INPUT"
+			}
+		} else {
+			if isStructuredJSON {
+				contentLabel = "TOOL OUTPUT (JSON)"
+			} else {
+				contentLabel = "TOOL OUTPUT"
+			}
+		}
+
+		// Apply formatting based on content type
+		if isStructuredJSON {
+			// JSON object/array - apply pretty print toggle
+			if m.prettyJSON {
+				if prettyBytes, err := json.MarshalIndent(jsonObj, "", "  "); err == nil {
+					jsonStr = string(prettyBytes)
+				} else {
+					jsonStr = dataStr
+				}
+			} else {
+				if compactBytes, err := json.Marshal(jsonObj); err == nil {
+					jsonStr = string(compactBytes)
+				} else {
+					jsonStr = dataStr
+				}
+			}
+		} else {
+			// Plain text - unescape JSON string if quoted, convert \n to newlines
+			jsonStr = unescapeToolOutput(dataStr)
+		}
 	} else {
 		// Fallback for unknown type
 		contentLabel = "RAW JSON"
@@ -1741,10 +2142,18 @@ func (m *model) renderRawJSON(msg *displayMessage) string {
 		wrapStatus = "ON"
 	}
 	headerLabel := labelStyle.Bold(true).Render(contentLabel)
-	header := fmt.Sprintf("%s  %s  %s",
-		headerLabel,
-		hintStyle.Render("[Tab:Format]"),
-		hintStyle.Render(fmt.Sprintf("[w:Wrap=%s]", wrapStatus)))
+	// Only show format option for JSON content
+	var header string
+	if strings.Contains(contentLabel, "(JSON)") || strings.HasPrefix(contentLabel, "REQUEST") || strings.HasPrefix(contentLabel, "RESPONSE") {
+		header = fmt.Sprintf("%s  %s  %s",
+			headerLabel,
+			hintStyle.Render("[Tab:Format]"),
+			hintStyle.Render(fmt.Sprintf("[w:Wrap=%s]", wrapStatus)))
+	} else {
+		header = fmt.Sprintf("%s  %s",
+			headerLabel,
+			hintStyle.Render(fmt.Sprintf("[w:Wrap=%s]", wrapStatus)))
+	}
 	b.WriteString(header)
 	b.WriteString("\n")
 	b.WriteString(sepStyle.Render(strings.Repeat("─", m.width)))
@@ -1941,6 +2350,80 @@ func (m *model) getMaxDetailScroll() int {
 			}
 		} else {
 			jsonStr = displayMsg.Raw
+		}
+	} else if msg.source == sourceTypeTool && msg.toolEvent != nil {
+		// Tool events - support tabs for invocation/result
+		var displayTool *event.ToolUsageEvent
+
+		// Determine which tool event to display based on active tab
+		if m.detailViewTab == "request" {
+			// Show invocation
+			if msg.toolEvent.UsageType == event.ToolUsageTypeInvocation {
+				displayTool = msg.toolEvent
+			} else {
+				// We're on a result, show the paired invocation
+				paired := m.findPairedToolMessage(msg)
+				if paired != nil {
+					displayTool = paired
+				} else {
+					displayTool = msg.toolEvent // Fallback
+				}
+			}
+		} else {
+			// Show result
+			if msg.toolEvent.UsageType == event.ToolUsageTypeResult {
+				displayTool = msg.toolEvent
+			} else {
+				// We're on an invocation, show the paired result
+				paired := m.findPairedToolMessage(msg)
+				if paired != nil {
+					displayTool = paired
+				} else {
+					return 0 // No result yet
+				}
+			}
+		}
+
+		if displayTool == nil {
+			return 0
+		}
+
+		// Get the data string based on what we're showing
+		var dataStr string
+		if m.detailViewTab == "request" {
+			dataStr = displayTool.Input
+		} else {
+			dataStr = displayTool.Output
+		}
+
+		// Check if content is a JSON object or array (not just a valid JSON string)
+		var jsonObj interface{}
+		isStructuredJSON := false
+		if json.Unmarshal([]byte(dataStr), &jsonObj) == nil {
+			switch jsonObj.(type) {
+			case map[string]interface{}, []interface{}:
+				isStructuredJSON = true
+			}
+		}
+
+		// Apply formatting based on content type
+		if isStructuredJSON {
+			if m.prettyJSON {
+				if prettyBytes, err := json.MarshalIndent(jsonObj, "", "  "); err == nil {
+					jsonStr = string(prettyBytes)
+				} else {
+					jsonStr = dataStr
+				}
+			} else {
+				if compactBytes, err := json.Marshal(jsonObj); err == nil {
+					jsonStr = string(compactBytes)
+				} else {
+					jsonStr = dataStr
+				}
+			}
+		} else {
+			// Plain text - unescape JSON string if quoted, convert \n to newlines
+			jsonStr = unescapeToolOutput(dataStr)
 		}
 	} else {
 		return 0
@@ -2264,23 +2747,145 @@ func (m *model) findPairedMessage(msg *displayMessage) *event.MCPEvent {
 
 // isPairHighlighted checks if this message's pair is currently selected
 func (m *model) isPairHighlighted(msg *displayMessage) bool {
-	// Only MCP events have pairing
-	if msg.source != sourceTypeMCP || msg.mcpEvent == nil {
+	// MCP events pairing
+	if msg.source == sourceTypeMCP && msg.mcpEvent != nil {
+		paired := m.findPairedMessage(msg)
+		if paired == nil {
+			return false
+		}
+
+		// Check if paired message is the currently selected one
+		filteredMsgs := m.getFilteredMessages()
+		if m.selectedIndex >= 0 && m.selectedIndex < len(filteredMsgs) {
+			selectedMsg := filteredMsgs[m.selectedIndex]
+			if selectedMsg.source == sourceTypeMCP && selectedMsg.mcpEvent != nil {
+				return selectedMsg.mcpEvent == paired
+			}
+		}
 		return false
 	}
 
-	paired := m.findPairedMessage(msg)
-	if paired == nil {
+	// Tool events pairing
+	if msg.source == sourceTypeTool && msg.toolEvent != nil {
+		paired := m.findPairedToolMessage(msg)
+		if paired == nil {
+			return false
+		}
+
+		// Check if paired message is the currently selected one
+		filteredMsgs := m.getFilteredMessages()
+		if m.selectedIndex >= 0 && m.selectedIndex < len(filteredMsgs) {
+			selectedMsg := filteredMsgs[m.selectedIndex]
+			if selectedMsg.source == sourceTypeTool && selectedMsg.toolEvent != nil {
+				return selectedMsg.toolEvent == paired
+			}
+		}
 		return false
 	}
 
-	// Check if paired message is the currently selected one
-	filteredMsgs := m.getFilteredMessages()
-	if m.selectedIndex >= 0 && m.selectedIndex < len(filteredMsgs) {
-		selectedMsg := filteredMsgs[m.selectedIndex]
-		if selectedMsg.source == sourceTypeMCP && selectedMsg.mcpEvent != nil {
-			return selectedMsg.mcpEvent == paired
+	return false
+}
+
+// findPairedToolMessage finds the paired invocation/result for a tool event
+func (m *model) findPairedToolMessage(msg *displayMessage) *event.ToolUsageEvent {
+	if msg.source != sourceTypeTool || msg.toolEvent == nil {
+		return nil
+	}
+
+	toolID := msg.toolEvent.ToolID
+	if toolID == "" {
+		return nil
+	}
+
+	if msg.toolEvent.UsageType == event.ToolUsageTypeResult {
+		// For results, find the invocation with matching tool ID
+		for _, m := range m.messages {
+			if m.source == sourceTypeTool && m.toolEvent != nil && m.toolEvent.UsageType == event.ToolUsageTypeInvocation {
+				if m.toolEvent.ToolID == toolID {
+					return m.toolEvent
+				}
+			}
+		}
+		return nil
+	}
+
+	// For invocations, look up result in the map using the tool ID
+	if result, ok := m.invocationToResult[toolID]; ok {
+		return result
+	}
+	return nil
+}
+
+// extractSubagentType extracts subagent_type from tool input JSON if present
+func extractSubagentType(input string) string {
+	var params map[string]interface{}
+	if err := json.Unmarshal([]byte(input), &params); err != nil {
+		return ""
+	}
+	if subagentType, ok := params["subagent_type"].(string); ok {
+		return subagentType
+	}
+	return ""
+}
+
+// formatToolInputForTUI formats tool invocation input for TUI display
+func formatToolInputForTUI(toolName, input string) string {
+	var params map[string]interface{}
+	if err := json.Unmarshal([]byte(input), &params); err != nil {
+		return truncateStringForTUI(input, 50)
+	}
+
+	// Extract the most relevant parameter based on common patterns
+	switch {
+	case toolName == "Read" || toolName == "Write" || toolName == "Edit":
+		if path, ok := params["file_path"].(string); ok {
+			return truncateStringForTUI(path, 50)
+		}
+	case toolName == "Bash":
+		if cmd, ok := params["command"].(string); ok {
+			return truncateStringForTUI(cmd, 50)
+		}
+	case toolName == "Glob":
+		if pattern, ok := params["pattern"].(string); ok {
+			return pattern
+		}
+	case toolName == "Grep":
+		if pattern, ok := params["pattern"].(string); ok {
+			return fmt.Sprintf("/%s/", pattern)
+		}
+	case toolName == "Task":
+		if desc, ok := params["description"].(string); ok {
+			return truncateStringForTUI(desc, 50)
 		}
 	}
-	return false
+
+	// Fallback: show compact JSON
+	return truncateStringForTUI(input, 50)
+}
+
+// truncateStringForTUI truncates a string for TUI display
+func truncateStringForTUI(s string, maxLen int) string {
+	s = strings.ReplaceAll(s, "\n", " ")
+	s = strings.Join(strings.Fields(s), " ")
+	if len(s) > maxLen {
+		return s[:maxLen-3] + "..."
+	}
+	return s
+}
+
+// unescapeToolOutput converts a potentially JSON-quoted string to plain text
+// If the string is a JSON string (starts/ends with quotes), it unescapes it
+// This converts \n to actual newlines, \t to tabs, etc.
+func unescapeToolOutput(s string) string {
+	// Check if it looks like a JSON-quoted string
+	s = strings.TrimSpace(s)
+	if len(s) >= 2 && s[0] == '"' && s[len(s)-1] == '"' {
+		// Try to unmarshal as a JSON string
+		var unescaped string
+		if err := json.Unmarshal([]byte(s), &unescaped); err == nil {
+			return unescaped
+		}
+	}
+	// Not a JSON string, return as-is
+	return s
 }
