@@ -26,6 +26,7 @@ make test-scenario-llm-gemini     # Gemini LLM API test
 make test-scenario-claudecode     # Claude Code test
 make test-scenario-gemini-cli     # Gemini CLI test
 make test-scenario-llm-openai     # OpenAI LLM API test
+make test-scenario-codex-cli      # Codex CLI test
 ```
 
 ### Run Security/Prompt Injection E2E Test
@@ -62,6 +63,14 @@ Requires `GEMINI_API_KEY` environment variable:
 
 ```bash
 GEMINI_API_KEY=your_api_key make test-e2e-gemini-cli
+```
+
+### Run Codex CLI E2E Test
+
+Requires `OPENAI_API_KEY` environment variable:
+
+```bash
+OPENAI_API_KEY=your_api_key make test-e2e-codex-cli
 ```
 
 ### Update Expected Outputs
@@ -212,6 +221,25 @@ python tests/e2e_test.py --config tests/e2e_config.yaml --verbose
 - `tests/test_tool_data.txt` - Test file with known content for Read tool testing
 - `tests/.gemini/settings.json` - MCP server configuration
 
+### codex-cli
+
+**What it tests:**
+
+- MCP server initialization (filesystem and deepwiki HTTP servers)
+- Codex CLI tool usage (file reading, shell commands)
+- LLM API calls (OpenAI API requests/responses)
+- Predictable tool execution with known inputs/outputs
+
+**Requirements:**
+
+- `OPENAI_API_KEY` environment variable with valid OpenAI API key
+- Codex CLI installed (via `npx @openai/codex`)
+
+**Test data:**
+
+- `tests/test_tool_data.txt` - Test file with known content for file reading
+- `tests/.codex/config.json` - MCP server configuration
+
 ## File Reference
 
 | File                                  | Purpose                                                  |
@@ -227,6 +255,7 @@ python tests/e2e_test.py --config tests/e2e_config.yaml --verbose
 | `test_tool_data.txt`                  | Test file for CLI tool testing (Read tool)               |
 | `claude_config.json`                  | MCP server config for Claude Code tests                  |
 | `.gemini/settings.json`               | MCP server configuration for Gemini CLI tests            |
+| `.codex/config.json`                  | MCP server configuration for Codex CLI tests             |
 | `expected_output_stdio.jsonl`         | Expected output for stdio transport                      |
 | `expected_output_http.jsonl`          | Expected output for HTTP transport                       |
 | `expected_output_security.jsonl`      | Expected output for security/injection test              |
