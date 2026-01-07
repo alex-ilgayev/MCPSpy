@@ -12,6 +12,7 @@ import (
 	"github.com/alex-ilgayev/mcpspy/pkg/version"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/reflow/ansi"
 )
 
 const (
@@ -1768,28 +1769,31 @@ func (m *model) renderRawJSON(msg *displayMessage) string {
 		line := lines[i]
 		maxWidth := m.width - 4 // Account for indentation
 
+		// Always highlight the full line first to preserve token boundaries
+		highlighted := m.highlightJSON(line, keyStyle, stringStyle, numberStyle, boolStyle, nullStyle, defaultStyle)
+
 		// Handle wrapping - always wrap when pretty printing is enabled OR when explicitly enabled
 		shouldWrap := m.jsonWrap || m.prettyJSON
 		if shouldWrap {
-			// Wrap long lines
-			if len(line) > maxWidth {
-				wrapped := wrapText(line, maxWidth)
+			// Wrap long lines using ANSI-aware width calculation
+			if ansi.PrintableRuneWidth(highlighted) > maxWidth {
+				wrapped := wrapANSIText(highlighted, maxWidth)
 				for _, wrapLine := range wrapped {
 					b.WriteString("  ")
-					b.WriteString(m.highlightJSON(wrapLine, keyStyle, stringStyle, numberStyle, boolStyle, nullStyle, defaultStyle))
+					b.WriteString(wrapLine)
 					b.WriteString("\n")
 				}
 				continue
 			}
 		} else {
 			// Truncate long lines only when not pretty-printing
-			if len(line) > maxWidth {
-				line = line[:max(0, maxWidth-3)] + "..."
+			if ansi.PrintableRuneWidth(highlighted) > maxWidth {
+				highlighted = truncateANSI(highlighted, maxWidth-3) + "..."
 			}
 		}
 
 		b.WriteString("  ")
-		b.WriteString(m.highlightJSON(line, keyStyle, stringStyle, numberStyle, boolStyle, nullStyle, defaultStyle))
+		b.WriteString(highlighted)
 		b.WriteString("\n")
 	}
 
@@ -2047,32 +2051,116 @@ func (m *model) highlightJSON(line string, keyStyle, stringStyle, numberStyle, b
 	return result.String()
 }
 
-// wrapText wraps text to the specified width
-func wrapText(text string, width int) []string {
-	if len(text) <= width {
+// wrapANSIText wraps text containing ANSI escape codes to the specified width.
+// It preserves ANSI codes across line breaks so colors continue properly.
+func wrapANSIText(text string, width int) []string {
+	if ansi.PrintableRuneWidth(text) <= width {
 		return []string{text}
 	}
 
 	var lines []string
-	for len(text) > width {
-		// Try to break at a space
-		breakPoint := width
-		for i := width; i > 0; i-- {
-			if text[i] == ' ' {
-				breakPoint = i
-				break
+	var currentLine strings.Builder
+	var currentWidth int
+	var activeSequence string // Track the current active ANSI sequence
+
+	i := 0
+	runes := []rune(text)
+
+	for i < len(runes) {
+		// Check for ANSI escape sequence
+		if i < len(runes) && runes[i] == '\x1b' {
+			// Find the end of the escape sequence
+			seqStart := i
+			i++
+			if i < len(runes) && runes[i] == '[' {
+				i++
+				for i < len(runes) && !((runes[i] >= 'A' && runes[i] <= 'Z') || (runes[i] >= 'a' && runes[i] <= 'z')) {
+					i++
+				}
+				if i < len(runes) {
+					i++ // Include the final letter
+				}
+				seq := string(runes[seqStart:i])
+				currentLine.WriteString(seq)
+
+				// Track active sequence (reset or color)
+				if seq == "\x1b[0m" || seq == "\x1b[m" {
+					activeSequence = ""
+				} else {
+					activeSequence = seq
+				}
+				continue
 			}
 		}
-		lines = append(lines, text[:breakPoint])
-		text = text[breakPoint:]
-		if len(text) > 0 && text[0] == ' ' {
-			text = text[1:] // Skip leading space
+
+		// Regular character - check width
+		charWidth := ansi.PrintableRuneWidth(string(runes[i]))
+		if currentWidth+charWidth > width {
+			// Need to wrap - close the line and start a new one
+			if activeSequence != "" {
+				currentLine.WriteString("\x1b[0m") // Reset at end of line
+			}
+			lines = append(lines, currentLine.String())
+			currentLine.Reset()
+			currentWidth = 0
+			if activeSequence != "" {
+				currentLine.WriteString(activeSequence) // Restore active color
+			}
 		}
+
+		currentLine.WriteRune(runes[i])
+		currentWidth += charWidth
+		i++
 	}
-	if len(text) > 0 {
-		lines = append(lines, text)
+
+	if currentLine.Len() > 0 {
+		lines = append(lines, currentLine.String())
 	}
+
 	return lines
+}
+
+// truncateANSI truncates text containing ANSI escape codes to the specified width.
+func truncateANSI(text string, width int) string {
+	if ansi.PrintableRuneWidth(text) <= width {
+		return text
+	}
+
+	var result strings.Builder
+	var currentWidth int
+
+	i := 0
+	runes := []rune(text)
+
+	for i < len(runes) && currentWidth < width {
+		// Check for ANSI escape sequence
+		if runes[i] == '\x1b' {
+			seqStart := i
+			i++
+			if i < len(runes) && runes[i] == '[' {
+				i++
+				for i < len(runes) && !((runes[i] >= 'A' && runes[i] <= 'Z') || (runes[i] >= 'a' && runes[i] <= 'z')) {
+					i++
+				}
+				if i < len(runes) {
+					i++
+				}
+				result.WriteString(string(runes[seqStart:i]))
+				continue
+			}
+		}
+
+		charWidth := ansi.PrintableRuneWidth(string(runes[i]))
+		if currentWidth+charWidth > width {
+			break
+		}
+		result.WriteRune(runes[i])
+		currentWidth += charWidth
+		i++
+	}
+
+	result.WriteString("\x1b[0m") // Reset at end
+	return result.String()
 }
 
 // Helper functions
