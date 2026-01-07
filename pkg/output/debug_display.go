@@ -41,8 +41,6 @@ var (
 	debugPIDColor       = color.New(color.FgYellow)
 	debugCommColor      = color.New(color.FgGreen)
 	debugPayloadColor   = color.New(color.FgWhite)
-	debugFieldColor     = color.New(color.FgWhite)
-	debugValueColor     = color.New(color.FgHiWhite)
 	debugAlertColor     = color.New(color.FgRed, color.Bold)
 	debugMethodColor    = color.New(color.FgMagenta)
 )
