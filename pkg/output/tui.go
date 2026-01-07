@@ -77,7 +77,7 @@ type model struct {
 	searchResults     []int
 	currentSearchIdx  int
 	filterTransport   string // "ALL", "HTTP", "STDIO"
-	filterType        string // "ALL", "REQ", "RESP", "NOTIFY", "ERROR"
+	filterType        string // "ALL", "REQ", "RESP", "STREAM", "NOTIFY", "CALL", "RSLT", "ERROR"
 	filterApp         string // "ALL", "MCP", "LLM", "TOOL"
 	jsonWrap          bool
 	density           densityMode
@@ -322,6 +322,10 @@ func (m *model) handleKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			case "STREAM":
 				m.filterType = "NOTIFY"
 			case "NOTIFY":
+				m.filterType = "CALL"
+			case "CALL":
+				m.filterType = "RSLT"
+			case "RSLT":
 				m.filterType = "ERROR"
 			case "ERROR":
 				m.filterType = "ALL"
@@ -1096,9 +1100,25 @@ func (m *model) renderMessageLine(msg *displayMessage, selected bool) string {
 		}
 	} else if msg.source == sourceTypeTool && msg.toolEvent != nil {
 		opStr = msg.toolEvent.ToolName
+		// For results without tool name, try to get it from the correlated invocation
+		if opStr == "" && msg.toolEvent.UsageType == event.ToolUsageTypeResult {
+			if pairedInvocation := m.findPairedToolMessage(msg); pairedInvocation != nil {
+				opStr = pairedInvocation.ToolName
+			}
+		}
 		// For Task tool, append subagent_type if present (e.g., "Task/Explore")
-		if subagentType := extractSubagentType(msg.toolEvent.Input); subagentType != "" {
+		// Check both current event and paired invocation for subagent_type
+		input := msg.toolEvent.Input
+		if input == "" && msg.toolEvent.UsageType == event.ToolUsageTypeResult {
+			if pairedInvocation := m.findPairedToolMessage(msg); pairedInvocation != nil {
+				input = pairedInvocation.Input
+			}
+		}
+		if subagentType := extractSubagentType(input); subagentType != "" {
 			opStr += "/" + subagentType
+		}
+		if opStr == "" {
+			opStr = "-"
 		}
 	} else if msg.source == sourceTypeLLM && msg.llmEvent != nil {
 		// Show model for LLM
@@ -1168,20 +1188,19 @@ func (m *model) renderMessageLine(msg *displayMessage, selected bool) string {
 	if msg.source == sourceTypeMCP && msg.mcpEvent != nil {
 		switch msg.mcpEvent.MessageType {
 		case event.JSONRPCMessageTypeRequest:
-			detailsStr = msg.mcpEvent.Method
+			// Show tool name or resource URI if present (method is in OP column)
 			if toolName := msg.mcpEvent.ExtractToolName(); toolName != "" {
-				detailsStr += fmt.Sprintf(" (%s)", toolName)
+				detailsStr = toolName
 			} else if uri := msg.mcpEvent.ExtractResourceURI(); uri != "" {
-				detailsStr += fmt.Sprintf(" (%s)", uri)
+				detailsStr = uri
 			}
 		case event.JSONRPCMessageTypeResponse:
+			// Only show error details if present (no "OK" needed)
 			if msg.mcpEvent.Error.Message != "" {
 				detailsStr = fmt.Sprintf("%s (Code: %d)", msg.mcpEvent.Error.Message, msg.mcpEvent.Error.Code)
-			} else {
-				detailsStr = "OK"
 			}
 		case event.JSONRPCMessageTypeNotification:
-			detailsStr = msg.mcpEvent.Method
+			// Method is in OP column, nothing extra needed
 		}
 	} else if msg.source == sourceTypeLLM && msg.llmEvent != nil {
 		// LLM: show content only (model is in OP column)
@@ -1748,14 +1767,6 @@ func (m *model) renderOverview(msg *displayMessage) string {
 			idStr = "-"
 		}
 		renderField("Message ID:    ", idStr)
-
-		if displayMsg.MessageType == event.JSONRPCMessageTypeResponse {
-			status := "OK"
-			if displayMsg.Error.Message != "" {
-				status = fmt.Sprintf("Error: %s", displayMsg.Error.Message)
-			}
-			renderField("MCP Status:    ", status)
-		}
 
 		// From/To Process
 		switch displayMsg.TransportType {
