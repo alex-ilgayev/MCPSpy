@@ -1750,12 +1750,13 @@ func (m *model) renderRawJSON(msg *displayMessage) string {
 	b.WriteString(sepStyle.Render(strings.Repeat("─", m.width)))
 	b.WriteString("\n")
 
-	// Split into lines and apply scrolling
+	// Split into lines and calculate display lines for proper scrolling
 	lines := strings.Split(jsonStr, "\n")
-	// Calculate how many lines we can show - simplified calculation
-	maxLines := max(1, m.height-18)
-	start := m.detailScroll
-	end := min(start+maxLines, len(lines))
+	maxWidth := m.width - 4 // Account for indentation
+	shouldWrap := m.jsonWrap || m.prettyJSON
+
+	// Calculate how many display lines we can show
+	viewportLines := max(1, m.height-18)
 
 	// Basic syntax highlighting styles
 	keyStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#5F87FF"))    // Blue for keys
@@ -1765,35 +1766,38 @@ func (m *model) renderRawJSON(msg *displayMessage) string {
 	nullStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#9E9E9E"))   // Gray for null
 	defaultStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#D0D0D0"))
 
-	for i := start; i < end; i++ {
-		line := lines[i]
-		maxWidth := m.width - 4 // Account for indentation
-
-		// Always highlight the full line first to preserve token boundaries
+	// Build list of all display lines (after wrapping/highlighting)
+	var displayLines []string
+	for _, line := range lines {
 		highlighted := m.highlightJSON(line, keyStyle, stringStyle, numberStyle, boolStyle, nullStyle, defaultStyle)
 
-		// Handle wrapping - always wrap when pretty printing is enabled OR when explicitly enabled
-		shouldWrap := m.jsonWrap || m.prettyJSON
 		if shouldWrap {
-			// Wrap long lines using ANSI-aware width calculation
 			if ansi.PrintableRuneWidth(highlighted) > maxWidth {
 				wrapped := wrapANSIText(highlighted, maxWidth)
 				for _, wrapLine := range wrapped {
-					b.WriteString("  ")
-					b.WriteString(wrapLine)
-					b.WriteString("\n")
+					displayLines = append(displayLines, "  "+wrapLine)
 				}
-				continue
+			} else {
+				displayLines = append(displayLines, "  "+highlighted)
 			}
 		} else {
-			// Truncate long lines only when not pretty-printing
 			if ansi.PrintableRuneWidth(highlighted) > maxWidth {
 				highlighted = truncateANSI(highlighted, maxWidth-3) + "..."
 			}
+			displayLines = append(displayLines, "  "+highlighted)
 		}
+	}
 
-		b.WriteString("  ")
-		b.WriteString(highlighted)
+	// Apply scrolling to display lines
+	start := m.detailScroll
+	end := min(start+viewportLines, len(displayLines))
+	if start > len(displayLines) {
+		start = max(0, len(displayLines)-viewportLines)
+		end = len(displayLines)
+	}
+
+	for i := start; i < end; i++ {
+		b.WriteString(displayLines[i])
 		b.WriteString("\n")
 	}
 
@@ -1942,15 +1946,31 @@ func (m *model) getMaxDetailScroll() int {
 		return 0
 	}
 
-	// Count lines
+	// Count display lines (after wrapping) - same logic as renderRawJSON
 	lines := strings.Split(jsonStr, "\n")
-	lineCount := len(lines)
+	maxWidth := m.width - 4
+	shouldWrap := m.jsonWrap || m.prettyJSON
+
+	displayLineCount := 0
+	for _, line := range lines {
+		if shouldWrap {
+			lineWidth := len(line) // Approximate width (exact would require highlighting first)
+			if lineWidth > maxWidth && maxWidth > 0 {
+				// Count how many lines this will wrap to
+				displayLineCount += (lineWidth + maxWidth - 1) / maxWidth
+			} else {
+				displayLineCount++
+			}
+		} else {
+			displayLineCount++
+		}
+	}
 
 	// Calculate available space (same as in renderRawJSON)
-	maxLines := max(1, m.height-18)
+	viewportLines := max(1, m.height-18)
 
 	// Maximum scroll is the difference, or 0 if content fits
-	return max(0, lineCount-maxLines)
+	return max(0, displayLineCount-viewportLines)
 }
 
 // highlightJSON applies basic syntax highlighting to a JSON line
