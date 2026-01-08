@@ -101,8 +101,10 @@ scenarios:
         max: 30
 
   # Claude Code CLI scenario - comprehensive test for MCP, tools, and LLM
+  # This test requires ANTHROPIC_API_KEY environment variable to be set
   - name: "claude-code"
     description: "Test Claude Code CLI with MCP servers, tool usage (Read, Bash), and LLM API calls"
+    required_env_vars: ["ANTHROPIC_API_KEY"]
 
     mcpspy:
       # Enable LLM and tool monitoring to capture Anthropic API calls and tool usage from Claude Code
