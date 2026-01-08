@@ -779,3 +779,432 @@ func TestGeminiParser_ExtractToolUsage_SSE(t *testing.T) {
 		})
 	}
 }
+
+// Cloudcode (Gemini CLI) format tests
+// Cloudcode uses a wrapper format: {"model": "...", "request": {...}} for requests
+// and {"response": {...}, "traceId": "..."} for responses
+
+func TestGeminiParser_ParseRequest_Cloudcode(t *testing.T) {
+	parser := NewGeminiParser()
+
+	tests := []struct {
+		name            string
+		path            string
+		payload         string
+		expectedModel   string
+		expectedContent string
+		wantErr         bool
+	}{
+		{
+			name: "cloudcode wrapped request",
+			path: "/v1internal:generateContent",
+			payload: `{
+				"model": "gemini-3-flash-preview",
+				"project": "test-project",
+				"request": {
+					"contents": [{"role": "user", "parts": [{"text": "Hello from Gemini CLI!"}]}]
+				}
+			}`,
+			expectedModel:   "gemini-3-flash-preview",
+			expectedContent: "Hello from Gemini CLI!",
+		},
+		{
+			name: "cloudcode with system instruction",
+			path: "/v1internal:streamGenerateContent?alt=sse",
+			payload: `{
+				"model": "gemini-2.5-flash-lite",
+				"project": "fast-disk-cvpmb",
+				"request": {
+					"contents": [{"role": "user", "parts": [{"text": "Execute this task"}]}],
+					"systemInstruction": {
+						"parts": [{"text": "You are a helpful assistant"}],
+						"role": "user"
+					}
+				}
+			}`,
+			expectedModel:   "gemini-2.5-flash-lite",
+			expectedContent: "Execute this task",
+		},
+		{
+			name: "cloudcode with conversation history",
+			path: "/v1internal:streamGenerateContent?alt=sse",
+			payload: `{
+				"model": "gemini-3-flash-preview",
+				"request": {
+					"contents": [
+						{"role": "user", "parts": [{"text": "First message"}]},
+						{"role": "model", "parts": [{"text": "First response"}]},
+						{"role": "user", "parts": [{"text": "Follow-up question"}]}
+					]
+				}
+			}`,
+			expectedModel:   "gemini-3-flash-preview",
+			expectedContent: "Follow-up question",
+		},
+		{
+			name: "cloudcode with function responses",
+			path: "/v1internal:streamGenerateContent?alt=sse",
+			payload: `{
+				"model": "gemini-3-flash-preview",
+				"request": {
+					"contents": [
+						{"role": "user", "parts": [{"text": "Read the file"}]},
+						{"role": "model", "parts": [{"functionCall": {"name": "read_file", "args": {"path": "test.txt"}}}]},
+						{"role": "user", "parts": [{"functionResponse": {"name": "read_file", "response": {"output": "File content"}}}]},
+						{"role": "user", "parts": [{"text": "What did the file contain?"}]}
+					]
+				}
+			}`,
+			expectedModel:   "gemini-3-flash-preview",
+			expectedContent: "What did the file contain?",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := &event.HttpRequestEvent{
+				EventHeader: makeEventHeader(1234, "node"),
+				Path:        tt.path,
+				Host:        "cloudcode-pa.googleapis.com",
+			}
+			req.RequestPayload = []byte(tt.payload)
+
+			result, err := parser.ParseRequest(req)
+
+			if tt.wantErr {
+				require.Error(t, err)
+				return
+			}
+
+			require.NoError(t, err)
+			require.NotNil(t, result)
+			assert.Equal(t, tt.expectedModel, result.Model)
+			assert.Equal(t, tt.expectedContent, result.Content)
+			assert.Equal(t, event.LLMMessageTypeRequest, result.MessageType)
+		})
+	}
+}
+
+func TestGeminiParser_ParseResponse_Cloudcode(t *testing.T) {
+	parser := NewGeminiParser()
+
+	tests := []struct {
+		name            string
+		path            string
+		payload         string
+		expectedModel   string
+		expectedContent string
+		expectedError   string
+		wantErr         bool
+	}{
+		{
+			name: "cloudcode wrapped response",
+			path: "/v1internal:generateContent",
+			payload: `{
+				"response": {
+					"candidates": [{
+						"content": {
+							"role": "model",
+							"parts": [{"text": "Hello from Gemini!"}]
+						},
+						"finishReason": "STOP"
+					}],
+					"modelVersion": "gemini-2.5-flash-lite"
+				},
+				"traceId": "abc123"
+			}`,
+			expectedModel:   "gemini-2.5-flash-lite",
+			expectedContent: "Hello from Gemini!",
+		},
+		{
+			name: "cloudcode response with function call",
+			path: "/v1internal:generateContent",
+			payload: `{
+				"response": {
+					"candidates": [{
+						"content": {
+							"role": "model",
+							"parts": [
+								{"text": "I will read the file."},
+								{"functionCall": {"name": "read_file", "args": {"file_path": "test.txt"}}}
+							]
+						},
+						"finishReason": "STOP"
+					}],
+					"modelVersion": "gemini-3-flash-preview"
+				},
+				"traceId": "xyz789"
+			}`,
+			expectedModel:   "gemini-3-flash-preview",
+			expectedContent: "I will read the file.",
+		},
+		{
+			name: "cloudcode error response",
+			path: "/v1internal:generateContent",
+			payload: `{
+				"response": {
+					"error": {
+						"code": 429,
+						"message": "Rate limit exceeded",
+						"status": "RESOURCE_EXHAUSTED"
+					}
+				},
+				"traceId": "err123"
+			}`,
+			expectedModel: "",
+			expectedError: "Rate limit exceeded",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resp := &event.HttpResponseEvent{
+				HttpRequestEvent: event.HttpRequestEvent{
+					EventHeader: makeEventHeader(1234, "node"),
+					Path:        tt.path,
+					Host:        "cloudcode-pa.googleapis.com",
+				},
+			}
+			resp.ResponsePayload = []byte(tt.payload)
+
+			result, err := parser.ParseResponse(resp)
+
+			if tt.wantErr {
+				require.Error(t, err)
+				return
+			}
+
+			require.NoError(t, err)
+			require.NotNil(t, result)
+			assert.Equal(t, tt.expectedModel, result.Model)
+			assert.Equal(t, tt.expectedContent, result.Content)
+			assert.Equal(t, tt.expectedError, result.Error)
+			assert.Equal(t, event.LLMMessageTypeResponse, result.MessageType)
+		})
+	}
+}
+
+func TestGeminiParser_ParseStreamEvent_Cloudcode(t *testing.T) {
+	parser := NewGeminiParser()
+
+	tests := []struct {
+		name            string
+		path            string
+		data            string
+		expectedModel   string
+		expectedContent string
+		expectedDone    bool
+		expectedError   string
+	}{
+		{
+			name: "cloudcode SSE with thinking",
+			path: "/v1internal:streamGenerateContent?alt=sse",
+			data: `{
+				"response": {
+					"candidates": [{
+						"content": {
+							"role": "model",
+							"parts": [{"thought": true, "text": "Analyzing the request..."}]
+						}
+					}],
+					"modelVersion": "gemini-3-flash-preview"
+				},
+				"traceId": "think123"
+			}`,
+			expectedModel:   "gemini-3-flash-preview",
+			expectedContent: "Analyzing the request...",
+			expectedDone:    false,
+		},
+		{
+			name: "cloudcode SSE with content",
+			path: "/v1internal:streamGenerateContent?alt=sse",
+			data: `{
+				"response": {
+					"candidates": [{
+						"content": {
+							"role": "model",
+							"parts": [{"text": "Here is the response."}]
+						}
+					}],
+					"modelVersion": "gemini-3-flash-preview"
+				},
+				"traceId": "content123"
+			}`,
+			expectedModel:   "gemini-3-flash-preview",
+			expectedContent: "Here is the response.",
+			expectedDone:    false,
+		},
+		{
+			name: "cloudcode SSE final chunk with STOP",
+			path: "/v1internal:streamGenerateContent?alt=sse",
+			data: `{
+				"response": {
+					"candidates": [{
+						"content": {
+							"role": "model",
+							"parts": [{"text": "Final output."}]
+						},
+						"finishReason": "STOP"
+					}],
+					"usageMetadata": {
+						"promptTokenCount": 100,
+						"candidatesTokenCount": 50,
+						"totalTokenCount": 150
+					},
+					"modelVersion": "gemini-3-flash-preview"
+				},
+				"traceId": "final123"
+			}`,
+			expectedModel:   "gemini-3-flash-preview",
+			expectedContent: "Final output.",
+			expectedDone:    true,
+		},
+		{
+			name: "cloudcode SSE with function call",
+			path: "/v1internal:streamGenerateContent?alt=sse",
+			data: `{
+				"response": {
+					"candidates": [{
+						"content": {
+							"role": "model",
+							"parts": [{
+								"functionCall": {
+									"name": "run_shell_command",
+									"args": {"command": "echo hello"}
+								}
+							}]
+						},
+						"finishReason": "STOP"
+					}],
+					"modelVersion": "gemini-3-flash-preview"
+				},
+				"traceId": "fc123"
+			}`,
+			expectedModel:   "gemini-3-flash-preview",
+			expectedContent: "",
+			expectedDone:    true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			sse := &event.SSEEvent{
+				HttpRequestEvent: event.HttpRequestEvent{
+					EventHeader: makeEventHeader(1234, "node"),
+					Host:        "cloudcode-pa.googleapis.com",
+					Path:        tt.path,
+				},
+				SSLContext: 12345,
+				Data:       []byte(tt.data),
+			}
+
+			result, done, err := parser.ParseStreamEvent(sse)
+
+			require.NoError(t, err)
+			require.NotNil(t, result)
+			assert.Equal(t, tt.expectedModel, result.Model)
+			assert.Equal(t, tt.expectedContent, result.Content)
+			assert.Equal(t, tt.expectedDone, done)
+			assert.Equal(t, tt.expectedError, result.Error)
+			assert.Equal(t, event.LLMMessageTypeStreamChunk, result.MessageType)
+		})
+	}
+}
+
+func TestGeminiParser_ExtractToolUsage_Cloudcode(t *testing.T) {
+	parser := NewGeminiParser()
+
+	t.Run("cloudcode response with function calls", func(t *testing.T) {
+		resp := &event.HttpResponseEvent{
+			HttpRequestEvent: event.HttpRequestEvent{
+				EventHeader: makeEventHeader(1234, "node"),
+				Path:        "/v1internal:generateContent",
+				Host:        "cloudcode-pa.googleapis.com",
+			},
+		}
+		resp.ResponsePayload = []byte(`{
+			"response": {
+				"candidates": [{
+					"content": {
+						"role": "model",
+						"parts": [
+							{"functionCall": {"name": "read_file", "args": {"file_path": "test.txt"}}},
+							{"functionCall": {"name": "run_shell_command", "args": {"command": "ls -la"}}}
+						]
+					}
+				}]
+			},
+			"traceId": "tools123"
+		}`)
+
+		result := parser.ExtractToolUsage(resp)
+
+		require.Len(t, result, 2)
+		assert.Equal(t, event.ToolUsageTypeInvocation, result[0].UsageType)
+		assert.Equal(t, "read_file", result[0].ToolName)
+		assert.Equal(t, `{"file_path": "test.txt"}`, result[0].Input)
+		assert.Equal(t, event.ToolUsageTypeInvocation, result[1].UsageType)
+		assert.Equal(t, "run_shell_command", result[1].ToolName)
+		assert.Equal(t, `{"command": "ls -la"}`, result[1].Input)
+	})
+
+	t.Run("cloudcode request with function responses", func(t *testing.T) {
+		req := &event.HttpRequestEvent{
+			EventHeader: makeEventHeader(1234, "node"),
+			Path:        "/v1internal:streamGenerateContent?alt=sse",
+			Host:        "cloudcode-pa.googleapis.com",
+		}
+		req.RequestPayload = []byte(`{
+			"model": "gemini-3-flash-preview",
+			"request": {
+				"contents": [
+					{"role": "user", "parts": [{"text": "Read the file"}]},
+					{"role": "model", "parts": [{"functionCall": {"name": "read_file", "args": {"file_path": "test.txt"}}}]},
+					{"parts": [{"functionResponse": {"name": "read_file", "response": {"output": "File content here"}}}]}
+				]
+			}
+		}`)
+
+		result := parser.ExtractToolUsage(req)
+
+		require.Len(t, result, 1)
+		assert.Equal(t, event.ToolUsageTypeResult, result[0].UsageType)
+		assert.Equal(t, "read_file", result[0].ToolName)
+		assert.Equal(t, `{"output": "File content here"}`, result[0].Output)
+	})
+
+	t.Run("cloudcode SSE with function call", func(t *testing.T) {
+		sse := &event.SSEEvent{
+			HttpRequestEvent: event.HttpRequestEvent{
+				EventHeader: makeEventHeader(1234, "node"),
+				Host:        "cloudcode-pa.googleapis.com",
+				Path:        "/v1internal:streamGenerateContent?alt=sse",
+			},
+			SSLContext: 12345,
+			Data: []byte(`{
+				"response": {
+					"candidates": [{
+						"content": {
+							"role": "model",
+							"parts": [{
+								"functionCall": {
+									"name": "search_file_content",
+									"args": {"pattern": "TODO", "dir_path": "."}
+								}
+							}]
+						}
+					}]
+				},
+				"traceId": "sse-tool123"
+			}`),
+		}
+
+		result := parser.ExtractToolUsage(sse)
+
+		require.Len(t, result, 1)
+		assert.Equal(t, event.ToolUsageTypeInvocation, result[0].UsageType)
+		assert.Equal(t, "search_file_content", result[0].ToolName)
+		assert.Equal(t, `{"pattern": "TODO", "dir_path": "."}`, result[0].Input)
+		assert.Equal(t, uint64(12345), result[0].SessionID)
+	})
+}

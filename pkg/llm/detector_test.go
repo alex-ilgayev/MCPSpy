@@ -88,6 +88,43 @@ func TestDetectProvider(t *testing.T) {
 			path: "/v1/models/gemini-2.0-flash:generateContent",
 			want: ProviderUnknown,
 		},
+		// Gemini CLI (cloudcode) test cases
+		{
+			name: "cloudcode generateContent endpoint",
+			host: "cloudcode-pa.googleapis.com",
+			path: "/v1internal:generateContent",
+			want: ProviderGemini,
+		},
+		{
+			name: "cloudcode streamGenerateContent endpoint",
+			host: "cloudcode-pa.googleapis.com",
+			path: "/v1internal:streamGenerateContent",
+			want: ProviderGemini,
+		},
+		{
+			name: "cloudcode streamGenerateContent with alt=sse query param",
+			host: "cloudcode-pa.googleapis.com",
+			path: "/v1internal:streamGenerateContent?alt=sse",
+			want: ProviderGemini,
+		},
+		{
+			name: "cloudcode case insensitive host",
+			host: "CLOUDCODE-PA.GOOGLEAPIS.COM",
+			path: "/v1internal:generateContent",
+			want: ProviderGemini,
+		},
+		{
+			name: "cloudcode different region (cloudcode-eu)",
+			host: "cloudcode-eu.googleapis.com",
+			path: "/v1internal:generateContent",
+			want: ProviderGemini,
+		},
+		{
+			name: "cloudcode wrong path (no generateContent)",
+			host: "cloudcode-pa.googleapis.com",
+			path: "/v1internal/models",
+			want: ProviderUnknown,
+		},
 	}
 
 	for _, tt := range tests {

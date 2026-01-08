@@ -26,10 +26,17 @@ func DetectProvider(host, path string) Provider {
 	}
 
 	// Gemini detection
-	// Endpoints: /v1beta/models/{MODEL}:generateContent or :streamGenerateContent
+	// Standard API: /v1beta/models/{MODEL}:generateContent or :streamGenerateContent
 	if host == "generativelanguage.googleapis.com" &&
 		strings.HasPrefix(path, "/v1beta/models/") &&
 		(strings.Contains(path, ":generateContent") || strings.Contains(path, ":streamGenerateContent")) {
+		return ProviderGemini
+	}
+
+	// Gemini CLI (cloudcode): /v1internal:generateContent or :streamGenerateContent
+	// Also supports wildcard cloudcode-*.googleapis.com hosts
+	if (host == "cloudcode-pa.googleapis.com" || strings.HasPrefix(host, "cloudcode-") && strings.HasSuffix(host, ".googleapis.com")) &&
+		(strings.HasSuffix(path, ":generateContent") || strings.Contains(path, ":streamGenerateContent")) {
 		return ProviderGemini
 	}
 

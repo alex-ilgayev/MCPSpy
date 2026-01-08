@@ -457,6 +457,7 @@ func formatToolInput(toolName, input string) string {
 	}
 
 	// Extract the most relevant parameter based on common patterns
+	// Claude Code tools
 	switch {
 	case toolName == "Read" || toolName == "Write" || toolName == "Edit":
 		if path, ok := params["file_path"].(string); ok {
@@ -480,12 +481,76 @@ func formatToolInput(toolName, input string) string {
 		}
 	}
 
+	// Gemini CLI tools
+	switch {
+	case toolName == "read_file" || toolName == "write_file" || toolName == "replace" ||
+		toolName == "read_text_file" || toolName == "filesystem__read_file" ||
+		toolName == "filesystem__write_file" || toolName == "edit_file":
+		if path, ok := params["file_path"].(string); ok {
+			return truncatePath(path, 70)
+		}
+		if path, ok := params["path"].(string); ok {
+			return truncatePath(path, 70)
+		}
+	case toolName == "run_shell_command":
+		if cmd, ok := params["command"].(string); ok {
+			return truncateString(cmd, 70)
+		}
+	case toolName == "search_file_content":
+		if pattern, ok := params["pattern"].(string); ok {
+			if dirPath, ok := params["dir_path"].(string); ok && dirPath != "" && dirPath != "." {
+				return fmt.Sprintf("/%s/ in %s", pattern, truncatePath(dirPath, 40))
+			}
+			return fmt.Sprintf("/%s/", pattern)
+		}
+	case toolName == "glob":
+		if pattern, ok := params["pattern"].(string); ok {
+			return pattern
+		}
+	case toolName == "list_directory" || toolName == "filesystem__list_directory" ||
+		toolName == "directory_tree" || toolName == "list_directory_with_sizes":
+		if path, ok := params["dir_path"].(string); ok {
+			return truncatePath(path, 70)
+		}
+		if path, ok := params["path"].(string); ok {
+			return truncatePath(path, 70)
+		}
+	case toolName == "web_fetch":
+		if prompt, ok := params["prompt"].(string); ok {
+			return truncateString(prompt, 70)
+		}
+	case toolName == "google_web_search":
+		if query, ok := params["query"].(string); ok {
+			return truncateString(query, 70)
+		}
+	case toolName == "delegate_to_agent":
+		if objective, ok := params["objective"].(string); ok {
+			return truncateString(objective, 70)
+		}
+	case toolName == "save_memory":
+		if fact, ok := params["fact"].(string); ok {
+			return truncateString(fact, 70)
+		}
+	}
+
 	// Fallback: show compact JSON
 	return truncateString(input, 60)
 }
 
 // formatToolOutput formats tool result output for display
 func formatToolOutput(output string) string {
+	// Try to extract meaningful output from JSON response
+	var result map[string]interface{}
+	if err := json.Unmarshal([]byte(output), &result); err == nil {
+		// Gemini CLI format: {"output": "..."}
+		if out, ok := result["output"].(string); ok {
+			return truncateString(out, 70)
+		}
+		// Alternative format with content
+		if content, ok := result["content"].(string); ok {
+			return truncateString(content, 70)
+		}
+	}
 	return truncateString(output, 70)
 }
 

@@ -57,6 +57,20 @@ type geminiGenConfig struct {
 	StopSequences   []string `json:"stopSequences,omitempty"`
 }
 
+// Cloudcode (Gemini CLI) wrapper structures
+// Requests are wrapped: {"model": "...", "project": "...", "request": {...}}
+type cloudcodeRequest struct {
+	Model   string         `json:"model,omitempty"`
+	Project string         `json:"project,omitempty"`
+	Request *geminiRequest `json:"request,omitempty"`
+}
+
+// Responses are wrapped: {"response": {...}, "traceId": "..."}
+type cloudcodeResponse struct {
+	Response *geminiResponse `json:"response,omitempty"`
+	TraceID  string          `json:"traceId,omitempty"`
+}
+
 // Response structures
 type geminiResponse struct {
 	Candidates    []geminiCandidate `json:"candidates,omitempty"`
@@ -84,13 +98,24 @@ type geminiError struct {
 
 // ParseRequest parses a Gemini API request
 func (p *GeminiParser) ParseRequest(req *event.HttpRequestEvent) (*event.LLMEvent, error) {
-	var geminiReq geminiRequest
-	if err := json.Unmarshal(req.RequestPayload, &geminiReq); err != nil {
-		return nil, err
-	}
+	var geminiReq *geminiRequest
+	var model string
 
-	// Extract model from URL path (e.g., /v1beta/models/gemini-2.0-flash:generateContent)
-	model := p.extractModelFromPath(req.Path)
+	// Try cloudcode wrapper format first: {"model": "...", "request": {...}}
+	var cloudReq cloudcodeRequest
+	if err := json.Unmarshal(req.RequestPayload, &cloudReq); err == nil && cloudReq.Request != nil {
+		geminiReq = cloudReq.Request
+		model = cloudReq.Model
+	} else {
+		// Fall back to standard Gemini API format
+		var standardReq geminiRequest
+		if err := json.Unmarshal(req.RequestPayload, &standardReq); err != nil {
+			return nil, err
+		}
+		geminiReq = &standardReq
+		// Extract model from URL path (e.g., /v1beta/models/gemini-2.0-flash:generateContent)
+		model = p.extractModelFromPath(req.Path)
+	}
 
 	return &event.LLMEvent{
 		SessionID:   req.SSLContext,
@@ -108,12 +133,22 @@ func (p *GeminiParser) ParseRequest(req *event.HttpRequestEvent) (*event.LLMEven
 
 // ParseResponse parses a Gemini API response (non-streaming)
 func (p *GeminiParser) ParseResponse(resp *event.HttpResponseEvent) (*event.LLMEvent, error) {
-	var geminiResp geminiResponse
-	if err := json.Unmarshal(resp.ResponsePayload, &geminiResp); err != nil {
-		return nil, err
+	var geminiResp *geminiResponse
+
+	// Try cloudcode wrapper format first: {"response": {...}, "traceId": "..."}
+	var cloudResp cloudcodeResponse
+	if err := json.Unmarshal(resp.ResponsePayload, &cloudResp); err == nil && cloudResp.Response != nil {
+		geminiResp = cloudResp.Response
+	} else {
+		// Fall back to standard Gemini API format
+		var standardResp geminiResponse
+		if err := json.Unmarshal(resp.ResponsePayload, &standardResp); err != nil {
+			return nil, err
+		}
+		geminiResp = &standardResp
 	}
 
-	// Extract model from URL path (fallback) or use modelVersion from response
+	// Extract model from modelVersion or URL path (fallback)
 	model := geminiResp.ModelVersion
 	if model == "" {
 		model = p.extractModelFromPath(resp.Path)
@@ -150,12 +185,22 @@ func (p *GeminiParser) ParseStreamEvent(sse *event.SSEEvent) (*event.LLMEvent, b
 		return nil, false, nil
 	}
 
-	var streamResp geminiResponse
-	if err := json.Unmarshal([]byte(data), &streamResp); err != nil {
-		return nil, false, err
+	var streamResp *geminiResponse
+
+	// Try cloudcode wrapper format first: {"response": {...}, "traceId": "..."}
+	var cloudResp cloudcodeResponse
+	if err := json.Unmarshal([]byte(data), &cloudResp); err == nil && cloudResp.Response != nil {
+		streamResp = cloudResp.Response
+	} else {
+		// Fall back to standard Gemini API format
+		var standardResp geminiResponse
+		if err := json.Unmarshal([]byte(data), &standardResp); err != nil {
+			return nil, false, err
+		}
+		streamResp = &standardResp
 	}
 
-	// Extract model from URL path (fallback) or use modelVersion from response
+	// Extract model from modelVersion or URL path (fallback)
 	model := streamResp.ModelVersion
 	if model == "" {
 		model = p.extractModelFromPath(sse.Path)
@@ -263,9 +308,19 @@ func (p *GeminiParser) ExtractToolUsage(e event.Event) []*event.ToolUsageEvent {
 
 // extractFunctionCalls extracts functionCall from response candidates
 func (p *GeminiParser) extractFunctionCalls(payload []byte, sessionID uint64) []*event.ToolUsageEvent {
-	var resp geminiResponse
-	if err := json.Unmarshal(payload, &resp); err != nil {
-		return nil
+	var resp *geminiResponse
+
+	// Try cloudcode wrapper format first
+	var cloudResp cloudcodeResponse
+	if err := json.Unmarshal(payload, &cloudResp); err == nil && cloudResp.Response != nil {
+		resp = cloudResp.Response
+	} else {
+		// Fall back to standard Gemini API format
+		var standardResp geminiResponse
+		if err := json.Unmarshal(payload, &standardResp); err != nil {
+			return nil
+		}
+		resp = &standardResp
 	}
 
 	var events []*event.ToolUsageEvent
@@ -292,9 +347,19 @@ func (p *GeminiParser) extractFunctionCalls(payload []byte, sessionID uint64) []
 
 // extractFunctionResponses extracts functionResponse from request contents
 func (p *GeminiParser) extractFunctionResponses(payload []byte, sessionID uint64) []*event.ToolUsageEvent {
-	var req geminiRequest
-	if err := json.Unmarshal(payload, &req); err != nil {
-		return nil
+	var req *geminiRequest
+
+	// Try cloudcode wrapper format first
+	var cloudReq cloudcodeRequest
+	if err := json.Unmarshal(payload, &cloudReq); err == nil && cloudReq.Request != nil {
+		req = cloudReq.Request
+	} else {
+		// Fall back to standard Gemini API format
+		var standardReq geminiRequest
+		if err := json.Unmarshal(payload, &standardReq); err != nil {
+			return nil
+		}
+		req = &standardReq
 	}
 
 	var events []*event.ToolUsageEvent
@@ -325,9 +390,19 @@ func (p *GeminiParser) extractToolUsageFromSSE(sse *event.SSEEvent) []*event.Too
 		return nil
 	}
 
-	var streamResp geminiResponse
-	if err := json.Unmarshal([]byte(data), &streamResp); err != nil {
-		return nil
+	var streamResp *geminiResponse
+
+	// Try cloudcode wrapper format first
+	var cloudResp cloudcodeResponse
+	if err := json.Unmarshal([]byte(data), &cloudResp); err == nil && cloudResp.Response != nil {
+		streamResp = cloudResp.Response
+	} else {
+		// Fall back to standard Gemini API format
+		var standardResp geminiResponse
+		if err := json.Unmarshal([]byte(data), &standardResp); err != nil {
+			return nil
+		}
+		streamResp = &standardResp
 	}
 
 	var events []*event.ToolUsageEvent

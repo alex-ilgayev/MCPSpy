@@ -2847,6 +2847,7 @@ func formatToolInputForTUI(toolName, input string) string {
 	}
 
 	// Extract the most relevant parameter based on common patterns
+	// Claude Code tools
 	switch {
 	case toolName == "Read" || toolName == "Write" || toolName == "Edit":
 		if path, ok := params["file_path"].(string); ok {
@@ -2867,6 +2868,58 @@ func formatToolInputForTUI(toolName, input string) string {
 	case toolName == "Task":
 		if desc, ok := params["description"].(string); ok {
 			return truncateStringForTUI(desc, 50)
+		}
+	}
+
+	// Gemini CLI tools
+	switch {
+	case toolName == "read_file" || toolName == "write_file" || toolName == "replace" ||
+		toolName == "read_text_file" || toolName == "filesystem__read_file" ||
+		toolName == "filesystem__write_file" || toolName == "edit_file":
+		if path, ok := params["file_path"].(string); ok {
+			return truncateStringForTUI(path, 50)
+		}
+		if path, ok := params["path"].(string); ok {
+			return truncateStringForTUI(path, 50)
+		}
+	case toolName == "run_shell_command":
+		if cmd, ok := params["command"].(string); ok {
+			return truncateStringForTUI(cmd, 50)
+		}
+	case toolName == "search_file_content":
+		if pattern, ok := params["pattern"].(string); ok {
+			if dirPath, ok := params["dir_path"].(string); ok && dirPath != "" && dirPath != "." {
+				return fmt.Sprintf("/%s/ in %s", pattern, truncateStringForTUI(dirPath, 30))
+			}
+			return fmt.Sprintf("/%s/", pattern)
+		}
+	case toolName == "glob":
+		if pattern, ok := params["pattern"].(string); ok {
+			return pattern
+		}
+	case toolName == "list_directory" || toolName == "filesystem__list_directory" ||
+		toolName == "directory_tree" || toolName == "list_directory_with_sizes":
+		if path, ok := params["dir_path"].(string); ok {
+			return truncateStringForTUI(path, 50)
+		}
+		if path, ok := params["path"].(string); ok {
+			return truncateStringForTUI(path, 50)
+		}
+	case toolName == "web_fetch":
+		if prompt, ok := params["prompt"].(string); ok {
+			return truncateStringForTUI(prompt, 50)
+		}
+	case toolName == "google_web_search":
+		if query, ok := params["query"].(string); ok {
+			return truncateStringForTUI(query, 50)
+		}
+	case toolName == "delegate_to_agent":
+		if objective, ok := params["objective"].(string); ok {
+			return truncateStringForTUI(objective, 50)
+		}
+	case toolName == "save_memory":
+		if fact, ok := params["fact"].(string); ok {
+			return truncateStringForTUI(fact, 50)
 		}
 	}
 
