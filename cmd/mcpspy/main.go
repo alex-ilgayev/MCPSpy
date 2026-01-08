@@ -70,6 +70,9 @@ communication by tracking stdio operations and analyzing JSON-RPC 2.0 messages.`
 	rootCmd.Flags().Float64Var(&securityThreshold, "security-threshold", 0.5, "Risk score threshold for detection (0.0-1.0)")
 	rootCmd.Flags().BoolVar(&securityAsync, "security-async", true, "Run security analysis asynchronously (non-blocking)")
 
+	// Add debug subcommand
+	rootCmd.AddCommand(newDebugCmd())
+
 	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)
 	}

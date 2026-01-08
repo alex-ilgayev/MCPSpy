@@ -80,6 +80,41 @@ sudo ./mcpspy --tui=false
 # In TUI mode, you can also press 'q' to quit.
 ```
 
+## Debug Mode
+
+Debug mode allows inspecting raw eBPF events and derived events for troubleshooting parsing issues, developing new protocol support, or understanding the event flow.
+
+```bash
+# Show all events
+sudo ./mcpspy debug
+
+# Show only MCP messages with payloads
+sudo ./mcpspy debug --events mcp_message --payload
+
+# Filter by PID
+sudo ./mcpspy debug --pid 12345
+
+# Filter by process name
+sudo ./mcpspy debug --comm claude
+
+# Debug HTTP parsing issues
+sudo ./mcpspy debug --events tls_recv,http_request,http_response --payload
+
+# Combine filters
+sudo ./mcpspy debug --events mcp_message,http_request --pid 12345 --payload
+```
+
+**Available event types:**
+- Raw eBPF: `fs_read`, `fs_write`, `library`, `tls_send`, `tls_recv`, `tls_free`
+- Derived: `http_request`, `http_response`, `http_sse`, `mcp_message`, `fs_aggregated_read`, `fs_aggregated_write`, `security_alert`, `llm_message`, `tool_usage`
+
+**Flags:**
+- `--events, -e`: Filter by event type(s), comma-separated
+- `--pid, -p`: Filter by specific PID
+- `--comm, -c`: Filter by process name (substring match)
+- `--host`: Filter by URL regex (matches against host+path, e.g., `api\.anthropic\.com/v1/messages`)
+- `--payload`: Show payload/buffer data for events
+
 ## Testing
 
 Running all tests (unit tests, and end-to-end tests for both stdio and https transports):
