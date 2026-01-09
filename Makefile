@@ -254,16 +254,6 @@ test-scenario-gemini-cli: test-e2e-setup ## Run Gemini CLI scenario (no MCPSpy, 
 	@echo "Running Gemini CLI scenario..."
 	$(call run-scenario,gemini-cli)
 
-.PHONY: test-scenario-tools-claudecode
-test-scenario-tools-claudecode: test-e2e-setup ## Run Claude Code tool usage scenario (no MCPSpy)
-	@echo "Running Claude Code tool usage scenario..."
-	$(call run-scenario,tools-claude-code)
-
-.PHONY: test-scenario-tools-gemini-cli
-test-scenario-tools-gemini-cli: test-e2e-setup ## Run Gemini CLI tool usage scenario (no MCPSpy, requires GEMINI_API_KEY)
-	@echo "Running Gemini CLI tool usage scenario..."
-	$(call run-scenario,tools-gemini-cli)
-
 # =============================================================================
 ##@ E2E Tests (with MCPSpy)
 # =============================================================================
@@ -302,16 +292,6 @@ test-e2e-security: build test-e2e-setup ## Run e2e test for security (requires H
 test-e2e-gemini-cli: build test-e2e-setup ## Run e2e test for Gemini CLI (requires GEMINI_API_KEY)
 	@echo "Running Gemini CLI e2e test..."
 	$(call run-e2e,gemini-cli)
-
-.PHONY: test-e2e-tools-claudecode
-test-e2e-tools-claudecode: build test-e2e-setup ## Run e2e test for Claude Code tool usage
-	@echo "Running Claude Code tool usage e2e test..."
-	$(call run-e2e,tools-claude-code)
-
-.PHONY: test-e2e-tools-gemini-cli
-test-e2e-tools-gemini-cli: build test-e2e-setup ## Run e2e test for Gemini CLI tool usage (requires GEMINI_API_KEY)
-	@echo "Running Gemini CLI tool usage e2e test..."
-	$(call run-e2e,tools-gemini-cli)
 
 .PHONY: test-e2e
 test-e2e: build test-e2e-setup ## Run all e2e test scenarios

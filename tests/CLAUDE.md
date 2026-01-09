@@ -23,10 +23,8 @@ make test-scenario-https          # HTTPS transport
 make test-scenario-security       # Security/injection test
 make test-scenario-llm-anthropic  # Anthropic LLM API test
 make test-scenario-llm-gemini     # Gemini LLM API test
-make test-scenario-claudecode         # Claude Code test
-make test-scenario-gemini-cli         # Gemini CLI test
-make test-scenario-tools-claudecode   # Claude Code tool usage test
-make test-scenario-tools-gemini-cli   # Gemini CLI tool usage test
+make test-scenario-claudecode         # Claude Code test (MCP + LLM + Tools)
+make test-scenario-gemini-cli         # Gemini CLI test (MCP + LLM + Tools)
 ```
 
 ### Run Security/Prompt Injection E2E Test
@@ -57,22 +55,6 @@ Requires `GEMINI_API_KEY` environment variable:
 
 ```bash
 GEMINI_API_KEY=your_api_key make test-e2e-gemini-cli
-```
-
-### Run Tool Usage E2E Tests
-
-Tool usage tests verify that tool invocations (CALL) and results (RSLT) are captured when using the `--tools` flag.
-
-**Claude Code Tool Usage:**
-
-```bash
-make test-e2e-tools-claudecode
-```
-
-**Gemini CLI Tool Usage** (requires `GEMINI_API_KEY`):
-
-```bash
-GEMINI_API_KEY=your_api_key make test-e2e-tools-gemini-cli
 ```
 
 ### Update Expected Outputs
@@ -183,7 +165,10 @@ python tests/e2e_test.py --config tests/e2e_config.yaml --verbose
 - MCP server initialization (filesystem and deepwiki HTTP servers)
 - Claude Code tool usage (Read, Bash tools)
 - LLM API calls (Anthropic API requests/responses)
+- Tool invocation events (CALL) and tool result events (RSLT)
 - Predictable tool execution with known inputs/outputs
+
+**MCPSpy flags:** `--llm --tools`
 
 **Test data:**
 
@@ -197,6 +182,7 @@ python tests/e2e_test.py --config tests/e2e_config.yaml --verbose
 - MCP server initialization (filesystem and deepwiki HTTP servers)
 - Gemini CLI tool usage (Read, Bash tools)
 - LLM API calls (Gemini API requests/responses)
+- Tool invocation events (CALL) and tool result events (RSLT)
 - Predictable tool execution with known inputs/outputs
 
 **Requirements:**
@@ -204,47 +190,11 @@ python tests/e2e_test.py --config tests/e2e_config.yaml --verbose
 - `GEMINI_API_KEY` environment variable with valid Gemini API key
 - Gemini CLI installed (via `npx @google/gemini-cli`)
 
+**MCPSpy flags:** `--llm --tools`
+
 **Test data:**
 
 - `tests/test_tool_data.txt` - Test file with known content for Read tool testing
-- `tests/.gemini/settings.json` - MCP server configuration
-
-### tools-claude-code
-
-**What it tests:**
-
-- Tool usage monitoring with `--tools` flag
-- Tool invocation events (CALL) when Claude Code requests tool use
-- Tool result events (RSLT) when tool execution completes
-- Tool name extraction (Read, Bash)
-- Tool ID correlation between invocations and results
-
-**MCPSpy flags:** `--tools`
-
-**Test data:**
-
-- `tests/test_tool_data.txt` - Test file for Read tool testing
-- `tests/claude_config.json` - MCP server configuration
-
-### tools-gemini-cli
-
-**What it tests:**
-
-- Tool usage monitoring with `--tools` flag
-- Tool invocation events (CALL) when Gemini CLI requests tool use
-- Tool result events (RSLT) when tool execution completes
-- Tool name extraction (Read, Bash)
-- Tool ID correlation between invocations and results
-
-**Requirements:**
-
-- `GEMINI_API_KEY` environment variable with valid Gemini API key
-
-**MCPSpy flags:** `--tools`
-
-**Test data:**
-
-- `tests/test_tool_data.txt` - Test file for Read tool testing
 - `tests/.gemini/settings.json` - MCP server configuration
 
 ## File Reference
