@@ -536,11 +536,17 @@ func (d *DebugDisplay) handleToolUsageEvent(e event.Event) {
 	d.printEventLine(event.EventTypeToolUsage, toolEvent.Timestamp, toolEvent.PID, toolEvent.Comm, details)
 
 	if d.config.ShowPayload {
-		if toolEvent.Input != "" {
-			d.printPayload([]byte(toolEvent.Input))
-		}
-		if toolEvent.Output != "" {
-			d.printPayload([]byte(toolEvent.Output))
+		// Prefer RawJSON which contains the complete tool block
+		if toolEvent.RawJSON != "" {
+			d.printPayload([]byte(toolEvent.RawJSON))
+		} else {
+			// Fallback to Input/Output for backwards compatibility
+			if toolEvent.Input != "" {
+				d.printPayload([]byte(toolEvent.Input))
+			}
+			if toolEvent.Output != "" {
+				d.printPayload([]byte(toolEvent.Output))
+			}
 		}
 	}
 }

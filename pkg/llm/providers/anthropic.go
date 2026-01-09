@@ -373,6 +373,7 @@ func (p *AnthropicParser) extractToolCalls(payload []byte, sessionID uint64) []*
 			ToolID:    block.ID,
 			ToolName:  block.Name,
 			Input:     string(block.Input),
+			RawJSON:   string(rawBlock),
 		})
 	}
 
@@ -440,6 +441,7 @@ func (p *AnthropicParser) extractToolResults(payload []byte, sessionID uint64) [
 				ToolName:  toolName,
 				Output:    string(block.Content),
 				IsError:   block.IsError,
+				RawJSON:   string(rawBlock),
 			})
 		}
 	}
@@ -585,6 +587,16 @@ func (p *AnthropicParser) handleContentBlockStop(data string, sessionID uint64) 
 	}
 	block := blockI.(*streamingToolBlock)
 
+	// Construct raw JSON block from accumulated data
+	inputJSON := block.input.String()
+	rawBlock := map[string]interface{}{
+		"type":  "tool_use",
+		"id":    block.id,
+		"name":  block.name,
+		"input": json.RawMessage(inputJSON),
+	}
+	rawJSON, _ := json.Marshal(rawBlock)
+
 	// Emit the completed tool invocation event
 	return []*event.ToolUsageEvent{{
 		SessionID: block.sessionID,
@@ -592,6 +604,7 @@ func (p *AnthropicParser) handleContentBlockStop(data string, sessionID uint64) 
 		UsageType: event.ToolUsageTypeInvocation,
 		ToolID:    block.id,
 		ToolName:  block.name,
-		Input:     block.input.String(),
+		Input:     inputJSON,
+		RawJSON:   string(rawJSON),
 	}}
 }
