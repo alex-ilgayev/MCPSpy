@@ -31,40 +31,41 @@ spec:
     spec:
       serviceAccountName: mcpspy
       automountServiceAccountToken: false
-      hostPID: true  # Required to monitor processes across the node
+      hostPID: true # Required to monitor processes across the node
       containers:
-      - name: mcpspy
-        image: ghcr.io/alex-ilgayev/mcpspy:v0.0.3
-        imagePullPolicy: Always
-        securityContext:
-          privileged: true  # Required for eBPF access
-        resources:
-          limits:
-            cpu: 500m
-            memory: 256Mi
-          requests:
-            cpu: 100m
-            memory: 128Mi
-        livenessProbe:
-          exec:
-            command: ["/bin/sh", "-c", "pgrep mcpspy"]
-          initialDelaySeconds: 10
-          periodSeconds: 10
-          failureThreshold: 3
-        readinessProbe:
-          exec:
-            command: ["/bin/sh", "-c", "pgrep mcpspy"]
-          initialDelaySeconds: 5
-          periodSeconds: 5
-          failureThreshold: 3
-        volumeMounts:
-        - name: output
-          mountPath: /output
-        command:
-        - "/app/mcpspy"
-        - "-o"
-        - "/output/mcpspy.jsonl"
+        - name: mcpspy
+          image: ghcr.io/alex-ilgayev/mcpspy:v0.0.6
+          imagePullPolicy: Always
+          stdin: true
+          tty: true
+          securityContext:
+            privileged: true # Required for eBPF access
+          resources:
+            limits:
+              cpu: 500m
+              memory: 256Mi
+            requests:
+              cpu: 100m
+              memory: 128Mi
+          livenessProbe:
+            exec:
+              command: ["/bin/sh", "-c", "pgrep mcpspy"]
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            failureThreshold: 3
+          readinessProbe:
+            exec:
+              command: ["/bin/sh", "-c", "pgrep mcpspy"]
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            failureThreshold: 3
+          volumeMounts:
+            - name: output
+              mountPath: /output
+          command:
+            - "/app/mcpspy"
+            - "-o"
+            - "/output/mcpspy.jsonl"
       volumes:
-      - name: output
-        emptyDir: {}
----
+        - name: output
+          emptyDir: {}
