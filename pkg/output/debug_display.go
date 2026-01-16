@@ -22,6 +22,7 @@ type DebugFilterConfig struct {
 	Comm        string                   // "" = all processes
 	Host        string                   // "" = all hosts, regex pattern
 	ShowPayload bool                     // Show payload/buffer content
+	ShowHeaders bool                     // Show HTTP headers
 }
 
 // DebugDisplay handles debug output formatting
@@ -129,8 +130,8 @@ func (d *DebugDisplay) PrintFilters() {
 		eventList = strings.Join(names, ",")
 	}
 
-	fmt.Fprintf(d.writer, "Filters: events=%s pid=%d comm=%q host=%q payload=%v\n\n",
-		eventList, d.config.PID, d.config.Comm, d.config.Host, d.config.ShowPayload)
+	fmt.Fprintf(d.writer, "Filters: events=%s pid=%d comm=%q host=%q payload=%v headers=%v\n\n",
+		eventList, d.config.PID, d.config.Comm, d.config.Host, d.config.ShowPayload, d.config.ShowHeaders)
 }
 
 // PrintStats prints event statistics
@@ -239,6 +240,21 @@ func (d *DebugDisplay) printPayload(data []byte) {
 	fmt.Fprintln(d.writer, debugPayloadColor.Sprint(prettyContent))
 }
 
+// printHeaders prints HTTP headers if configured (must be called with lock held or after printEventLine)
+func (d *DebugDisplay) printHeaders(headers map[string]string, headerType string) {
+	if !d.config.ShowHeaders || len(headers) == 0 {
+		return
+	}
+
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	fmt.Fprintf(d.writer, "  %s Headers:\n", headerType)
+	for key, value := range headers {
+		fmt.Fprintf(d.writer, "    %s: %s\n", debugMethodColor.Sprint(key), value)
+	}
+}
+
 // --- Event Handlers ---
 
 func (d *DebugDisplay) handleFSDataEvent(e event.Event) {
@@ -339,6 +355,7 @@ func (d *DebugDisplay) handleHttpRequestEvent(e event.Event) {
 	)
 
 	d.printEventLine(event.EventTypeHttpRequest, time.Now(), httpEvent.PID, httpEvent.Comm(), details)
+	d.printHeaders(httpEvent.RequestHeaders, "Request")
 	d.printPayload(httpEvent.RequestPayload)
 }
 
@@ -364,6 +381,8 @@ func (d *DebugDisplay) handleHttpResponseEvent(e event.Event) {
 	)
 
 	d.printEventLine(event.EventTypeHttpResponse, time.Now(), httpEvent.PID, httpEvent.Comm(), details)
+	d.printHeaders(httpEvent.RequestHeaders, "Request")
+	d.printHeaders(httpEvent.ResponseHeaders, "Response")
 	d.printPayload(httpEvent.ResponsePayload)
 }
 
