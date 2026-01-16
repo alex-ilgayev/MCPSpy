@@ -29,6 +29,7 @@ var (
 	debugComm        string   // Filter by process name (comm)
 	debugHost        string   // Filter by host (regex)
 	debugShowPayload bool     // Show payload/buffer data
+	debugShowHeaders bool     // Show HTTP headers
 )
 
 func newDebugCmd() *cobra.Command {
@@ -78,11 +79,14 @@ Examples:
   # Debug HTTP parsing issues
   sudo mcpspy debug --events tls_recv,http_request,http_response --payload
 
+  # Show HTTP headers
+  sudo mcpspy debug --events http_request,http_response --headers
+
   # Filter by host (regex)
   sudo mcpspy debug --host "api\.anthropic\.com" --payload
 
-  # Combine filters
-  sudo mcpspy debug --events mcp_message,http_request --pid 12345 --payload`,
+  # Combine filters with headers
+  sudo mcpspy debug --events http_request,http_response --pid 12345 --headers --payload`,
 		RunE:         runDebug,
 		SilenceUsage: true,
 	}
@@ -98,6 +102,8 @@ Examples:
 		"Filter by host (regex pattern, e.g., 'api\\.anthropic\\.com')")
 	debugCmd.Flags().BoolVar(&debugShowPayload, "payload", false,
 		"Show payload/buffer data for events")
+	debugCmd.Flags().BoolVar(&debugShowHeaders, "headers", false,
+		"Show HTTP headers for HTTP events")
 
 	return debugCmd
 }
@@ -116,6 +122,7 @@ func runDebug(cmd *cobra.Command, args []string) error {
 		Comm:        debugComm,
 		Host:        debugHost,
 		ShowPayload: debugShowPayload,
+		ShowHeaders: debugShowHeaders,
 	}
 
 	// Fetch current mount namespace

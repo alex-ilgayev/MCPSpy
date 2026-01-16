@@ -100,8 +100,11 @@ sudo ./mcpspy debug --comm claude
 # Debug HTTP parsing issues
 sudo ./mcpspy debug --events tls_recv,http_request,http_response --payload
 
-# Combine filters
-sudo ./mcpspy debug --events mcp_message,http_request --pid 12345 --payload
+# Show HTTP headers
+sudo ./mcpspy debug --events http_request,http_response --headers
+
+# Combine filters with headers
+sudo ./mcpspy debug --events http_request,http_response --pid 12345 --headers --payload
 ```
 
 **Available event types:**
@@ -114,6 +117,7 @@ sudo ./mcpspy debug --events mcp_message,http_request --pid 12345 --payload
 - `--comm, -c`: Filter by process name (substring match)
 - `--host`: Filter by URL regex (matches against host+path, e.g., `api\.anthropic\.com/v1/messages`)
 - `--payload`: Show payload/buffer data for events
+- `--headers`: Show HTTP headers for HTTP events
 
 ## Testing
 
