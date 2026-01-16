@@ -27,6 +27,7 @@ type ToolUsageEvent struct {
 	Input     string        `json:"input,omitempty"`
 	Output    string        `json:"output,omitempty"`
 	IsError   bool          `json:"is_error,omitempty"`
+	RawJSON   string        `json:"raw_json,omitempty"` // Complete JSON block (tool_use/tool_result/functionCall/functionResponse)
 
 	// Process context (from HTTP request/response)
 	PID  uint32 `json:"pid"`

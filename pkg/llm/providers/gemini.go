@@ -332,12 +332,15 @@ func (p *GeminiParser) extractFunctionCalls(payload []byte, sessionID uint64) []
 			if part.FunctionCall == nil {
 				continue
 			}
+			// Marshal part to get complete raw JSON
+			rawJSON, _ := json.Marshal(part)
 			events = append(events, &event.ToolUsageEvent{
 				SessionID: sessionID,
 				Timestamp: time.Now(),
 				UsageType: event.ToolUsageTypeInvocation,
 				ToolName:  part.FunctionCall.Name,
 				Input:     string(part.FunctionCall.Args),
+				RawJSON:   string(rawJSON),
 			})
 		}
 	}
@@ -368,12 +371,15 @@ func (p *GeminiParser) extractFunctionResponses(payload []byte, sessionID uint64
 			if part.FunctionResponse == nil {
 				continue
 			}
+			// Marshal part to get complete raw JSON
+			rawJSON, _ := json.Marshal(part)
 			events = append(events, &event.ToolUsageEvent{
 				SessionID: sessionID,
 				Timestamp: time.Now(),
 				UsageType: event.ToolUsageTypeResult,
 				ToolName:  part.FunctionResponse.Name,
 				Output:    string(part.FunctionResponse.Response),
+				RawJSON:   string(rawJSON),
 			})
 		}
 	}
@@ -414,12 +420,15 @@ func (p *GeminiParser) extractToolUsageFromSSE(sse *event.SSEEvent) []*event.Too
 			if part.FunctionCall == nil {
 				continue
 			}
+			// Marshal part to get complete raw JSON
+			rawJSON, _ := json.Marshal(part)
 			events = append(events, &event.ToolUsageEvent{
 				SessionID: sse.SSLContext,
 				Timestamp: time.Now(),
 				UsageType: event.ToolUsageTypeInvocation,
 				ToolName:  part.FunctionCall.Name,
 				Input:     string(part.FunctionCall.Args),
+				RawJSON:   string(rawJSON),
 			})
 		}
 	}
