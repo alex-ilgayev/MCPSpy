@@ -6,7 +6,7 @@ __pycache__
 build/**
 pkg/ebpf/mcpspy_bpfel_*
 .vscode
-mcpspy
+./mcpspy
 .idea/*
 
 # Test temp files (created by e2e tests)

@@ -23,6 +23,33 @@ MCPSpy helps you:
 
 Deploy MCPSpy as a DaemonSet to monitor all nodes in your cluster:
 
+#### Using Helm (Recommended)
+
+The most flexible way to deploy MCPSpy is using the Helm chart:
+
+```bash
+# Add the repository (if published via GHCR as OCI)
+# Note: Helm 3.8+ supports OCI registries
+helm install mcpspy oci://ghcr.io/alex-ilgayev/charts/mcpspy --version 0.0.6 -n mcpspy --create-namespace
+```
+
+Alternatively, from the repository root:
+
+```bash
+helm install mcpspy ./deploy/charts/mcpspy -n mcpspy --create-namespace
+```
+
+You can customize the deployment by creating a `my-values.yaml` file or using `--set` flags. For example, to change the output path:
+
+```bash
+helm install mcpspy ./deploy/charts/mcpspy -n mcpspy --create-namespace \
+  --set args={-o,/custom/path/mcpspy.jsonl}
+```
+
+#### Using Static YAML
+
+For a quick start without Helm, you can apply the static manifest:
+
 ```bash
 kubectl apply -f https://raw.githubusercontent.com/alex-ilgayev/mcpspy/main/deploy/kubernetes/mcpspy.yaml
 ```
@@ -79,6 +106,13 @@ minikube start --cpus=4 --memory=8192
 ### 2. Deploy MCPSpy
 
 ```bash
+# Using Helm (Recommended)
+helm install mcpspy oci://ghcr.io/alex-ilgayev/charts/mcpspy --version 0.0.6 -n mcpspy --create-namespace
+
+# OR using local Helm chart
+helm install mcpspy ./deploy/charts/mcpspy -n mcpspy --create-namespace
+
+# OR using static YAML
 kubectl apply -f https://raw.githubusercontent.com/alex-ilgayev/mcpspy/main/deploy/kubernetes/mcpspy.yaml
 ```
 
