@@ -148,6 +148,9 @@ func (p *Parser) ParseDataStdio(e event.Event) {
 
 	logrus.WithFields(e.LogFields()).Trace("Parsing STDIO data for MCP")
 
+	correlationScope := stdioCorrelationScope(stdioEvent)
+	duplicateScope := stdioDuplicateScope(stdioEvent)
+
 	// Use JSON decoder to handle multi-line JSON properly
 	decoder := json.NewDecoder(bytes.NewReader(buf))
 	for {
@@ -166,7 +169,7 @@ func (p *Parser) ParseDataStdio(e event.Event) {
 
 		// Part 1: Duplicate detection
 		hash := p.calculateHash(jsonData)
-		if p.isDuplicate(hash) {
+		if p.isDuplicate(duplicateScope, hash) {
 			continue // Skip duplicates, first one wins
 		}
 
@@ -187,7 +190,7 @@ func (p *Parser) ParseDataStdio(e event.Event) {
 		}
 
 		// Part 4: Handle request/response correlation
-		if err := p.handleRequestResponseCorrelation(&jsonRpcMsg); err != nil {
+		if err := p.handleRequestResponseCorrelation(correlationScope, &jsonRpcMsg); err != nil {
 			// Drop responses without matching request IDs
 			logrus.
 				WithFields(e.LogFields()).
@@ -226,6 +229,7 @@ func (p *Parser) ParseDataHttp(e event.Event) {
 	var comm string
 	var host string
 	var isRequest bool
+	var sslContext uint64
 
 	switch event := e.(type) {
 	case *event.HttpRequestEvent:
@@ -233,22 +237,27 @@ func (p *Parser) ParseDataHttp(e event.Event) {
 		pid = event.PID
 		comm = event.Comm()
 		host = event.Host
+		sslContext = event.SSLContext
 		isRequest = true
 	case *event.HttpResponseEvent:
 		buf = event.ResponsePayload
 		pid = event.PID
 		comm = event.Comm()
 		host = event.Host
+		sslContext = event.SSLContext
 		isRequest = false
 	case *event.SSEEvent:
 		buf = event.Data
 		pid = event.PID
 		comm = event.Comm()
 		host = event.Host
+		sslContext = event.SSLContext
 		isRequest = false
 	default:
 		return
 	}
+
+	correlationScope := httpCorrelationScope(pid, sslContext, host)
 
 	logrus.WithFields(e.LogFields()).Trace("Parsing HTTP data for MCP")
 
@@ -284,7 +293,7 @@ func (p *Parser) ParseDataHttp(e event.Event) {
 		}
 
 		// Handle request/response correlation
-		if err := p.handleRequestResponseCorrelation(&jsonRpcMsg); err != nil {
+		if err := p.handleRequestResponseCorrelation(correlationScope, &jsonRpcMsg); err != nil {
 			// Drop responses without matching request IDs
 			logrus.
 				WithFields(e.LogFields()).
@@ -427,7 +436,7 @@ func (p *Parser) idToCacheKey(id interface{}) string {
 }
 
 // cacheRequestMessage stores a request message for future response correlation
-func (p *Parser) cacheRequestMessage(msg *event.JSONRPCMessage) error {
+func (p *Parser) cacheRequestMessage(scope string, msg *event.JSONRPCMessage) error {
 	if msg == nil || msg.ID == nil {
 		return fmt.Errorf("invalid message")
 	}
@@ -435,7 +444,7 @@ func (p *Parser) cacheRequestMessage(msg *event.JSONRPCMessage) error {
 		// This shouldn't happen. Only responses should have Request field set.
 		return fmt.Errorf("message already has Request field set")
 	}
-	key := p.idToCacheKey(msg.ID)
+	key := scopedCacheKey(scope, p.idToCacheKey(msg.ID))
 	p.requestIDCache.Add(key, msg)
 
 	return nil
@@ -443,11 +452,11 @@ func (p *Parser) cacheRequestMessage(msg *event.JSONRPCMessage) error {
 
 // getRequestByID retrieves a cached request message by its ID
 // Returns the request message and true if found, nil and false otherwise
-func (p *Parser) getRequestByID(id interface{}) (*event.JSONRPCMessage, bool) {
+func (p *Parser) getRequestByID(scope string, id interface{}) (*event.JSONRPCMessage, bool) {
 	if id == nil {
 		return nil, false
 	}
-	key := p.idToCacheKey(id)
+	key := scopedCacheKey(scope, p.idToCacheKey(id))
 	req, exists := p.requestIDCache.Get(key)
 	return req, exists
 }
@@ -456,14 +465,14 @@ func (p *Parser) getRequestByID(id interface{}) (*event.JSONRPCMessage, bool) {
 // For request messages, it caches the full message for future correlation.
 // For response messages, it looks up and attaches the corresponding request.
 // Returns true if the message should be kept, false if it should be dropped.
-func (p *Parser) handleRequestResponseCorrelation(msg *event.JSONRPCMessage) error {
+func (p *Parser) handleRequestResponseCorrelation(scope string, msg *event.JSONRPCMessage) error {
 	switch msg.MessageType {
 	case event.JSONRPCMessageTypeRequest:
 		// Cache the full request message for future response pairing
-		return p.cacheRequestMessage(msg)
+		return p.cacheRequestMessage(scope, msg)
 	case event.JSONRPCMessageTypeResponse:
 		// Look up the corresponding request and attach it to the response
-		req, exists := p.getRequestByID(msg.ID)
+		req, exists := p.getRequestByID(scope, msg.ID)
 		if !exists {
 			// Drop responses without matching requests
 			return fmt.Errorf("response without matching request ID")
@@ -476,15 +485,39 @@ func (p *Parser) handleRequestResponseCorrelation(msg *event.JSONRPCMessage) err
 	return nil
 }
 
-// isDuplicate checks if we've seen this hash before and marks it as seen.
+// stdioCorrelationScope uses the unordered peer pair because request and response
+// events travel in opposite directions and JSON-RPC IDs are not globally unique.
+func stdioCorrelationScope(e *event.FSAggregatedEvent) string {
+	firstPID, secondPID := e.FromPID, e.ToPID
+	if firstPID > secondPID {
+		firstPID, secondPID = secondPID, firstPID
+	}
+	return fmt.Sprintf("stdio:%d:%d", firstPID, secondPID)
+}
+
+// stdioDuplicateScope keeps identical payloads from different directed peers distinct.
+func stdioDuplicateScope(e *event.FSAggregatedEvent) string {
+	return fmt.Sprintf("stdio:%d>%d", e.FromPID, e.ToPID)
+}
+
+func httpCorrelationScope(pid uint32, sslContext uint64, host string) string {
+	return fmt.Sprintf("http:%d:%d:%s", pid, sslContext, host)
+}
+
+func scopedCacheKey(scope, key string) string {
+	return fmt.Sprintf("%d:%s%s", len(scope), scope, key)
+}
+
+// isDuplicate checks if we've seen this payload on the same directed process pair.
 // Returns true if it's a duplicate (already seen).
-func (p *Parser) isDuplicate(hash string) bool {
-	_, exists := p.seenHashCache.Get(hash)
+func (p *Parser) isDuplicate(scope, hash string) bool {
+	key := scopedCacheKey(scope, hash)
+	_, exists := p.seenHashCache.Get(key)
 	if exists {
 		return true // Duplicate - we've seen this before
 	}
 	// Mark as seen
-	p.seenHashCache.Add(hash, struct{}{})
+	p.seenHashCache.Add(key, struct{}{})
 	return false
 }
 

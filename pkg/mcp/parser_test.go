@@ -50,6 +50,7 @@ func createHttpRequestEvent(data []byte, pid uint32, comm string, host string) *
 			EventType: event.EventTypeHttpRequest,
 			PID:       pid,
 		},
+		SSLContext:     uint64(pid),
 		Host:           host,
 		RequestPayload: data,
 	}
@@ -64,8 +65,10 @@ func createHttpResponseEvent(data []byte, pid uint32, comm string, host string) 
 			EventType: event.EventTypeHttpResponse,
 			PID:       pid,
 		},
+		SSLContext: uint64(pid),
 		HttpRequestEvent: event.HttpRequestEvent{
-			Host: host,
+			SSLContext: uint64(pid),
+			Host:       host,
 		},
 		ResponsePayload: data,
 	}
@@ -80,8 +83,10 @@ func createSSEEvent(data []byte, pid uint32, comm string, host string) *event.SS
 			EventType: event.EventTypeHttpSSE,
 			PID:       pid,
 		},
+		SSLContext: uint64(pid),
 		HttpRequestEvent: event.HttpRequestEvent{
-			Host: host,
+			SSLContext: uint64(pid),
+			Host:       host,
 		},
 		Data: data,
 	}
@@ -1694,7 +1699,7 @@ func TestParseDataHttp_HttpTransportFields(t *testing.T) {
 					ID:          int64(1),
 					Method:      "tools/list",
 				}
-				parser.cacheRequestMessage(mockRequest)
+				parser.cacheRequestMessage(httpCorrelationScope(tt.pid, 0, tt.host), mockRequest)
 			}
 
 			var httpEvent event.Event
@@ -1998,9 +2003,9 @@ func TestRequestIDCaching_Http(t *testing.T) {
 			t.Fatal("No MCP event received for request")
 		}
 
-		// Send a response with matching ID
+		// Send a response with matching ID from the same HTTP session
 		responseData := []byte(`{"jsonrpc":"2.0","id":1,"result":{"status":"ok"}}`)
-		httpResponseEvent := createHttpResponseEvent(responseData, 200, "http-server", "example.com")
+		httpResponseEvent := createHttpResponseEvent(responseData, 100, "http-client", "example.com")
 		parser.ParseDataHttp(httpResponseEvent)
 
 		// Read response from bus
@@ -2062,7 +2067,7 @@ func TestRequestIDCaching_Http(t *testing.T) {
 		}
 
 		responseData := []byte(`{"jsonrpc":"2.0","id":"http-test-456","result":{"status":"ok"}}`)
-		httpResponseEvent := createHttpResponseEvent(responseData, 200, "http-server", "example.com")
+		httpResponseEvent := createHttpResponseEvent(responseData, 100, "http-client", "example.com")
 		newParser.ParseDataHttp(httpResponseEvent)
 
 		// Read response from bus
@@ -2130,7 +2135,7 @@ func TestRequestIDCaching_Http(t *testing.T) {
 
 		// Send response with ID 2 (should succeed)
 		responseData := []byte(`{"jsonrpc":"2.0","id":2,"result":{"tools":[]}}`)
-		httpEvent := createHttpResponseEvent(responseData, 200, "http-server", "example.com")
+		httpEvent := createHttpResponseEvent(responseData, 100, "http-client", "example.com")
 		newParser.ParseDataHttp(httpEvent)
 
 		// Read response from bus
@@ -2156,6 +2161,96 @@ func TestRequestIDCaching_Http(t *testing.T) {
 			// Success - response was dropped
 		}
 	})
+}
+
+func TestRequestIDCaching_StdioSessionsAreIsolated(t *testing.T) {
+	mockBus := tu.NewMockBus()
+	parser, err := NewParser(mockBus)
+	if err != nil {
+		t.Fatalf("Failed to create parser: %v", err)
+	}
+	defer parser.Close()
+	defer mockBus.Close()
+
+	for _, tc := range []struct {
+		name        string
+		fromPID     uint32
+		toPID       uint32
+		requestName string
+	}{
+		{name: "first session", fromPID: 100, toPID: 200, requestName: "session-a"},
+		{name: "second session", fromPID: 300, toPID: 400, requestName: "session-b"},
+	} {
+		requestData := []byte(fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":%q}}`, tc.requestName))
+		parser.ParseDataStdio(createFSAggregatedEvent(requestData, event.EventTypeFSRead, tc.fromPID, "client", tc.toPID, "server"))
+		select {
+		case <-mockBus.Events():
+		case <-time.After(100 * time.Millisecond):
+			t.Fatalf("No request event received for %s", tc.name)
+		}
+	}
+
+	responseData := []byte(`{"jsonrpc":"2.0","id":1,"result":{"ok":true}}`)
+	parser.ParseDataStdio(createFSAggregatedEvent(responseData, event.EventTypeFSRead, 200, "server", 100, "client"))
+	select {
+	case evt := <-mockBus.Events():
+		response := evt.(*event.MCPEvent)
+		if response.Request == nil {
+			t.Fatal("Expected response to include its matching request")
+		}
+		if got := response.Request.Params["name"]; got != "session-a" {
+			t.Fatalf("Response was correlated to %v, want first session request", got)
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("No response event received for first session")
+	}
+}
+
+func TestRequestIDCaching_HttpSessionsAreIsolated(t *testing.T) {
+	mockBus := tu.NewMockBus()
+	parser, err := NewParser(mockBus)
+	if err != nil {
+		t.Fatalf("Failed to create parser: %v", err)
+	}
+	defer parser.Close()
+	defer mockBus.Close()
+
+	for _, tc := range []struct {
+		name        string
+		sslContext  uint64
+		requestName string
+	}{
+		{name: "first session", sslContext: 101, requestName: "session-a"},
+		{name: "second session", sslContext: 202, requestName: "session-b"},
+	} {
+		requestData := []byte(fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":%q}}`, tc.requestName))
+		request := createHttpRequestEvent(requestData, 100, "http-client", "example.com")
+		request.SSLContext = tc.sslContext
+		parser.ParseDataHttp(request)
+		select {
+		case <-mockBus.Events():
+		case <-time.After(100 * time.Millisecond):
+			t.Fatalf("No request event received for %s", tc.name)
+		}
+	}
+
+	responseData := []byte(`{"jsonrpc":"2.0","id":1,"result":{"ok":true}}`)
+	response := createHttpResponseEvent(responseData, 100, "http-client", "example.com")
+	response.SSLContext = 101
+	response.HttpRequestEvent.SSLContext = 101
+	parser.ParseDataHttp(response)
+	select {
+	case evt := <-mockBus.Events():
+		response := evt.(*event.MCPEvent)
+		if response.Request == nil {
+			t.Fatal("Expected response to include its matching request")
+		}
+		if got := response.Request.Params["name"]; got != "session-a" {
+			t.Fatalf("Response was correlated to %v, want first session request", got)
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("No response event received for first session")
+	}
 }
 
 func TestRequestIDCaching_MixedIDTypes(t *testing.T) {
@@ -2269,17 +2364,17 @@ func TestValidateResponseID(t *testing.T) {
 	}
 
 	// Cache some request messages
-	parser.cacheRequestMessage(&event.JSONRPCMessage{
+	parser.cacheRequestMessage("test", &event.JSONRPCMessage{
 		MessageType: event.JSONRPCMessageTypeRequest,
 		ID:          int64(1),
 		Method:      "tools/list",
 	})
-	parser.cacheRequestMessage(&event.JSONRPCMessage{
+	parser.cacheRequestMessage("test", &event.JSONRPCMessage{
 		MessageType: event.JSONRPCMessageTypeRequest,
 		ID:          "test-123",
 		Method:      "initialize",
 	})
-	parser.cacheRequestMessage(&event.JSONRPCMessage{
+	parser.cacheRequestMessage("test", &event.JSONRPCMessage{
 		MessageType: event.JSONRPCMessageTypeRequest,
 		ID:          int64(42),
 		Method:      "resources/list",
@@ -2329,7 +2424,7 @@ func TestValidateResponseID(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, exists := parser.getRequestByID(tt.id)
+			_, exists := parser.getRequestByID("test", tt.id)
 			if exists != tt.expected {
 				t.Errorf("Expected validation result %v, got %v", tt.expected, exists)
 			}
@@ -2363,28 +2458,25 @@ func TestDuplicateDetection(t *testing.T) {
 		t.Fatal("No MCP event received for first occurrence")
 	}
 
-	// Second occurrence (same data): B(200) -> C(300) - should be dropped as duplicate
-	fsEvent = createFSAggregatedEvent(data, event.EventTypeFSRead, 200, "proc-b", 300, "proc-c")
+	// A repeated observation on the same directed process pair is a duplicate.
+	fsEvent = createFSAggregatedEvent(data, event.EventTypeFSAggregatedWrite, 100, "proc-a", 200, "proc-b")
 	parser.ParseDataStdio(fsEvent)
-
-	// Should NOT publish event (duplicate)
 	select {
 	case evt := <-mockBus.Events():
-		t.Errorf("Expected no event (duplicate), but got event of type %v", evt.Type())
+		t.Errorf("Expected same-session duplicate to be dropped, but got event of type %v", evt.Type())
 	case <-time.After(50 * time.Millisecond):
-		// Success - duplicate was dropped
 	}
 
-	// Third occurrence (same data): C(300) -> D(400) - should also be dropped
-	fsEvent = createFSAggregatedEvent(data, event.EventTypeFSRead, 300, "proc-c", 400, "proc-d")
+	// The same JSON-RPC message on another process pair is a distinct communication.
+	fsEvent = createFSAggregatedEvent(data, event.EventTypeFSRead, 200, "proc-b", 300, "proc-c")
 	parser.ParseDataStdio(fsEvent)
-
-	// Should NOT publish event (duplicate)
 	select {
 	case evt := <-mockBus.Events():
-		t.Errorf("Expected no event (duplicate), but got event of type %v", evt.Type())
-	case <-time.After(50 * time.Millisecond):
-		// Success - duplicate was dropped
+		if evt.Type() != event.EventTypeMCPMessage {
+			t.Fatalf("Expected EventTypeMCPMessage, got %v", evt.Type())
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("Expected identical payload on a different process pair to be published")
 	}
 }
 
